@@ -8,20 +8,20 @@ Work through these steps in order. Each step builds on the previous one.
 
 ## Step 1: Repository Scaffolding
 
-- [ ] Create directory structure:
-  - [ ] `services/auth/`
-  - [ ] `services/market-data/`
-  - [ ] `services/gateway/`
-  - [ ] `services/trading-engine/` (empty placeholder)
-  - [ ] `services/backtesting/` (empty placeholder)
-  - [ ] `services/ai-insights/` (empty placeholder)
-  - [ ] `pkg/` (shared Go code: JWT middleware, DB helpers, common types)
-  - [ ] `frontend/`
-  - [ ] `infra/docker/`
-  - [ ] `infra/migrations/`
-  - [ ] `docs/`
-- [ ] Run `go mod init` in each service directory and in `pkg/`
-- [ ] Create root `.gitignore` (`.env`, binaries, `node_modules/`, `tmp/`, `*.exe`)
+- [x] Create directory structure:
+  - [x] `services/auth/`
+  - [x] `services/market-data/`
+  - [x] `services/gateway/`
+  - [x] `services/trading-engine/` (empty placeholder)
+  - [x] `services/backtesting/` (empty placeholder)
+  - [x] `services/ai-insights/` (empty placeholder)
+  - [x] `pkg/` (shared Go code: JWT middleware, DB helpers, common types)
+  - [x] `frontend/`
+  - [x] `infra/docker/`
+  - [x] `infra/migrations/`
+  - [x] `docs/`
+- [x] Run `go mod init` in each service directory and in `pkg/`
+- [x] Create root `.gitignore` (`.env`, binaries, `node_modules/`, `tmp/`, `*.exe`)
 - [ ] Create `.env.example` with placeholder keys:
   - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`
   - `DATABASE_URL` (e.g. `postgres://user:password@localhost:5432/dbname?sslmode=disable` for golang-migrate)
