@@ -1,0 +1,168 @@
+# QuantSim — .gitignore
+# Aligned with README.md, AGENTS.md: Go backend, React frontend, Postgres, Redis, Docker, Terraform
+
+# -----------------------------------------------------------------------------
+# Environment & secrets (do not commit .env; use env vars or secrets manager)
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.local
+secrets/
+*.pem
+*.key
+
+# -----------------------------------------------------------------------------
+# Go
+# -----------------------------------------------------------------------------
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test and coverage
+*.test
+*.out
+coverage.html
+coverage.txt
+*.cover
+*.coverprofile
+
+# Go workspace and vendor (uncomment if using go mod vendor)
+# /vendor/
+
+# Dependency and build cache
+go.work
+go.work.sum
+
+# -----------------------------------------------------------------------------
+# Node / React frontend
+# -----------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.npm
+.yarn/
+.pnp.*
+.next/
+out/
+build/
+dist/
+.cache/
+*.tsbuildinfo
+.parcel-cache/
+.turbo/
+storybook-static/
+
+# -----------------------------------------------------------------------------
+# IDE & editors
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# -----------------------------------------------------------------------------
+# OS
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# Docker
+# -----------------------------------------------------------------------------
+# Local overrides (keep docker-compose.yml tracked)
+docker-compose.override.yml
+docker-compose.*.local.yml
+*.log
+
+# -----------------------------------------------------------------------------
+# Terraform (infra/)
+# -----------------------------------------------------------------------------
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# -----------------------------------------------------------------------------
+# Kubernetes
+# -----------------------------------------------------------------------------
+*.kubeconfig
+kubeconfig*
+
+# -----------------------------------------------------------------------------
+# Logs, temp, and local data
+# -----------------------------------------------------------------------------
+logs/
+*.log
+tmp/
+temp/
+.cache/
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# Local DB dumps and dev data (do not commit)
+*.sql.gz
+*.dump
+/data/
+/postgres_data/
+/redis_data/
+
+# -----------------------------------------------------------------------------
+# Python (stretch: script-based strategies / sandbox)
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+env/
+.env/
+*.egg-info/
+.eggs/
+dist/
+*.egg
+
+# -----------------------------------------------------------------------------
+# Build and binary artifacts
+# -----------------------------------------------------------------------------
+*.bin
+*.a
+*.lib
+
+# -----------------------------------------------------------------------------
+# Misc
+# -----------------------------------------------------------------------------
+*.pid
+*.seed
+*.pid.lock
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
