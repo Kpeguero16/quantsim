@@ -6,6 +6,39 @@ Work through these steps in order. Each step builds on the previous one.
 
 ---
 
+## Concepts: Env Files, Markdown, and Docker
+
+If you're new to these, here's what they are and how QuantSim uses them.
+
+### Env files (`.env` and `.env.example`)
+
+- **What they are:** Plain-text files that hold **environment variables** — configuration like database URLs and API keys. Each line is usually `KEY=value` (no spaces around `=`). Example: `POSTGRES_USER=quantsim`.
+- **Why two files?**
+  - **`.env`** — Your **local** file with real secrets (passwords, API keys). It is in `.gitignore` and must **never** be committed. You create it by copying `.env.example` and filling in real values.
+  - **`.env.example`** — A **template** committed to the repo. It lists every variable the app needs, with placeholder or example values (e.g. `POSTGRES_PASSWORD=your_password_here`). New developers copy it to `.env` and replace placeholders.
+- **How apps use them:** Backend services (Go) often load `.env` via a library (e.g. `godotenv`) or you export variables in the shell before running. Docker Compose can inject variables from `.env` into containers.
+- **Rules:** No quotes needed for simple values; no spaces around `=`. One variable per line. Lines starting with `#` are comments.
+
+### Markdown (`.md` files)
+
+- **What it is:** A simple format for documents: headings (`#`, `##`), lists (`-` or `1.`), **bold**, *italic*, and code (backticks or fenced blocks). This checklist is a Markdown file.
+- **How QuantSim uses it:** `README.md` (project overview), `PHASE1_CHECKLIST.md` (this file), and `docs/` for design notes. You can edit `.md` in any text editor or in Cursor; preview with the Markdown preview (e.g. Ctrl+Shift+V).
+- **No special runtime:** Markdown is for humans and docs; the app doesn’t “run” it.
+
+### Docker and Docker Compose
+
+- **Docker:** Runs apps in **containers** — isolated environments with their own filesystem and network. You use **images** (e.g. `postgres:16`) to start a **container** (the running instance).
+- **Docker Compose:** A tool that reads a **`docker-compose.yml`** file and starts multiple containers together (e.g. Postgres + Redis) with one command: `docker compose up -d`.
+- **Key pieces in `docker-compose.yml`:**
+  - **services:** Each service is one container (e.g. `postgres`, `redis`).
+  - **image:** Which image to run (e.g. `postgres:16`, `redis:7`).
+  - **ports:** Map a port on your machine to a port in the container (e.g. `5432:5432` so you can connect to Postgres on `localhost:5432`).
+  - **environment:** Variables the container sees (often from `.env`).
+  - **volumes:** Persistent storage so data survives when you stop/restart containers.
+- **Common commands:** `docker compose up -d` (start in background), `docker compose down` (stop and remove), `docker compose ps` (list running containers).
+
+---
+
 ## Step 1: Repository Scaffolding
 
 - [x] Create directory structure:
@@ -22,38 +55,66 @@ Work through these steps in order. Each step builds on the previous one.
   - [x] `docs/`
 - [x] Run `go mod init` in each service directory and in `pkg/`
 - [x] Create root `.gitignore` (`.env`, binaries, `node_modules/`, `tmp/`, `*.exe`)
-- [ ] Create `.env.example` with placeholder keys:
-  - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`
-  - `DATABASE_URL` (e.g. `postgres://user:password@localhost:5432/dbname?sslmode=disable` for golang-migrate)
-  - `REDIS_URL`
-  - `JWT_SECRET`
-  - `ALPACA_API_KEY`, `ALPACA_API_SECRET` (mapped to Alpaca headers: KEY → `APCA-API-KEY-ID`, SECRET → `APCA-API-SECRET-KEY`)
-- [ ] Create `Makefile` with targets: `docker-up`, `docker-down`, `migrate-up`, `migrate-down`, `run-auth`, `run-market-data`, `run-gateway`
+- [ ] Create `.env.example` with placeholder keys (see **Concepts: Env files** above):
+  - **Where:** One file at repo root named exactly `.env.example` (no space before the dot).
+  - **Format:** One variable per line, `KEY=value`. Use placeholder values only (e.g. `your_password_here`); never put real secrets in this file.
+  - **Variables to include:**
+    - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT` — used by Docker Postgres and by your Go apps to connect.
+    - `DATABASE_URL` — full connection string for the migrate CLI and Go; e.g. `postgres://user:password@localhost:5432/dbname?sslmode=disable`. Use the same user/password/db as above.
+    - `REDIS_URL` — e.g. `redis://localhost:6379/0`.
+    - `JWT_SECRET` — long random string used to sign JWTs (e.g. generate with `openssl rand -base64 32`; in `.env.example` use a placeholder like `your_jwt_secret_here`).
+    - `ALPACA_API_KEY`, `ALPACA_API_SECRET` — from [Alpaca](https://alpaca.markets); in the app these map to headers `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY`.
+  - **Optional:** Add short comments with `#` above each variable so others know what to set.
+  - **After creating it:** Copy to `.env` (`cp .env.example .env` or duplicate in Explorer) and fill in real values only in `.env`; keep `.env` out of git.
+- [ ] Create `Makefile` with targets (see **Concepts** for why we use Make):
+  - **What a Makefile is:** A file named `Makefile` at repo root. It defines **targets** (short names) and **recipes** (shell commands). Run with `make <target>` (e.g. `make docker-up`).
+  - **Targets to add:**
+    - `docker-up` — run `docker compose up -d` to start Postgres and Redis.
+    - `docker-down` — run `docker compose down` to stop them.
+    - `migrate-up` — run the migrate CLI to apply migrations (use `DATABASE_URL` from env; e.g. `migrate -path infra/migrations -database "$$DATABASE_URL" up`; in Makefiles use `$$` to pass a `$` to the shell).
+    - `migrate-down` — run migrate down to roll back one migration.
+    - `run-auth`, `run-market-data`, `run-gateway` — start each Go service (e.g. `go run ./cmd/...` or `go run .` from the service directory; ensure they load `.env` or that you export vars first).
+  - **Tip:** On Windows you may need `make` installed (e.g. via Chocolatey, or use WSL). Alternatively you can run the same commands manually from the repo root.
 
 ---
 
 ## Step 2: Docker Compose
 
-- [ ] Create `docker-compose.yml` at repo root with:
-  - [ ] Postgres 16 — port 5432, env vars from `.env`, named volume for data persistence
-  - [ ] Redis 7 — port 6379, named volume
-  - [ ] (Optional) pgAdmin — port 5050 for visual DB inspection
-- [ ] Run `docker compose up -d` and verify both services are reachable
+- [ ] Create `docker-compose.yml` at repo root (see **Concepts: Docker and Docker Compose** above):
+  - **File format:** YAML — indentation matters (use spaces, typically 2). Top-level key is `services:`; under it you list each container.
+  - [ ] **Postgres 16:**
+    - **Service name:** e.g. `postgres` (you’ll use this as hostname when other containers talk to it; locally use `localhost`).
+    - **Image:** `postgres:16`.
+    - **Port:** Publish `5432:5432` so you can connect from your machine at `localhost:5432`.
+    - **Environment:** Pass `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` from your `.env`. In Compose you can use `env_file: .env` or list each with `environment: POSTGRES_USER: ${POSTGRES_USER}` etc.
+    - **Volume:** Use a **named volume** (e.g. `quantsim_pgdata`) mounted to `/var/lib/postgresql/data` so data persists when you run `docker compose down`.
+  - [ ] **Redis 7:**
+    - **Image:** `redis:7`.
+    - **Port:** `6379:6379` so you can use `localhost:6379` (or `redis://localhost:6379`).
+    - **Volume:** Named volume (e.g. `quantsim_redis`) for persistence (optional but recommended).
+  - [ ] **(Optional) pgAdmin:** Image `dpage/pgadmin4`, port `5050:80`, and env vars for login; lets you browse Postgres in a web UI at `http://localhost:5050`.
+- [ ] Run and verify:
+  - From repo root (with `.env` in place): `docker compose up -d`.
+  - Check containers: `docker compose ps` (both should be “Up”).
+  - Verify Postgres: `psql "$DATABASE_URL" -c '\dt'` (or use pgAdmin) — no tables yet until migrations run.
+  - Verify Redis: `redis-cli -u "$REDIS_URL" PING` (should reply `PONG`).
 
 ---
 
 ## Step 3: Database Migrations
 
-- [ ] Install [golang-migrate CLI](https://github.com/golang-migrate/migrate/tree/master/cmd/migrate)
-- [ ] Create migration files in `infra/migrations/`:
+**What migrations are:** Versioned SQL scripts — `*_up.sql` creates or alters tables; `*_down.sql` reverses that. The migrate CLI tracks which version is applied and runs only new ones. This keeps schema changes repeatable and reversible.
+
+- [ ] Install [golang-migrate CLI](https://github.com/golang-migrate/migrate/tree/master/cmd/migrate) (e.g. `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest`; ensure `$GOPATH/bin` or `$HOME/go/bin` is on your PATH).
+- [ ] Create migration files in `infra/migrations/` (each pair shares a prefix; migrate runs them in order by version number):
   - [ ] `001_users.up.sql` — `users` table (id UUID PK, email, username, password_hash, created_at, updated_at)
-  - [ ] `001_users.down.sql` — drop `users`
+  - [ ] `001_users.down.sql` — `DROP TABLE IF EXISTS users;`
   - [ ] `002_accounts_portfolio.up.sql` — `accounts`, `positions`, `orders`, `trades` tables. Suggested schema: `accounts` (id, user_id, balance, currency, created_at, updated_at); `positions` (id, account_id, symbol, quantity, created_at, updated_at); `orders` (id, account_id, symbol, side, quantity, status, price/type, created_at); `trades` (id, account_id, order_id, symbol, side, quantity, price, executed_at)
-  - [ ] `002_accounts_portfolio.down.sql` — drop all four tables
+  - [ ] `002_accounts_portfolio.down.sql` — drop all four tables in reverse order (e.g. trades → orders → positions → accounts)
   - [ ] `003_historical_prices.up.sql` — `historical_prices` table with composite index on (symbol, timeframe, timestamp)
   - [ ] `003_historical_prices.down.sql` — drop `historical_prices`
-- [ ] Run migrations from repo root: `migrate -path infra/migrations -database "$DATABASE_URL" up` (use `DATABASE_URL` from `.env`)
-- [ ] Verify all tables exist
+- [ ] Run migrations from repo root: ensure `DATABASE_URL` is set (e.g. `source .env` or export from `.env`), then run `migrate -path infra/migrations -database "$DATABASE_URL" up`. On Windows PowerShell use `$env:DATABASE_URL` if you exported from `.env` manually.
+- [ ] Verify all tables exist (e.g. `psql "$DATABASE_URL" -c '\dt'` or pgAdmin).
 
 ---
 
