@@ -1,4 +1,4 @@
-# agent.md — QuantSim Master Context File
+# agents.md — QuantSim Master Context File
 
 This file serves as the **persistent system context** for any LLM assisting in the design, planning, architecture, or implementation of the QuantSim platform.
 
@@ -280,12 +280,17 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 
 ```
 /services
+  /auth
+  /gateway
   /market-data
   /trading-engine
   /backtesting
   /ai-insights
+/pkg
 /frontend
 /infra
+  /docker
+  /migrations
 /docs
 ```
 
@@ -295,7 +300,7 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 
 ## Phase 1 — Foundations
 - Auth system
-- Accounts
+- Accounts (starting balance: $100k simulated per account)
 - Portfolio schema
 - Market data ingestion
 
@@ -360,6 +365,9 @@ When assisting on this project:
 - Emphasize scalability considerations
 - Avoid suggesting CRUD-only designs
 - Provide production-grade patterns
+- Use a consistent JSON error response shape for APIs (e.g. code + message)
+- Prefer idempotent ingestion (e.g. upsert by symbol/timeframe/timestamp) for market data
+- Phase 1: manual/curl verification is sufficient; automated tests are optional or Phase 2+
 
 Always optimize for:
 - Resume differentiation

@@ -274,13 +274,17 @@ Optional:
 
 ```
 /services
+  /auth
+  /gateway
   /market-data
   /trading-engine
   /backtesting
   /ai-insights
+/pkg
 /frontend
 /infra
   /docker
+  /migrations
   /terraform
 /docs
 ```
@@ -289,24 +293,26 @@ Optional:
 
 # Development Roadmap
 
-## Month 1 — Trading Foundations
+Target: ~5–10 hrs/week over ~3–4 months. Each month maps to a phase.
+
+## Month 1 (Phase 1) — Trading Foundations
 - User authentication
 - Account balances
 - Portfolio schema
 - Market data ingestion
 
-## Month 2 — Trading Engine
+## Month 2 (Phase 2) — Trading Engine
 - Order execution
 - Trade history
 - Profit/loss tracking
 - Live portfolio UI
 
-## Month 3 — Backtesting Engine
+## Month 3 (Phase 3) — Backtesting Engine
 - Historical data ingestion
 - Strategy simulator
 - Performance dashboards
 
-## Month 4 — AI Insights + Deployment
+## Month 4 (Phase 4) — AI Insights + Deployment
 - Portfolio analytics
 - AI trade insights
 - Dockerization
@@ -317,7 +323,7 @@ Optional:
 # Deployment Architecture
 
 ## Local
-- Docker Compose
+- Docker Compose; copy `.env.example` to `.env` and set values. Run `docker compose up -d` for Postgres and Redis.
 - Service networking
 
 ## Cloud
@@ -347,6 +353,12 @@ This project showcases:
 - Social trading leagues
 - Copy‑trading systems
 - Mobile app client
+
+---
+
+# Security
+
+Do not commit `.env`; use environment variables or a secrets manager in production. Use HTTPS in production.
 
 ---
 
