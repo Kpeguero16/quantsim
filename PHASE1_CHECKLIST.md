@@ -39,6 +39,16 @@ If you're new to these, here's what they are and how QuantSim uses them.
 
 ---
 
+## Restructuring for testing (future unit tests)
+
+The repo is structured so you can add unit tests later without big refactors. When implementing each service:
+
+- Put **entrypoints** in `cmd/` (e.g. `cmd/server/main.go`) and **business logic** in a service layer that depends on **interfaces** (e.g. `UserStore`, `AccountStore`) so tests can inject mocks.
+- Put unit tests in `*_test.go` next to the code; optional shared helpers in `pkg/testutil/`.
+- See **docs/TESTING_STRUCTURE.md** for the full layout, interface patterns, and Makefile targets.
+
+---
+
 ## Step 1: Repository Scaffolding
 
 - [x] Create directory structure:
