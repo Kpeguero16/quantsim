@@ -368,6 +368,7 @@ When assisting on this project:
 - Use a consistent JSON error response shape for APIs (e.g. code + message)
 - Prefer idempotent ingestion (e.g. upsert by symbol/timeframe/timestamp) for market data
 - Phase 1: manual/curl verification is sufficient; automated tests are optional or Phase 2+
+- When adding or restructuring code, keep it test-ready: separate entrypoints (cmd) from business logic and stores; depend on interfaces for DB/external clients so unit tests can inject mocks. See **docs/TESTING_STRUCTURE.md** for layout and conventions.
 
 Always optimize for:
 - Resume differentiation
