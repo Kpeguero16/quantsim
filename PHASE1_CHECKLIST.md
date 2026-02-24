@@ -55,7 +55,7 @@ If you're new to these, here's what they are and how QuantSim uses them.
   - [x] `docs/`
 - [x] Run `go mod init` in each service directory and in `pkg/`
 - [x] Create root `.gitignore` (`.env`, binaries, `node_modules/`, `tmp/`, `*.exe`)
-- [ ] Create `.env.example` with placeholder keys (see **Concepts: Env files** above):
+- [x] Create `.env.example` with placeholder keys (see **Concepts: Env files** above):
   - **Where:** One file at repo root named exactly `.env.example` (no space before the dot).
   - **Format:** One variable per line, `KEY=value`. Use placeholder values only (e.g. `your_password_here`); never put real secrets in this file.
   - **Variables to include:**
@@ -66,7 +66,7 @@ If you're new to these, here's what they are and how QuantSim uses them.
     - `ALPACA_API_KEY`, `ALPACA_API_SECRET` — from [Alpaca](https://alpaca.markets); in the app these map to headers `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY`.
   - **Optional:** Add short comments with `#` above each variable so others know what to set.
   - **After creating it:** Copy to `.env` (`cp .env.example .env` or duplicate in Explorer) and fill in real values only in `.env`; keep `.env` out of git.
-- [ ] Create `Makefile` with targets (see **Concepts** for why we use Make):
+- [x] Create `Makefile` with targets (see **Concepts** for why we use Make):
   - **What a Makefile is:** A file named `Makefile` at repo root. It defines **targets** (short names) and **recipes** (shell commands). Run with `make <target>` (e.g. `make docker-up`).
   - **Targets to add:**
     - `docker-up` — run `docker compose up -d` to start Postgres and Redis.
