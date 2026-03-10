@@ -90,20 +90,20 @@ The repo is structured so you can add unit tests later without big refactors. Wh
 
 ## Step 2: Docker Compose
 
-- [ ] Create `docker-compose.yml` at repo root (see **Concepts: Docker and Docker Compose** above):
+- [x] Create `docker-compose.yml` at repo root (see **Concepts: Docker and Docker Compose** above):
   - **File format:** YAML — indentation matters (use spaces, typically 2). Top-level key is `services:`; under it you list each container.
-  - [ ] **Postgres 16:**
+  - [x] **Postgres 16:**
     - **Service name:** e.g. `postgres` (you’ll use this as hostname when other containers talk to it; locally use `localhost`).
     - **Image:** `postgres:16`.
     - **Port:** Publish `5432:5432` so you can connect from your machine at `localhost:5432`.
     - **Environment:** Pass `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` from your `.env`. In Compose you can use `env_file: .env` or list each with `environment: POSTGRES_USER: ${POSTGRES_USER}` etc.
     - **Volume:** Use a **named volume** (e.g. `quantsim_pgdata`) mounted to `/var/lib/postgresql/data` so data persists when you run `docker compose down`.
-  - [ ] **Redis 7:**
+  - [x] **Redis 7:**
     - **Image:** `redis:7`.
     - **Port:** `6379:6379` so you can use `localhost:6379` (or `redis://localhost:6379`).
     - **Volume:** Named volume (e.g. `quantsim_redis`) for persistence (optional but recommended).
-  - [ ] **(Optional) pgAdmin:** Image `dpage/pgadmin4`, port `5050:80`, and env vars for login; lets you browse Postgres in a web UI at `http://localhost:5050`.
-- [ ] Run and verify:
+  - [x] **(Optional) pgAdmin:** Image `dpage/pgadmin4`, port `5050:80`, and env vars for login; lets you browse Postgres in a web UI at `http://localhost:5050`.
+- [x] Run and verify:
   - From repo root (with `.env` in place): `docker compose up -d`.
   - Check containers: `docker compose ps` (both should be “Up”).
   - Verify Postgres: `psql "$DATABASE_URL" -c '\dt'` (or use pgAdmin) — no tables yet until migrations run.

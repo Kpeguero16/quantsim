@@ -1,0 +1,53 @@
+# QuantSim — Postgres and Redis for local development.
+# Run from repo root: docker compose up -d (or make docker-up)
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: quantsim-postgres
+    ports:
+      - "5432:5432"
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - quantsim_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: quantsim-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - quantsim_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Optional: pgAdmin at http://localhost:5050 (email/password from env or below)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: quantsim-pgadmin
+    profiles:
+      - tools
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@quantsim.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  quantsim_pgdata:
+  quantsim_redis:
