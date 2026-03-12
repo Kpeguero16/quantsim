@@ -28,7 +28,7 @@ CREATE TABLE orders (
     status TEXT NOT NULL DEFAULT 'pending',
     order_type TEXT NOT NULL DEFAULT 'market',
     limit_price NUMERIC(20, 4),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE trades (

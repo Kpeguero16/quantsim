@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down run-auth run-market-data run-gateway
+.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway
 
 help:
 	@echo "QuantSim Phase 1 targets:"
@@ -10,6 +10,7 @@ help:
 	@echo "  make docker-ps       - List running containers"
 	@echo "  make migrate-up      - Apply database migrations"
 	@echo "  make migrate-down    - Roll back one migration"
+	@echo "  make migrate-force VERSION=N - Clear dirty state (e.g. VERSION=1 then make migrate-up)"
 	@echo "  make run-auth        - Run auth service"
 	@echo "  make run-market-data - Run market-data service"
 	@echo "  make run-gateway     - Run API gateway"
@@ -28,6 +29,9 @@ migrate-up:
 
 migrate-down:
 	migrate -path infra/migrations -database "$$DATABASE_URL" down 1
+
+migrate-force:
+	migrate -path infra/migrations -database "$$DATABASE_URL" force $(VERSION)
 
 run-auth:
 	cd services/auth && go run .
