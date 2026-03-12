@@ -115,16 +115,16 @@ The repo is structured so you can add unit tests later without big refactors. Wh
 
 **What migrations are:** Versioned SQL scripts — `*_up.sql` creates or alters tables; `*_down.sql` reverses that. The migrate CLI tracks which version is applied and runs only new ones. This keeps schema changes repeatable and reversible.
 
-- [ ] Install [golang-migrate CLI](https://github.com/golang-migrate/migrate/tree/master/cmd/migrate) (e.g. `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest`; ensure `$GOPATH/bin` or `$HOME/go/bin` is on your PATH).
-- [ ] Create migration files in `infra/migrations/` (each pair shares a prefix; migrate runs them in order by version number):
-  - [ ] `001_users.up.sql` — `users` table (id UUID PK, email, username, password_hash, created_at, updated_at)
-  - [ ] `001_users.down.sql` — `DROP TABLE IF EXISTS users;`
-  - [ ] `002_accounts_portfolio.up.sql` — `accounts`, `positions`, `orders`, `trades` tables. Suggested schema: `accounts` (id, user_id, balance, currency, created_at, updated_at); `positions` (id, account_id, symbol, quantity, created_at, updated_at); `orders` (id, account_id, symbol, side, quantity, status, price/type, created_at); `trades` (id, account_id, order_id, symbol, side, quantity, price, executed_at)
-  - [ ] `002_accounts_portfolio.down.sql` — drop all four tables in reverse order (e.g. trades → orders → positions → accounts)
-  - [ ] `003_historical_prices.up.sql` — `historical_prices` table with composite index on (symbol, timeframe, timestamp)
-  - [ ] `003_historical_prices.down.sql` — drop `historical_prices`
-- [ ] Run migrations from repo root: ensure `DATABASE_URL` is set (e.g. `source .env` or export from `.env`), then run `migrate -path infra/migrations -database "$DATABASE_URL" up`. On Windows PowerShell use `$env:DATABASE_URL` if you exported from `.env` manually.
-- [ ] Verify all tables exist (e.g. `psql "$DATABASE_URL" -c '\dt'` or pgAdmin).
+- [x] Install [golang-migrate CLI](https://github.com/golang-migrate/migrate/tree/master/cmd/migrate) (e.g. `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest`; ensure `$GOPATH/bin` or `$HOME/go/bin` is on your PATH).
+- [x] Create migration files in `infra/migrations/` (each pair shares a prefix; migrate runs them in order by version number):
+  - [x] `001_users.up.sql` — `users` table (id UUID PK, email, username, password_hash, created_at, updated_at)
+  - [x] `001_users.down.sql` — `DROP TABLE IF EXISTS users;`
+  - [x] `002_accounts_portfolio.up.sql` — `accounts`, `positions`, `orders`, `trades` tables. Suggested schema: `accounts` (id, user_id, balance, currency, created_at, updated_at); `positions` (id, account_id, symbol, quantity, created_at, updated_at); `orders` (id, account_id, symbol, side, quantity, status, price/type, created_at); `trades` (id, account_id, order_id, symbol, side, quantity, price, executed_at)
+  - [x] `002_accounts_portfolio.down.sql` — drop all four tables in reverse order (e.g. trades → orders → positions → accounts)
+  - [x] `003_historical_prices.up.sql` — `historical_prices` table with composite index on (symbol, timeframe, timestamp)
+  - [x] `003_historical_prices.down.sql` — drop `historical_prices`
+- [x] Run migrations from repo root: ensure `DATABASE_URL` is set (e.g. `source .env` or export from `.env`), then run `migrate -path infra/migrations -database "$DATABASE_URL" up`. On Windows PowerShell use `$env:DATABASE_URL` if you exported from `.env` manually.
+- [x] Verify all tables exist (e.g. `psql "$DATABASE_URL" -c '\dt'` or pgAdmin).
 
 ---
 
