@@ -331,6 +331,9 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 - Insight generation
 - Dockerization
 - Cloud deployment
+- Work through **docs/deferred-tuning.md** — timeouts, connection pooling, and
+  other defaults deliberately left unset because the right values depend on
+  traffic shape that only exists once deployed
 
 ---
 
