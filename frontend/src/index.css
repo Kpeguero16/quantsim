@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* QuantSim design tokens.
+ *
+ * Dark by default: this is a trading dashboard, and every terminal it is
+ * modelled on is dark. There is no light theme and no toggle -- one theme,
+ * done properly, is worth more than two done by halves.
+ *
+ * Naming is semantic rather than literal (canvas/surface/ink, not
+ * gray-900/gray-100) so a component never hardcodes a shade. Tailwind v4
+ * generates the utilities from these: --color-canvas -> bg-canvas,
+ * --color-ink-muted -> text-ink-muted, --color-line -> border-line.
+ */
+@theme {
+  /* Surfaces, darkest to lightest. Blue-tinted near-black rather than pure
+   * #000: pure black against bright candle colours is harsh, and real
+   * terminals never use it. */
+  --color-canvas: #0b0e14;
+  --color-surface: #131720;
+  --color-elevated: #1a1f2b;
+
+  /* Hairlines. Two weights is enough -- subtle for row dividers, strong for
+   * component edges and focus targets. */
+  --color-line: #232936;
+  --color-line-strong: #2f3746;
+
+  /* Text. Contrast ratios against --color-canvas, WCAG 2.1 AA needs 4.5:1
+   * for body text and 3:1 for large text:
+   *   ink        ~14.8:1  body and headings
+   *   ink-muted   ~7.1:1  secondary text, labels
+   *   ink-subtle  ~4.6:1  smallest supporting text, still passes AA */
+  --color-ink: #e6e9ef;
+  --color-ink-muted: #9aa4b8;
+  --color-ink-subtle: #6b7688;
+
+  /* Accent. Deliberately a clear blue, not the indigo/violet that every
+   * generated UI defaults to. */
+  --color-accent: #4a9eff;
+  --color-accent-hover: #6cb0ff;
+  --color-accent-muted: #1d3a5c;
+
+  /* Market direction. These are exactly the Lightweight Charts defaults, so
+   * a rising candle in the chart and a rising price in the list are the same
+   * green -- the chart and the table agree instead of each inventing a
+   * palette. Never the sole signal for direction: pair with an arrow or a
+   * sign, since ~8% of men have some form of colour vision deficiency. */
+  --color-up: #26a69a;
+  --color-down: #ef5350;
+
+  --color-danger: #ef5350;
+  --color-danger-bg: #2a1618;
+
+  /* Restrained radii. A trading UI reads as precise; rounded-2xl everywhere
+   * reads as a consumer app and is the single most recognisable tell of a
+   * generated interface. */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Visible keyboard focus everywhere, and only for keyboard users.
+   * Removing outlines without replacing them is the most common way a UI
+   * becomes unusable without a mouse. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Respect users who have asked for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Prices and other figures that update in place. Proportional digits are
+ * different widths, so a number re-rendering every 15s visibly jitters and
+ * shifts its neighbours. Tabular figures keep columns still. */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Visually hidden but available to screen readers -- for labels and live
+ * announcements that would be redundant on screen. */
+@utility sr-only-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
+}

@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway
+.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway run-frontend
 
 help:
 	@echo "QuantSim Phase 1 targets:"
@@ -14,6 +14,7 @@ help:
 	@echo "  make run-auth        - Run auth service"
 	@echo "  make run-market-data - Run market-data service"
 	@echo "  make run-gateway     - Run API gateway"
+	@echo "  make run-frontend    - Run the Vite dev server (localhost:5173)"
 
 docker-up:
 	docker compose up -d
@@ -41,3 +42,6 @@ run-market-data:
 
 run-gateway:
 	cd services/gateway && go run ./cmd/server
+
+run-frontend:
+	cd frontend && npm run dev
