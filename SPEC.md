@@ -1,308 +1,323 @@
-# SPEC — QuantSim API Gateway (Phase 1, Step 7)
+# SPEC — QuantSim Minimal Frontend (Phase 1, Step 8)
 
-Status: **Approved 2026-07-29** — open decisions in §9 delegated to the implementer with the instruction to decide with a security mindset; §2.4, §2.5, and §2.7 below reflect the resulting calls (two of which reverse the original draft).
-Scope: the API Gateway service — reverse proxy, JWT enforcement, CORS. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service), `docs/archive/phase1-step5-market-data/` (historical ingestion), `docs/archive/phase1-step6-market-data-live/` (live polling + Redis) — all complete.
+Status: **Draft 2026-07-29** — awaiting architect review. Four decisions were settled before drafting (§2.1 scope, §2.2 polling, §2.5 token storage, §2.8 charting); the rest are proposed in §2 and listed for accept/reverse in §9.
+Scope: `frontend/` — the minimal React UI that proves Phase 1 works end to end. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service), `docs/archive/phase1-step5-market-data/` (historical ingestion), `docs/archive/phase1-step6-market-data-live/` (live polling + Redis), `docs/archive/phase1-step7-gateway/` (API Gateway) — all complete.
 
 ---
 
 ## 1. Objective
 
-Per `PHASE1_CHECKLIST.md` Step 7, build `services/gateway/` (currently an empty `go.mod`) so that:
+Per `PHASE1_CHECKLIST.md` Step 8, build `frontend/` (currently an empty `.gitkeep`) so that:
 
-- The frontend talks to **one** origin (`localhost:8080`) instead of knowing that auth lives on `:8081` and market data on `:8082`
-- `/auth/*` proxies to the auth service and stays **public** (you can't present a token before you have one)
-- `/market-data/*` proxies to the market-data service and is **JWT-protected** — the gateway validates the access token before the request ever reaches a backend
-- `/trading/*` is wired and protected now, as a placeholder for the Phase 2 trading engine
-- A browser at `http://localhost:5173` (Vite dev server) can call all of it without CORS errors
+- A user can **register** and **log in** against `/auth/*` through the gateway
+- After login, a **dashboard** lists the watchlist symbols with their latest prices from `/market-data/prices/:symbol`
+- Selecting a symbol renders an **OHLC candlestick chart** from `/market-data/history/:symbol`
+- The whole thing talks to **one origin** — `http://localhost:8080` — because Step 7 made that true
 
-This is the last backend piece of Phase 1. It directly unblocks Step 8: the frontend's entire API surface becomes one base URL, and the "register → login → dashboard with prices → chart" E2E in the Phase 1 handoff criteria runs through this service.
+This is the last piece of Phase 1. Completing it satisfies the handoff criteria in `PHASE1_CHECKLIST.md`: *register → login → dashboard with prices → chart for one symbol works*, which unblocks Phase 2 (Trading Engine).
 
-**Out of scope for this spec:** the trading engine itself (Phase 2), WebSocket fan-out from the `prices:{symbol}` pub/sub channels (later phase — the gateway will host it, but not in this step), rate limiting, request logging/metrics, service discovery, TLS, per-route authorization beyond "authenticated or not."
+This step is also the **first real proof of the gateway's CORS configuration**. Step 7's spec (§6) explicitly deferred browser-driven CORS verification to here: `curl` does not enforce CORS, so until a browser at `http://localhost:5173` makes these calls, the hand-written middleware in `services/gateway/internal/middleware/cors.go` is untested against its actual client.
+
+**Out of scope for this spec:** WebSocket streaming (the `prices:{symbol}` pub/sub channels exist and the gateway will host fan-out, but not in this step — same deferral as Step 7 §1); any trading UI (`/trading/*` answers `501` until Phase 2); portfolio/account/positions views (no endpoints exist yet); a design system, dark-mode theming, or responsive mobile layout; production build/deploy of the frontend (Phase 4); frontend automated tests (§6).
 
 ---
 
 ## 2. Decisions
 
-### 2.1 Reverse proxy: stdlib `net/http/httputil.ReverseProxy`, no new dependency
+### 2.1 Scope is exactly the checklist — two screens, nothing more
 
-Go's standard library already does exactly this job — `httputil.NewSingleHostReverseProxy` plus a custom `ErrorHandler` (§2.8) covers every requirement in the checklist. Only `go-chi/chi/v5` gets added to `services/gateway/go.mod` (plus the local `pkg` module for JWT). No proxy library, no service mesh, nothing.
+**Settled by the architect, 2026-07-29.** Login/register, dashboard with prices, one chart. No portfolio view, no live WebSocket prices, no extra pages.
 
-### 2.2 No path rewriting — the gateway forwards the URL path unchanged
+`agents.md` ranks priorities as: resume impact, systems depth, backend complexity, infra exposure, **UI polish last**. The frontend's job in Phase 1 is to *prove the backend works*, not to be a product. Every hour spent here is an hour not spent on the trading engine, which is where the resume signal actually lives. The bar is "an interviewer can see the stack work end to end," not "this looks shipped."
 
-The auth service already serves `/auth/register`; the market-data service already serves `/market-data/prices/{symbol}`. The gateway routes on the same prefix it forwards, so `POST localhost:8080/auth/register` → `POST localhost:8081/auth/register`, byte-identical path.
+### 2.2 Live prices by HTTP polling, not WebSockets
 
-This is a deliberate choice against the common "strip the prefix at the edge" pattern (`/market-data/prices/AAPL` → `/prices/AAPL`). Keeping paths identical means a backend service behaves the same whether you curl it directly on `:8082` or through the gateway on `:8080` — which is exactly what makes the existing Step 5/6 manual verification commands still valid and debugging one layer at a time possible. The cost is that each service "owns" its prefix in its own router; that's already true today.
+**Settled by the architect, 2026-07-29.** The dashboard polls `GET /market-data/prices/:symbol`.
 
-### 2.3 Downstream URLs from env, with working localhost defaults (not fail-fast)
+The market-data service already publishes to Redis `prices:{symbol}` pub/sub channels (Step 6), and streaming that to the browser is the more impressive story. But the gateway does not host WebSocket fan-out yet, and building it is *backend* work that Step 7's spec (§1) deliberately deferred to a later phase. Pulling it into Step 8 would blow past "minimal frontend" into "new gateway feature," and it would land without its own spec. Polling is ~10 lines and is honestly labelled as a Phase 1 stopgap.
 
-`AUTH_SERVICE_URL` (default `http://localhost:8081`), `MARKET_DATA_SERVICE_URL` (default `http://localhost:8082`), `TRADING_SERVICE_URL` (no default — see §2.6). `PORT` defaults to `8080`.
+**Poll interval: 15 seconds**, matched to the backend poller's own 10–15s cadence. Polling faster only burns requests against a Redis key that has not changed. Seven watchlist symbols → seven requests per tick, which is fine against a local gateway.
 
-Auth and market-data fail-fast on their required env because those are secrets or infra addresses with no sane default. Service URLs in a local-dev monorepo *do* have a sane default, and defaulting them means `make run-gateway` works with no extra setup. `JWT_SECRET` stays fail-fast — it's a secret, and a gateway that silently started with an empty signing key would accept forged tokens.
+### 2.3 One origin, one base URL, from `VITE_API_BASE_URL`
 
-All three URL vars get added to `.env.example` as documentation, commented, with the localhost values.
+Everything goes to `http://localhost:8080`. The frontend never learns that auth is on `:8081` and market-data on `:8082` — that was the entire point of Step 7.
 
-### 2.4 The gateway is the only place JWT is enforced — so every backend binds to loopback
+`VITE_API_BASE_URL` defaults to `http://localhost:8080` when unset, so `npm run dev` works with no setup. It goes in `frontend/.env.example` (Vite only exposes `VITE_`-prefixed vars to client code, and `frontend/.env` is already covered by the root `.gitignore`). It is **not** added to the root `.env.example` — that file is consumed by the `Makefile` and the Go services; a Vite variable there would be misleading.
 
-The market-data service has no auth of its own and this spec doesn't add any. Anyone who can reach `:8082` directly bypasses the gateway entirely.
+### 2.4 Vite must run on port 5173 — the gateway's CORS origin is hardcoded
 
-The original draft accepted that on the grounds of "it's all localhost anyway, revisit in Phase 4." **That premise was false.** `services/auth/cmd/server/main.go:43` and `services/market-data/cmd/server/main.go:66` both call `http.ListenAndServe(":"+port, ...)`, and a bare `:port` binds `0.0.0.0` — every interface. On any shared network (campus wifi, a coffee shop), `:8082` is today a fully open market-data API and `:8081` is an open user-registration endpoint. That is a present exposure, not a Phase 4 one.
+`services/gateway/cmd/server/main.go:18` sets `allowedOrigin = "http://localhost:5173"` as a constant, deliberately (Step 7 §2.7: "a CORS origin is not a knob"). Vite's default dev port is 5173, so this works out of the box — but if 5173 is occupied Vite silently falls back to 5174 and **every API call will fail CORS**.
 
-So this spec makes the premise true instead of deferring it: all three services default their listen address to `127.0.0.1`, with a `BIND_ADDR` env override for the day they're containerized and need `0.0.0.0` behind a real network boundary. Two lines per service. Only the gateway is meant to be reachable, and after this change only the gateway *is* — which is what makes "auth is enforced at the gateway" an actual boundary rather than a convention.
+So: `vite.config.ts` sets `server: { port: 5173, strictPort: true }`. Failing loudly on a busy port is much better than a confusing wall of CORS errors that sends you debugging the gateway when the real problem is a stale dev server.
 
-Service-to-service authentication (mTLS, signed internal tokens) remains a Phase 4 concern. Loopback binding is the correct Phase 1 control: it costs nothing and closes the hole that exists right now.
+The gateway allows methods `GET, POST, OPTIONS` and headers `Authorization, Content-Type` (`cors.go`). Every call this spec makes fits inside that. Any future `PUT`/`DELETE`/`PATCH` needs a gateway change first.
 
-### 2.5 Identity forwarding: strip inbound `X-User-ID`, inject the validated one
+### 2.5 Both tokens live in memory only — nothing is persisted
 
-`pkg/auth.RequireAuth` puts the token's subject on the Go request *context* — which vanishes at the process boundary. A proxied backend can't read it. So the gateway:
+**Settled by the architect, 2026-07-29.** Access token and refresh token are held in React state (an `AuthContext`), never written to `localStorage`, `sessionStorage`, or a cookie.
 
-1. **Deletes any client-supplied `X-User-ID` header on every route**, as the outermost middleware — before routing, before CORS, before auth.
-2. Sets `X-User-ID` from the validated JWT claims, on authenticated routes only, after `RequireAuth` passes.
-3. Leaves the `Authorization` header intact on the forwarded request, so a backend that wants to re-validate independently can.
+The checklist left this open ("in memory or localStorage/sessionStorage"). Persisting the 7-day refresh token makes it readable by any injected script — and this is a *fintech* app, where the demo story is that the author thinks about credential handling. In-memory storage means an XSS payload has to win a race against a live page rather than simply reading a key out of storage at leisure.
 
-**The strip is global, and that's the correction that matters.** The draft scoped it to the authenticated group, which leaves a hole: `/auth/*` is public *and proxied*, so the day the auth service reads `X-User-ID` for anything at all, an unauthenticated caller sets it to whatever they like. A header the system treats as trusted identity must be scrubbed at the very edge, unconditionally — not at the point where it happens to be consumed. Injection stays narrow; stripping goes wide.
+**Accepted cost, stated plainly: a page refresh logs you out.** For a local demo that is a non-issue; for a real product you would move to a `HttpOnly; Secure; SameSite` refresh cookie, which is a *backend* change (the gateway currently sets no CORS credentials, so cookies are not even possible today). The spec records this as the known upgrade path, not as an oversight.
 
-Nothing consumes `X-User-ID` yet — market-data is user-agnostic. It's here because the Phase 2 trading engine fundamentally needs "who is placing this order," and adding it now costs ~5 lines and one test, while retrofitting later means touching the gateway *and* whatever assumed it wasn't there.
+Corollary: **no token is ever logged**, and the access token appears only in the `Authorization` header.
 
-### 2.6 `/trading/*` returns `501 Not Implemented`, it does not proxy into the void
+### 2.6 The API client refreshes on 401, once, with a shared in-flight promise
 
-There is no trading service — `services/trading-engine/` is an empty placeholder. Two options: point the proxy at a URL where nothing is listening (every request becomes a confusing connection-refused `502`), or have the gateway answer `501` in the JSON error shape.
+Access tokens live 15 minutes (`services/auth/internal/service/auth.go:15`); refresh tokens 7 days. A dashboard left open past 15 minutes will start 401-ing. With no persistence (§2.5) the refresh token is still in memory, so the client can recover silently.
 
-This spec picks `501`, with the route still mounted **behind the JWT middleware** so the auth wiring is real and testable today. Swapping in a real proxy in Phase 2 is a one-line change in the router. `TRADING_SERVICE_URL` is not read in this step.
+`src/api/client.ts` wraps `fetch` and, on a `401`:
+1. Calls `POST /auth/refresh` with the in-memory refresh token
+2. On success, stores the new pair and **retries the original request exactly once**
+3. On failure, clears auth state and drops the user back to the login screen
 
-### 2.7 CORS: hand-written middleware, one allowed origin, no credentials
+Three details that are easy to get wrong and are therefore requirements, not suggestions:
 
-The checklist says "configure CORS for `localhost:5173`." `github.com/go-chi/cors` would do it, but that's a new dependency for a ~35-line problem with exactly one allowed origin, and `agents.md` requires sign-off on new deps.
+- **A 401 from `/auth/refresh` itself must never trigger another refresh.** Otherwise an expired refresh token produces an infinite loop. The refresh call bypasses the interceptor.
+- **Retry exactly once.** A second 401 after a successful refresh means something else is wrong; retrying again just loops.
+- **Concurrent 401s share one refresh.** The dashboard fires seven price requests per tick, so an expiry mid-tick 401s all seven at once. Without a shared in-flight promise that is seven parallel refresh calls. The client holds a module-level `Promise | null` that all callers await.
 
-"Don't hand-roll security code" is a good default, but it earns its keep against *cryptographic* primitives, where subtle errors are invisible. CORS is a handful of response headers, and the four ways it goes wrong are well-known and enumerable:
+Verified while drafting: `Service.Refresh` (`services/auth/internal/service/auth.go:91`) is **stateless** — it validates the signature, checks `TokenType == refresh`, and confirms the user still exists. There is no token store and no rotation, so the old refresh token stays valid until it expires and concurrent refreshes are harmless. The shared promise is therefore an efficiency measure, not a correctness one. **If Phase 2 adds refresh-token rotation or revocation, this becomes a correctness requirement** — noted here so the change is not made blind.
 
-| Failure mode | How this implementation avoids it |
-|---|---|
-| Reflecting an attacker-supplied `Origin` | Exact string equality against one compile-time constant; the request's `Origin` is compared, never echoed unvalidated |
-| `*` combined with `Allow-Credentials` | Neither is ever sent |
-| Missing `Vary: Origin` → a shared cache serves one origin's response to another | `Vary: Origin` set unconditionally, on every response, match or not |
-| Accepting the literal `null` origin (sandboxed iframes, `file://`) | Falls out of exact-match — `null` simply isn't the constant |
+### 2.7 `404 price_not_cached` is a normal state and renders as `—`, not an error
 
-Thirty-five lines a reviewer confirms in one screen beats a config surface that has to be trusted. Concretely:
+`GET /market-data/prices/:symbol` returns `404` with code `price_not_cached` when Redis has no entry for that symbol (`services/market-data/internal/handler/market_data.go:85`). This happens routinely: markets closed, the poller only just started, or a symbol Alpaca did not return in the last snapshot.
 
-- `Access-Control-Allow-Origin: http://localhost:5173` — echoed only when the request's `Origin` matches exactly. Never `*`.
-- `Access-Control-Allow-Methods: GET, POST, OPTIONS`
-- `Access-Control-Allow-Headers: Authorization, Content-Type`
-- `Access-Control-Max-Age: 300` (cuts preflight chatter in dev)
-- `Vary: Origin` — **always**, including on non-matching origins and non-CORS requests.
-- Preflight `OPTIONS` is answered `204` by the middleware and **never proxied** downstream.
-- **No** `Access-Control-Allow-Credentials`. QuantSim's JWT rides in the `Authorization` header, not a cookie, so credentialed CORS is unnecessary — and it's the setting that turns a lax origin check into an account-takeover primitive.
+Treating that as an error would make the dashboard look broken every evening and all weekend. So the price cell renders an em-dash and the row stays healthy. Only a non-404 failure surfaces as an error state.
 
-The allowed origin is a constant, not env-configurable, for the same reason the poll interval was (Step 6 §2.3) — Phase 1 doesn't need the knob. If deployment needs it, it becomes `CORS_ALLOWED_ORIGIN` later.
+This is the single most likely thing to get wrong in this step, which is why it has its own section.
 
-**Ordering matters:** CORS middleware runs *before* `RequireAuth`. A `401` from an unauthenticated XHR still needs CORS headers, or the browser reports an opaque network error instead of the real 401 and you debug the wrong thing.
+### 2.8 Charting: TradingView Lightweight Charts
 
-### 2.8 Upstream failure → `502` in the standard JSON error shape
+**Settled by the architect, 2026-07-29.** `lightweight-charts` over Recharts.
 
-`httputil.ReverseProxy`'s default `ErrorHandler` writes a bare `502` with an empty body and logs to stderr — which violates `agents.md`'s standing "consistent JSON error response shape" rule and would give the frontend nothing to display. The gateway sets a custom `ErrorHandler` returning:
+It is purpose-built for financial series, has a native candlestick type, weighs ~45KB, and looks like a trading terminal — which is exactly the fintech realism `agents.md` optimizes for. Recharts has no candlestick primitive; OHLC has to be faked with custom bar shapes, which is more code for a worse result.
 
-```json
-{"code": "upstream_unavailable", "message": "market-data service is unavailable"}
+Two API facts confirmed against the current v5 docs while drafting, because they changed from v4 and most examples online are stale:
+
+- Series are created with **`chart.addSeries(CandlestickSeries, options)`** — the v4 `chart.addCandlestickSeries(options)` method is gone.
+- `Time` accepts a **business-day string** like `'2026-07-28'`. Our bars are daily, so mapping the API's RFC3339 `timestamp` to its `YYYY-MM-DD` prefix is the correct conversion — not a UTC timestamp, which would introduce timezone drift on a daily series.
+
+Lightweight Charts requires data **sorted ascending by time with no duplicate timestamps** or it throws. The mapping step sorts and de-duplicates rather than trusting the API's ordering.
+
+### 2.9 No router — two states behind a conditional render
+
+There are exactly two views: logged out and logged in. `react-router-dom` earns its place at three-plus routes with deep links and history; here it is a dependency, a `<BrowserRouter>`, and route config for something `authState.user ? <Dashboard/> : <LoginPage/>` does in one line.
+
+Consequence accepted: no URL for "the AAPL chart," no browser back button between views. Neither is in the checklist. When Phase 2 adds trading, positions, and backtest views, adding the router is a contained change.
+
+### 2.10 Dependency budget: four runtime packages
+
+`react`, `react-dom`, `lightweight-charts`, and `tailwindcss` + `@tailwindcss/vite` (build-time). Plus what `npm create vite` scaffolds for TypeScript and linting.
+
+**No** state library (two screens of `useState`), **no** data-fetching library (§2.6's wrapper is ~60 lines and the retry semantics are custom anyway), **no** component kit (Tailwind utilities are the whole point), **no** form library (two forms, four fields). Anything beyond this list needs sign-off — same rule Step 7 ran under.
+
+### 2.11 Tailwind v4 via the Vite plugin
+
+Verified against current docs while drafting, because v4's setup differs materially from v3 and most recalled knowledge describes v3:
+
+```
+npm install tailwindcss @tailwindcss/vite
+```
+```ts
+// vite.config.ts
+import tailwindcss from '@tailwindcss/vite'
+export default defineConfig({ plugins: [react(), tailwindcss()] })
+```
+```css
+/* src/index.css */
+@import "tailwindcss";
 ```
 
-with `502`. This is the error the frontend will actually hit most often in dev (forgot to start a backend), so it's worth making legible.
+There is **no `tailwind.config.js`** and **no PostCSS config** in v4 — if the implementation produces either, it has followed a v3 guide and is wrong. Theme customization, if ever needed, happens in CSS via `@theme`.
 
-### 2.9 Gateway `/healthz` is shallow — it does not check downstreams
+### 2.12 Client-side validation is UX only — and the backend currently validates less than you'd expect
 
-`GET /healthz` returns `200 ok` if the gateway process is up, matching auth's and market-data's existing `/healthz`. No fan-out health aggregation. A gateway that reports unhealthy because a backend is down conflates two different failures, and nothing in Phase 1 consumes health checks anyway. `/healthz` is not proxied and not authenticated.
+**Finding, surfaced while drafting this spec.** The auth service's only registration validation is a non-empty check: `services/auth/internal/handler/auth.go:28` rejects blank `email`, `username`, or `password` with `400 invalid_request`, and that is all. There is **no password minimum length** and **no email format validation** anywhere in the handler or service layer — `Register` (`auth.go:36`) goes straight from the request to `bcrypt.GenerateFromPassword`. A one-character password and `email = "x"` are both accepted today.
 
-### 2.10 Gateway follows the `cmd/server` + `internal/` layout; `make run-gateway` gets fixed
+That is a real gap for a fintech app, but fixing it is a **backend change and therefore out of scope for this step** (§8, "Ask first"). It needs its own small spec against the auth service. It is recorded in §9 for you to schedule rather than silently absorbed into frontend work.
 
-The Makefile currently has `run-gateway: cd services/gateway && go run .` — written before any layout existed. Auth and market-data both use `cmd/server/main.go` with logic in `internal/`, per `docs/TESTING_STRUCTURE.md`. The gateway matches them, and the Makefile target changes to `go run ./cmd/server`. Small, but three services with two conventions is the kind of inconsistency that costs more later than it saves now.
+For Step 8, the consequence is what the form may claim:
 
-### 2.11 Proxy transport: explicit timeouts, shared transport
+- The form applies light client-side checks (non-empty, a basic email shape, a suggested 8-character minimum) purely for **fast feedback**.
+- It must **not** present those as security guarantees, because the server does not enforce them — anyone posting directly to the gateway bypasses the form entirely.
+- **The server's response is authoritative.** On rejection, display the backend's `{code, message}` verbatim rather than a client-invented message. Codes to expect: `invalid_request` (400), `duplicate_user` (409), `invalid_credentials` (401 on login).
 
-One `http.Transport` shared by both proxies (connection pooling is the whole point), with `ResponseHeaderTimeout: 30s` and `DialContext` timeout `5s`. Without a response-header timeout, a hung backend holds a gateway goroutine and a client connection indefinitely. No overall request timeout — that would break any future streaming/SSE response, and 30s-to-first-header is the meaningful bound here.
-
-### 2.12 Gateway server: `ReadHeaderTimeout`, and a minimum `JWT_SECRET` length
-
-Two edge-specific hardening items the draft missed:
-
-- **`http.Server{ReadHeaderTimeout: 10s}` instead of bare `http.ListenAndServe`.** The gateway is the only process meant to accept outside connections (§2.4), and `ReadHeaderTimeout` is the specific mitigation for Slowloris — a client that opens connections and dribbles header bytes forever to exhaust the accept pool. Auth and market-data keep their plain `ListenAndServe`; behind loopback they aren't reachable by an attacker who could mount it.
-- **Reject `JWT_SECRET` shorter than 32 bytes at startup**, via a small exported helper in `pkg/auth` used by both the gateway and the auth service. HS256's security reduces entirely to secret entropy, and a short one is offline-brute-forceable from a single captured token — after which an attacker mints tokens the gateway accepts as valid indefinitely. 32 bytes matches HMAC-SHA256's block-size-appropriate key length and what `openssl rand -base64 32` produces, which is what `.env.example` already tells you to use.
-
-**Operational note:** if the current `.env` holds a `JWT_SECRET` under 32 characters, auth and the gateway will refuse to start until it's rotated. That's intended, but it's a startup-breaking change rather than a silent one — rotating also invalidates any tokens already issued, which for a dev database with test users is a non-event.
+One edge worth knowing: bcrypt errors on inputs over 72 bytes, and `Register` propagates that as a generic error, so a very long password surfaces as a `500` rather than a `400`. The form's max-length attribute avoids tripping it. That, too, is a backend fix, not a frontend one.
 
 ---
 
 ## 3. Commands
 
-| Command | Purpose |
-|---|---|
-| `make docker-up` / `make docker-down` | Start/stop Postgres + Redis |
-| `make run-auth` (terminal 1) | Auth service on `:8081` |
-| `make run-market-data` (terminal 2) | Market-data service on `:8082` |
-| `make run-gateway` (terminal 3) | Gateway on `:8080` |
-| `cd services/gateway && go test ./...` | Run unit tests |
-| `cd services/gateway && go mod tidy` | Sync deps |
-
-Manual verification — the checklist's "all backend requests work through the single gateway port":
+Prerequisites — the full backend stack running (Node 24.5.0 / npm 11.18.0 confirmed present):
 
 ```bash
-curl -i localhost:8080/healthz                                    # 200 ok, gateway itself
-
-# /auth/* is public and proxied
-curl -s -X POST localhost:8080/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"a@b.com","username":"a","password":"password123"}'   # 201 + token pair
-
-TOKEN=$(curl -s -X POST localhost:8080/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"a@b.com","password":"password123"}' | jq -r .access_token)
-
-curl -i localhost:8080/auth/me -H "Authorization: Bearer $TOKEN"  # 200 (auth service validates)
-
-# /market-data/* is gateway-protected
-curl -i localhost:8080/market-data/symbols                        # 401, JSON error shape, never reaches :8082
-curl -i localhost:8080/market-data/symbols -H "Authorization: Bearer $TOKEN"     # 200
-curl -i localhost:8080/market-data/prices/AAPL -H "Authorization: Bearer $TOKEN" # 200 (poller has ticked)
-
-# spoofing is blocked
-curl -i localhost:8080/market-data/symbols -H "X-User-ID: someone-else"          # 401 — no token, header ignored
-
-# placeholder + CORS
-curl -i localhost:8080/trading/orders -H "Authorization: Bearer $TOKEN"          # 501
-curl -i -X OPTIONS localhost:8080/market-data/symbols \
-  -H 'Origin: http://localhost:5173' \
-  -H 'Access-Control-Request-Method: GET'                                        # 204 + CORS headers + Vary: Origin
-curl -i -X OPTIONS localhost:8080/market-data/symbols \
-  -H 'Origin: http://evil.example' \
-  -H 'Access-Control-Request-Method: GET'                                        # no Allow-Origin echoed (§2.7)
-
-# upstream down (stop market-data, then)
-curl -i localhost:8080/market-data/symbols -H "Authorization: Bearer $TOKEN"     # 502 + JSON error shape
-
-# §2.4 — backends must not be reachable from the network
-lsof -nP -iTCP:8081 -sTCP:LISTEN   # 127.0.0.1:8081, not *:8081
-lsof -nP -iTCP:8082 -sTCP:LISTEN   # 127.0.0.1:8082, not *:8082
+make docker-up          # Postgres + Redis
+make run-auth           # :8081
+make run-market-data    # :8082  (also starts the price poller)
+make run-gateway        # :8080
+make run-frontend       # :5173  (new target, this step)
 ```
 
-Note `JWT_SECRET` must be **identical** for the auth service and the gateway — both read it from the same `.env`, so this is automatic locally, but it's the single most likely misconfiguration when these move to separate deploy targets.
+If the price cells all show `—`, the poller has not populated Redis yet. Confirm with:
+
+```bash
+redis-cli GET price:AAPL
+# and seed history if the chart is empty:
+curl -X POST localhost:8080/market-data/ingest \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
+```
+
+Manual E2E (the actual acceptance test for this step — §6):
+
+1. Open `http://localhost:5173` → login screen, no console errors
+2. Register a new user → lands on the dashboard
+3. Dashboard lists all seven watchlist symbols; prices populate (or show `—` when markets are closed)
+4. Select a symbol → candlestick chart renders
+5. Wait ~15s → prices tick
+6. Open DevTools → Network: every request goes to `localhost:8080`, carries `Authorization: Bearer …`, and has no CORS error
+7. Reload the page → back to the login screen (§2.5, expected)
+8. Log out → back to the login screen, no stale data
+
+The 15-minute refresh path (§2.6) is slow to test by waiting. Force it by restarting the auth service with a different `JWT_SECRET`, or temporarily lowering `AccessTokenTTL` — whichever is done, do it during the checkpoint and note the result rather than marking the path "probably fine."
 
 ---
 
 ## 4. Project structure
 
-Existing, reused as-is (this spec writes no new JWT code):
+Existing, consumed but not modified (this spec writes **no Go code**):
+
 ```
-pkg/auth/
-  jwt.go                          # ValidateToken, GenerateToken, Claims{TokenType, RegisteredClaims}
-  middleware.go                   # RequireAuth(secret), UserIDFromContext(ctx)
+services/gateway/   # single origin :8080 — /auth/* public, /market-data/* JWT-gated
+services/auth/      # /auth/register, /auth/login, /auth/refresh, /auth/me
+services/market-data/  # /market-data/symbols, /history/{symbol}, /prices/{symbol}
 ```
 
 New, to be created by this spec:
+
 ```
-services/gateway/
-  cmd/server/main.go              # env load (JWT_SECRET fail-fast + length check, URLs defaulted),
-                                  #   shared transport, proxies, router, http.Server w/ ReadHeaderTimeout (§2.12)
-  internal/proxy/
-    proxy.go                      # New(target *url.URL, transport http.RoundTripper, serviceName string) *httputil.ReverseProxy
-                                  #   — sets ErrorHandler → 502 JSON (§2.8); no path rewriting (§2.2)
-    proxy_test.go                 # httptest backend: path/method/body/header forwarding; dead upstream → 502 JSON
-  internal/middleware/
-    cors.go                       # CORS(allowedOrigin string) — preflight short-circuit, exact-match, Vary: Origin (§2.7)
-    cors_test.go                  # preflight 204 + headers; simple request passthrough; non-matching origin; Vary always
-    identity.go                   # StripUserID() — global, outermost; InjectUserID() — authenticated routes only (§2.5)
-    identity_test.go              # injection after auth; inbound spoof header stripped on an unauthenticated route
-  internal/handler/
-    router.go                     # chi: StripUserID → CORS → /healthz, /auth/* public proxy,
-                                  #   /market-data/* + /trading/* behind RequireAuth + InjectUserID
-    router_test.go                # route wiring, 401 without token, 200 with, 501 on /trading/*
-    errors.go                     # ErrorResponse{Code,Message} + WriteError — third copy, see §7
+frontend/
+  index.html
+  package.json
+  tsconfig*.json
+  vite.config.ts             # react + tailwindcss plugins; port 5173, strictPort (§2.4, §2.11)
+  .env.example               # VITE_API_BASE_URL=http://localhost:8080 (§2.3)
+  src/
+    main.tsx                 # mount, <AuthProvider>
+    index.css                # @import "tailwindcss";  (§2.11)
+    App.tsx                  # authState.user ? <Dashboard/> : <LoginPage/>  (§2.9)
+    api/
+      client.ts              # fetch wrapper: base URL, bearer, {code,message} parsing,
+                             #   401 → shared-promise refresh → retry once (§2.6)
+      types.ts               # TokenPair, MeResponse, Bar, HistoryResponse, Price, SymbolsResponse
+                             #   — mirrors the Go json tags exactly (§5)
+    auth/
+      AuthContext.tsx        # in-memory tokens + user; login/register/logout/refresh (§2.5)
+      LoginPage.tsx          # login + register, one screen, mode toggle (§2.12)
+    market/
+      Dashboard.tsx          # symbol list + 15s price poll + selection state (§2.2)
+      PriceList.tsx          # rows; 404 price_not_cached → "—" (§2.7)
+      CandlestickChart.tsx   # lightweight-charts v5; bars → business-day strings (§2.8)
 ```
 
-Modified elsewhere (§2.4, §2.12):
+Modified elsewhere:
+
 ```
-pkg/auth/jwt.go                              # + exported minimum-secret-length check
-services/auth/cmd/server/main.go             # BIND_ADDR (default 127.0.0.1); adopt secret-length check
-services/market-data/cmd/server/main.go      # BIND_ADDR (default 127.0.0.1)
+Makefile              # + run-frontend target
+PHASE1_CHECKLIST.md   # Step 8 boxes checked at close-out
 ```
 
-`go.work` gains `./services/gateway`. `services/gateway/go.mod` gains `github.com/go-chi/chi/v5` and `github.com/kpeguero/quantsim/pkg` with `replace ... => ../../pkg`, matching auth's go.mod exactly.
-
-`Makefile`: `run-gateway` recipe changes to `go run ./cmd/server` (§2.10).
-`.env.example`: gains a commented "Service URLs (gateway)" block and `BIND_ADDR` (§2.3, §2.4).
+The root `.gitignore` already covers `node_modules/` and `.env` (Step 1). `frontend/` is not a Go module and does not touch `go.work`.
 
 ---
 
 ## 5. Code style / conventions
 
-- **Layering:** the gateway has no service/store layer to speak of — it's middleware → proxy. The equivalent discipline here is that `internal/handler/router.go` composes middleware and proxies but contains no proxy or CORS *logic* itself; both live in their own testable packages.
-- **Errors:** same JSON shape as auth and market-data, `{"code": "...", "message": "..."}`. Codes used by this service: `invalid_token` (401 — emitted by `pkg/auth.RequireAuth`, already implemented), `upstream_unavailable` (502), `not_implemented` (501).
-- **Router:** `go-chi/chi/v5`, `r.Handle("/auth/*", proxy)` style prefix mounts — the proxy handles the whole subtree, chi does not need to know the backend's individual routes. That's the point of §2.2.
-- **Middleware order (fixed, and load-bearing):** `StripUserID` → `CORS` → (route group) → `RequireAuth` → `InjectUserID` → proxy. `StripUserID` is outermost so no route can ever receive a client-set identity header (§2.5); CORS sits outside `RequireAuth` so a `401` still carries CORS headers, otherwise the browser surfaces an opaque network error instead of the real status (§2.7).
-- **Logging:** `log.Printf` on startup (port, resolved backend URLs) and inside the proxy `ErrorHandler`. No request logging middleware in Phase 1. **Never log the `Authorization` header, a raw token, or `JWT_SECRET`.**
-- **New dependencies beyond `go-chi/chi/v5` require sign-off first** — none expected; the proxy, CORS, and JWT pieces are all stdlib or existing `pkg/`.
+- **Layering mirrors the backend's discipline:** `api/client.ts` owns transport (base URL, auth headers, error parsing, retry) and nothing above it calls `fetch` directly. Components own rendering. `AuthContext` owns credential state. A component that does its own `fetch` has broken the layering the same way a Go handler doing its own SQL would.
+- **Types mirror the Go structs exactly** — `snake_case` field names as they appear on the wire (`access_token`, not `accessToken`). No camelCase remapping layer; it is one more place for a typo to hide, and matching the wire makes the two sides diffable by eye. Source of truth: `services/auth/internal/service/types.go` and `services/market-data/internal/service/types.go`.
+- **Errors:** one `ApiError { status, code, message }` thrown by the client, built from the backend's `{code, message}` body. Every 4xx/5xx path in the stack returns that shape — including the gateway's 404/405 (`router.go:35-41`) — so one parser covers everything. Display `message`; branch on `code` (that is what `price_not_cached` is for).
+- **Styling:** Tailwind utilities inline. No CSS modules, no styled-components, no `@apply` soup. Dark UI, since it is a trading dashboard.
+- **State:** `useState` / `useEffect` / one context. Polling lives in a `useEffect` with a **cleanup that clears the interval** — a leaked interval that keeps firing after logout would send authenticated requests with a cleared token.
+- **Logging:** no `console.log` of tokens, headers, or full auth responses (§2.5). Errors may log `code` and `message`.
+- **New dependencies beyond §2.10 require sign-off first.**
 
 ---
 
 ## 6. Testing strategy
 
-The gateway is unusually well-suited to unit testing — every dependency is an HTTP endpoint, and `httptest` fakes those natively. No mocking library, hand-written fakes only, matching `docs/TESTING_STRUCTURE.md`.
+**No frontend test framework in this step** — no Vitest, no Testing Library, no Playwright. This is a deliberate deviation and is called out for explicit approval in §9.
 
-- **Proxy (`internal/proxy`):** spin up an `httptest.Server` as the "backend," point a proxy at it, assert the backend received the exact path, method, body, and `Authorization` header (§2.2). Separate case: target a closed port, assert `502` + the JSON error body (§2.8).
-- **CORS (`internal/middleware`):** `OPTIONS` preflight with a matching `Origin` → `204` + all four headers, and the wrapped handler was **not** called; a simple `GET` with matching `Origin` → headers present and handler called; a non-matching `Origin` → no `Allow-Origin` header echoed.
-- **Identity (`internal/middleware`):** with a valid token on the context, `X-User-ID` equals the subject; with a client-supplied `X-User-ID` **and no valid token**, the header never reaches the backend (§2.5) — this is the spoofing regression test and is the one that matters most.
-- **Router (`internal/handler`):** full stack against `httptest` backends — `/auth/*` reachable with no token; `/market-data/*` → `401` + JSON shape with no token, `200` with a token generated by `pkg/auth.GenerateToken`; `/trading/*` → `501`; `/healthz` → `200` without touching any backend.
-- **Not in scope:** real cross-service integration tests (the §3 curl sequence is the real-dependency proof, per `agents.md`'s "Phase 1: manual/curl verification is sufficient"), load/concurrency testing, browser-driven CORS verification (Step 8's frontend is the real proof there).
-- `go test ./...` passes before any checkpoint is marked done.
+The reasoning: `agents.md` states *"Phase 1: manual/curl verification is sufficient; automated tests are optional or Phase 2+"*, and the checklist's stated verification for Step 8 is the manual end-to-end run. Steps 4–7 all shipped Go unit tests because they were testing *logic* — token validation, CORS matching, identity stripping — where a test encodes a security invariant. Step 8 is two screens of glue over an already-tested API; standing up a test runner plus a DOM environment to assert that a list renders is scope the checklist does not ask for, against 3–5 hrs/week.
+
+**The cost, stated so the decision is informed:** the two pieces here that *do* hold real logic — the 401-refresh-retry in `client.ts` (§2.6) and the bar-to-candlestick mapping in §2.8 — are exactly the kind of thing unit tests catch and manual clicking does not. Both get explicit manual verification steps in their checkpoints instead (§3 step 8 for refresh; a visual check against known OHLC values for the mapping). If either turns out fiddly during implementation, adding Vitest for those two modules alone is the right call and I will flag it rather than proceed untested.
+
+**What does get verified, at every checkpoint:**
+- `npm run build` passes — TypeScript compiles with no errors. This is the type-level regression net and is non-negotiable.
+- `npm run lint` passes on the scaffolded ESLint config.
+- The §3 manual E2E sequence runs clean against the live stack.
+- Browser DevTools shows no CORS errors and no failed requests — the real proof of Step 7's CORS middleware (§1).
 
 ---
 
-## 7. Resolved: the third copy of `errors.go` stays
+## 7. Note: this step is the browser-side proof Step 7 deferred
 
-Step 5's spec (§7) flagged that auth's `ErrorResponse`/`WriteError` was duplicated rather than extracted into `pkg/`, and the call was "leave duplicated, two data points isn't enough." This step makes it **three**, which is the usual trigger to extract.
+Step 7 §6 listed "browser-driven CORS verification" as out of scope with the note *"Step 8's frontend is the real proof there."* This is that step. If the CORS middleware has a defect — a missing header on the preflight, a `Vary` omission, an origin mismatch — it surfaces here as a browser error, not in Go tests.
 
-**Decision: still defer, narrowly.** Extracting `pkg/httputil` means editing two working, tested services for a ~15-line move, inside a step whose whole job is adding a third service — it mixes a refactor into a feature diff and makes both harder to review. Better as its own mechanical commit once Step 7 lands. Security-neutral either way; nothing about the duplication affects the error shape's correctness.
+If that happens, **the fix belongs in the gateway, not worked around in the frontend.** Disabling CORS, proxying through Vite's dev server to dodge it, or relaxing the origin check would hide a real bug in a security control. Vite's `server.proxy` in particular is tempting and wrong: it would make the browser same-origin and leave the gateway's CORS untested, which defeats the purpose of this step.
 
 ---
 
 ## 8. Boundaries
 
 **Always do:**
-- Strip inbound `X-User-ID` globally, as the outermost middleware, on every route including public ones (§2.5) — security invariant, not a nicety
-- Keep CORS outside `RequireAuth`, so `401`s carry CORS headers (§2.7)
-- Send `Vary: Origin` on every response (§2.7)
-- Bind every service to `127.0.0.1` by default; only `BIND_ADDR` may widen it (§2.4)
-- Use the standard JSON error shape for every 4xx/5xx the gateway itself emits
-- Forward paths unchanged (§2.2) — no prefix stripping
-- Run `go test ./...` before flagging a checkpoint done
+- Route every request through `VITE_API_BASE_URL` (`localhost:8080`) — never call `:8081` or `:8082` directly (§2.3)
+- Keep both tokens in memory only (§2.5)
+- Render `404 price_not_cached` as `—`, not as an error (§2.7)
+- Clear polling intervals in `useEffect` cleanup (§5)
+- Sort and de-duplicate bars before handing them to Lightweight Charts (§2.8)
+- Run `npm run build` and `npm run lint` before flagging a checkpoint done (§6)
+- Mirror Go JSON field names exactly in TypeScript types (§5)
 
 **Ask first:**
-- Any dependency beyond `go-chi/chi/v5`
-- Making the CORS origin, or any backend URL, behave differently than §2.3/§2.7 describe
-- Adding request logging, rate limiting, request body size limits, or metrics middleware — all deliberately out of scope
-- Service-to-service authentication between gateway and backends (§2.4) — Phase 4 infra decision
-- Extracting `pkg/httputil` (§7, resolved as deferred — reopen deliberately, not incidentally)
+- Any dependency beyond the four in §2.10
+- Adding a test framework (§6 — proposed as deferred; reopen deliberately)
+- Adding a router (§2.9)
+- Anything that requires a **gateway or backend change** — a new endpoint, a new HTTP method, a CORS adjustment. Those need their own spec; they are not frontend work.
+- Persisting any token to storage or a cookie (§2.5)
 
 **Never do:**
-- Commit `.env` or a real `JWT_SECRET`
-- Log the `Authorization` header, a raw/decoded token, or the signing secret
-- Use `Access-Control-Allow-Origin: *`, reflect an unvalidated `Origin`, or enable `Allow-Credentials` (§2.7)
-- Trust any client-supplied identity header
-- Let `/market-data/*` or `/trading/*` be reachable through the gateway without a valid access token
-- Bind a backend service to `0.0.0.0` by default (§2.4)
+- Commit `frontend/.env`, a real credential, or a token
+- `console.log` a token, an `Authorization` header, or a full auth response
+- Work around a CORS failure in the frontend — including via Vite's `server.proxy` (§7)
+- Retry a 401 more than once, or let `/auth/refresh` recurse into itself (§2.6)
+- Trust client-side validation as a security boundary (§2.12)
+- Build UI for `/trading/*` — it answers `501` until Phase 2 (§1)
 
 ---
 
 ## 9. Confirm before I start
 
-Khalil delegated the open decisions to the implementer on 2026-07-29 with the instruction to decide with a security mindset. Resolutions:
+Settled by the architect on 2026-07-29, written in as decided:
 
-- [x] Port `8080`; `/auth/*` public, `/market-data/*` + `/trading/*` protected (§1) — as drafted
-- [x] No path rewriting — gateway and backends share the same path space (§2.2) — as drafted
-- [x] Backend URLs defaulted to localhost; `JWT_SECRET` fail-fast (§2.3) — as drafted, plus a 32-byte minimum (§2.12)
-- [x] **Reversed (§2.4):** the draft deferred backend exposure to Phase 4 on the premise that backends were localhost-only. They weren't — a bare `:port` binds `0.0.0.0`, so both services are currently open on the LAN. All three now default to `127.0.0.1` with a `BIND_ADDR` override.
-- [x] **Tightened (§2.5):** `X-User-ID` stripping moves from the authenticated group to the outermost middleware. The draft left public, proxied `/auth/*` spoofable the moment anything downstream reads that header.
-- [x] `/trading/*` answers `501` rather than proxying to a dead URL (§2.6) — as drafted
-- [x] Hand-written CORS kept over `go-chi/cors` (§2.7), on the reasoning in that section's table — plus `Vary: Origin`, which the draft omitted
-- [x] Shallow `/healthz`, no downstream health aggregation (§2.9) — as drafted
-- [x] Gateway adopts `cmd/server` layout; `make run-gateway` recipe updated (§2.10) — as drafted
-- [x] `errors.go` third copy stays; `pkg/httputil` extraction deferred to its own commit (§7)
-- [x] **Added (§2.12):** `ReadHeaderTimeout` on the gateway server, 32-byte minimum `JWT_SECRET` — neither was in the draft
+- [x] Scope is strictly the checklist — two screens, no portfolio view, no extra pages (§2.1)
+- [x] HTTP polling for prices; WebSocket fan-out stays deferred (§2.2)
+- [x] Both tokens in memory only; page refresh logs you out (§2.5)
+- [x] Lightweight Charts over Recharts (§2.8)
 
-Checkpoint slicing lives in `tasks/plan.md`, mirroring how Steps 5 and 6 were sliced.
+Proposed by me — please accept or reverse:
+
+- [ ] **§2.4** — Vite pinned to port 5173 with `strictPort: true`, because the gateway's CORS origin is a hardcoded constant and a silent fallback to 5174 breaks every request confusingly
+- [ ] **§2.6** — 401 → refresh → retry-once, with a shared in-flight promise so a tick's seven parallel requests trigger one refresh. Verified the backend's refresh is stateless, so this is efficiency today but becomes correctness if Phase 2 adds rotation
+- [ ] **§2.7** — `price_not_cached` renders `—`; only non-404 failures show as errors
+- [ ] **§2.9** — No router; conditional render on auth state. Costs deep links and the back button, neither of which the checklist asks for
+- [ ] **§2.10** — Four runtime deps, nothing else: react, react-dom, lightweight-charts, tailwindcss
+- [ ] **§6** — **No frontend test framework in Step 8.** The deviation most worth your attention: Steps 4–7 all shipped tests. Rationale and the accepted cost are in §6; I will flag mid-build if `client.ts` proves fiddly enough to warrant Vitest for that module alone
+- [ ] **§2.3** — `VITE_API_BASE_URL` lives in `frontend/.env.example`, not the root `.env.example`, since the root file feeds the Makefile and the Go services
+- [ ] **§5** — TypeScript types use wire-format `snake_case` rather than a camelCase remapping layer
+- [ ] **§7** — A CORS failure gets fixed in the gateway; using Vite's `server.proxy` to dodge it is explicitly forbidden, since it would leave Step 7's middleware unproven
+
+Separate decision, not blocking this step:
+
+- [ ] **§2.12 — backend finding.** The auth service enforces *only* non-empty email/username/password on registration: no password minimum, no email format check. A 1-character password is accepted today. Fixing it is an auth-service change needing its own spec — **do you want that scheduled before Phase 2, or logged as known debt?** Step 8 proceeds either way; the form just won't claim guarantees the server doesn't make.
+
+Checkpoint slicing lives in `tasks/plan.md`, mirroring how Steps 5, 6, and 7 were sliced.

@@ -1,105 +1,126 @@
-# Plan — QuantSim API Gateway (Phase 1, Step 7)
+# Plan — QuantSim Minimal Frontend (Phase 1, Step 8)
 
 ## Context
 
-`SPEC.md` (approved 2026-07-29) defines the API Gateway: a reverse proxy fronting auth and market-data on one port, JWT enforcement via `pkg/auth`, CORS for the Vite dev server, and the loopback/timeout hardening that came out of deciding the spec's open questions with a security lens. Per the working agreement in `agents.md`, checkpoints are vertical slices sized to "one logical piece," reviewed before the next starts.
+`SPEC.md` (draft 2026-07-29) defines the minimal frontend: two screens over the gateway's single origin, in-memory tokens, polled prices, and one candlestick chart. Per the working agreement in `agents.md`, checkpoints are vertical slices sized to "one logical piece," reviewed before the next starts.
 
-Lesson carried over from Steps 5 and 6: order checkpoints so the lowest-dependency, most-reviewable piece goes first, and give the risky/subtle piece its own isolated checkpoint rather than folding it into the thing that consumes it. Here the subtle piece is the middleware — CORS and identity-header handling are where this service's security properties actually live, so they get their own checkpoint with their own tests rather than arriving buried in a router diff.
+Lesson carried over from Steps 5–7: order checkpoints so the lowest-dependency, most-reviewable piece goes first, and give the risky/subtle piece its own isolated checkpoint rather than folding it into the thing that consumes it. In Step 7 that was the middleware. **Here it is `api/client.ts`** — the 401-refresh-retry logic (SPEC.md §2.6) is the only genuinely non-obvious code in this step, and it ships with no unit tests (SPEC.md §6), so it gets its own checkpoint with its own explicit manual verification rather than arriving buried inside an auth-context diff.
 
 ## Decided defaults (from SPEC.md §2, restated for quick reference while implementing)
 
-- **Proxy:** stdlib `net/http/httputil.ReverseProxy`, no path rewriting — SPEC.md §2.1, §2.2.
-- **Ports:** gateway `8080`, auth `8081`, market-data `8082`; backend URLs from env with localhost defaults — SPEC.md §2.3.
-- **Bind address:** all three services default to `127.0.0.1`, `BIND_ADDR` overrides — SPEC.md §2.4.
-- **Identity headers:** `StripUserID` global/outermost; `InjectUserID` authenticated routes only — SPEC.md §2.5.
-- **`/trading/*`:** `501 not_implemented`, mounted behind `RequireAuth` — SPEC.md §2.6.
-- **CORS:** hand-written, exact-match `http://localhost:5173`, `Vary: Origin` always, no credentials, never `*` — SPEC.md §2.7.
-- **Upstream failure:** `502` + `{"code":"upstream_unavailable",...}` via a custom `ErrorHandler` — SPEC.md §2.8.
-- **Middleware order (load-bearing):** `StripUserID` → `CORS` → route group → `RequireAuth` → `InjectUserID` → proxy — SPEC.md §5.
-- **Timeouts:** transport dial 5s / response-header 30s; gateway `http.Server{ReadHeaderTimeout: 10s}` — SPEC.md §2.11, §2.12.
-- **`JWT_SECRET`:** fail-fast, minimum 32 bytes, checked via a shared `pkg/auth` helper — SPEC.md §2.12.
-- **Deps:** `go-chi/chi/v5` only (plus local `pkg` via `replace`) — SPEC.md §5.
+- **Scope:** login/register + dashboard + one chart. Nothing else — SPEC.md §2.1.
+- **Prices:** poll `GET /market-data/prices/:symbol` every **15s** — SPEC.md §2.2.
+- **Base URL:** `VITE_API_BASE_URL`, default `http://localhost:8080`, in `frontend/.env.example` only — SPEC.md §2.3.
+- **Port:** 5173 with `strictPort: true` — the gateway's CORS origin is a hardcoded constant — SPEC.md §2.4.
+- **Tokens:** access + refresh in memory only, never persisted — SPEC.md §2.5.
+- **401 handling:** refresh → retry **once**; shared in-flight promise; `/auth/refresh` never recurses — SPEC.md §2.6.
+- **`404 price_not_cached`:** renders `—`, is not an error — SPEC.md §2.7.
+- **Chart:** `lightweight-charts` v5, `chart.addSeries(CandlestickSeries, …)`, business-day `YYYY-MM-DD` times, sorted + de-duplicated — SPEC.md §2.8.
+- **No router**, conditional render on auth state — SPEC.md §2.9.
+- **Deps:** react, react-dom, lightweight-charts, tailwindcss + @tailwindcss/vite. Nothing else — SPEC.md §2.10.
+- **Tailwind v4:** Vite plugin + `@import "tailwindcss"`. No `tailwind.config.js`, no PostCSS — SPEC.md §2.11.
+- **Types:** wire-format `snake_case`, mirroring the Go json tags — SPEC.md §5.
+- **Verification:** `npm run build` + `npm run lint` + manual E2E. No test framework — SPEC.md §6.
 
 ---
 
-## Task 1 — Module setup + proxy package
+## Task 1 — Scaffold, Tailwind, and the dev-server contract
 
-**Files:** `services/gateway/go.mod`, `go.work`, `internal/handler/errors.go`, `internal/proxy/proxy.go`, `internal/proxy/proxy_test.go`
+**Files:** `frontend/` (Vite scaffold), `vite.config.ts`, `src/index.css`, `.env.example`, `Makefile`
 
-- `go.mod`: `github.com/go-chi/chi/v5 v5.3.1` + `github.com/kpeguero/quantsim/pkg` with `replace => ../../pkg`, mirroring `services/auth/go.mod`.
-- `go.work`: add `./services/gateway`.
-- `errors.go`: copy of `services/market-data/internal/handler/errors.go` (SPEC.md §7 — deliberate third copy).
-- `proxy.go`: `New(target *url.URL, transport http.RoundTripper, serviceName string) *httputil.ReverseProxy`. Wraps `NewSingleHostReverseProxy`, no path rewriting, custom `ErrorHandler` → `502` JSON. `ReverseProxy` already strips hop-by-hop headers per RFC 7230 — do not re-add them.
+- `npm create vite@latest frontend -- --template react-ts`. **Note:** `frontend/` already contains `.gitkeep`, so the scaffolder will warn the directory is not empty — choose the option that keeps existing files. Delete `.gitkeep` afterwards; the directory is no longer empty.
+- Tailwind v4: `npm install tailwindcss @tailwindcss/vite`, register `tailwindcss()` alongside `react()` in `vite.config.ts`, and replace `src/index.css` with `@import "tailwindcss";`. Strip the Vite demo styles and `App.css`.
+- `vite.config.ts`: `server: { port: 5173, strictPort: true }` (§2.4).
+- `frontend/.env.example`: `VITE_API_BASE_URL=http://localhost:8080`.
+- `Makefile`: `run-frontend: cd frontend && npm run dev`, plus a `help` line.
 
-**Acceptance:** `go test ./...` passes in `services/gateway`. Tests cover: path/method/body/`Authorization` forwarded byte-identical to an `httptest` backend; closed port → `502` with the JSON error body and `Content-Type: application/json`.
+**Acceptance:** `npm run dev` serves on **5173** (not 5174 — verify the number in the terminal); a Tailwind utility class visibly applies; `npm run build` and `npm run lint` pass. No `tailwind.config.js` and no PostCSS config exist (§2.11 — if either does, a v3 guide was followed).
 
 **Depends on:** nothing.
 
 ---
 
-## Task 2 — Middleware (the security-critical slice)
+## Task 2 — `api/client.ts` (the subtle slice)
 
-**Files:** `internal/middleware/cors.go`, `cors_test.go`, `identity.go`, `identity_test.go`
+**Files:** `src/api/types.ts`, `src/api/client.ts`
 
-- `cors.go`: `CORS(allowedOrigin string) func(http.Handler) http.Handler`. Exact string match on `Origin`; sets `Allow-Origin` only on match; `Allow-Methods: GET, POST, OPTIONS`; `Allow-Headers: Authorization, Content-Type`; `Max-Age: 300`; **`Vary: Origin` unconditionally**. Preflight `OPTIONS` short-circuits `204` without calling the next handler. No `Allow-Credentials`, never `*`.
-- `identity.go`: `StripUserID()` deletes any inbound `X-User-ID`; `InjectUserID()` sets it from `pkgauth.UserIDFromContext`, and deletes it if the context somehow has no user ID (fail closed, never pass through).
+- `types.ts`: `TokenPair`, `MeResponse`, `SymbolsResponse`, `HistoryResponse`, `Bar`, `Price`, `ApiError`. Wire-format `snake_case`, transcribed from `services/auth/internal/service/types.go` and `services/market-data/internal/service/types.go` (§5).
+- `client.ts`: base URL from `VITE_API_BASE_URL`; injects `Authorization: Bearer` from a token getter supplied by the auth layer (so the client does not import the context and create a cycle); parses `{code, message}` into a thrown `ApiError`; on `401` → refresh → retry once.
+- The three requirements from §2.6 that are easy to get wrong: `/auth/refresh` bypasses the interceptor; retry happens **exactly once**; a module-level in-flight `Promise | null` is shared so concurrent 401s trigger one refresh.
 
-**Acceptance:** `go test ./...` passes. Required cases:
-- Preflight with matching `Origin` → `204`, all headers present, wrapped handler **not** called.
-- Simple `GET` with matching `Origin` → headers present, handler called.
-- Non-matching `Origin` → no `Allow-Origin` echoed, but `Vary: Origin` still set.
-- **Spoofing regression (the one that matters):** a request with `X-User-ID: victim` and no token must not deliver that header downstream.
-- `InjectUserID` with a valid user ID on context → header equals the subject.
+**Acceptance:** `npm run build` + `npm run lint` pass. Exercised against the live stack (temporarily, from `main.tsx` or the browser console): a normal call succeeds; a call with a deliberately corrupted access token triggers exactly one `POST /auth/refresh` in the Network tab and the original request then succeeds; seven concurrent calls with an expired token produce **one** refresh, not seven.
 
-**Depends on:** Task 1 (module must exist).
+**Depends on:** Task 1.
 
 ---
 
-## Task 3 — Router, wiring, and the manual E2E
+## Task 3 — Auth context and the login/register screen
 
-**Files:** `internal/handler/router.go`, `router_test.go`, `cmd/server/main.go`, `Makefile`, `.env.example`
+**Files:** `src/auth/AuthContext.tsx`, `src/auth/LoginPage.tsx`, `src/App.tsx`, `src/main.tsx`
 
-- `router.go`: chi. `StripUserID` → `CORS` → routes. `/healthz` local `200 ok`, unauthenticated, no backend touched. `/auth/*` public proxy. `/market-data/*` and `/trading/*` in a group under `RequireAuth` + `InjectUserID`; `/trading/*` → `501 not_implemented`.
-- `main.go`: `JWT_SECRET` fail-fast + length check; `AUTH_SERVICE_URL` / `MARKET_DATA_SERVICE_URL` defaulted; `PORT` default `8080`; shared `http.Transport`; `http.Server{ReadHeaderTimeout: 10s}`.
-- `Makefile`: `run-gateway` → `go run ./cmd/server`.
-- `.env.example`: commented "Service URLs (gateway)" block + `BIND_ADDR`.
+- `AuthContext`: holds `accessToken`, `refreshToken`, `user`, all in React state — nothing persisted (§2.5). Exposes `login`, `register`, `logout`. Supplies the token getter and the "refresh failed → clear state" callback that Task 2's client depends on.
+- `LoginPage`: one screen, toggling between login and register. Register sends `{email, username, password}`; login sends `{email, password}`. Client-side checks are **UX only** — the backend validates non-empty and nothing more (§2.12), so the form must not present its checks as guarantees. The server's `{code, message}` is what gets displayed on rejection.
+- On success: store the pair, call `GET /auth/me` (with the bearer — the auth service enforces its own middleware on that route), render the user.
+- `App.tsx`: `user ? <Dashboard/> : <LoginPage/>` (§2.9).
 
-**Acceptance:** `go test ./...` passes (full stack against `httptest` backends, real tokens from `pkgauth.GenerateToken`), **and** the SPEC.md §3 curl sequence runs clean against all three services live.
+**Acceptance:** `npm run build` + `npm run lint` pass. Against the live stack: register a brand-new user → lands logged in; log out → back to login; log in again → works; a duplicate email or a 6-char password shows the **backend's** message; reload → back to the login screen (expected, §2.5); DevTools shows no CORS errors and no token in any console output.
 
-**Depends on:** Tasks 1 and 2.
-
----
-
-## Task 4 — Loopback binding + secret guard
-
-**Files:** `pkg/auth/jwt.go` (or a new small file), `services/auth/cmd/server/main.go`, `services/market-data/cmd/server/main.go`, gateway `main.go`
-
-- Exported minimum-secret-length check in `pkg/auth`; adopted by auth and gateway where they read `JWT_SECRET`.
-- `BIND_ADDR` env (default `127.0.0.1`) in all three services; listen on `BIND_ADDR + ":" + PORT`; startup log prints the real bind address.
-
-**Acceptance:** `lsof -nP -iTCP:8081 -sTCP:LISTEN` and `-iTCP:8082` show `127.0.0.1:<port>`, not `*:<port>`, for all three services. `go test ./...` still passes in `pkg`, `services/auth`, `services/market-data`, `services/gateway`.
-
-**Note:** if the current `.env` `JWT_SECRET` is under 32 characters, auth and gateway will refuse to start until it's rotated — intended, per SPEC.md §2.12.
-
-**Depends on:** Task 3 (do the gateway's own binding in the same pass).
+**Depends on:** Task 2.
 
 ---
 
-## Task 5 — Close out the step
+## Task 4 — Dashboard: symbols and polled prices
 
-- Check off Step 7 in `PHASE1_CHECKLIST.md`.
-- Archive `SPEC.md`, `tasks/plan.md`, `tasks/todo.md` to `docs/archive/phase1-step7-gateway/`, per the Steps 4–6 convention.
+**Files:** `src/market/Dashboard.tsx`, `src/market/PriceList.tsx`
+
+- On mount: `GET /market-data/symbols` → seven symbols.
+- Then poll `GET /market-data/prices/{symbol}` for each, every 15s (§2.2), in a `useEffect` whose cleanup **clears the interval** (§5).
+- `404 price_not_cached` → that row shows `—` and stays healthy. Any other failure → an error state (§2.7).
+- Selecting a row sets the symbol that Task 5's chart consumes.
+
+**Acceptance:** `npm run build` + `npm run lint` pass. Against the live stack: all seven symbols listed; prices populate; values refresh on the 15s tick (watch the Network tab); stopping the market-data poller degrades cells to `—` rather than an error banner; logging out stops the polling (no further requests in the Network tab — this is the interval-cleanup check).
+
+**Depends on:** Task 3.
+
+---
+
+## Task 5 — Candlestick chart
+
+**Files:** `src/market/CandlestickChart.tsx`
+
+- `GET /market-data/history/{symbol}` → `bars[]`.
+- Map `Bar → CandlestickData`: `time` = the `timestamp`'s `YYYY-MM-DD` prefix (business-day string, not a UTC timestamp — §2.8), plus `open/high/low/close`. **Sort ascending and de-duplicate** before `setData`, or the library throws.
+- `chart.addSeries(CandlestickSeries, {...})` — the v5 API. `chart.timeScale().fitContent()`.
+- Dispose the chart in the `useEffect` cleanup; re-render on symbol change.
+
+**Acceptance:** `npm run build` + `npm run lint` pass. Against the live stack: candles render for the selected symbol; selecting a different symbol re-renders with that symbol's data; a spot-check of the most recent candle's OHLC against `curl`'s raw JSON matches (§6 — the manual substitute for a unit test on the mapping); no console errors about unsorted or duplicate data; switching symbols repeatedly leaks no charts.
 
 **Depends on:** Task 4.
+
+---
+
+## Task 6 — Close out Phase 1
+
+- Run the full SPEC.md §3 manual E2E, including the refresh path (step 8 — force it by restarting auth with a different `JWT_SECRET` or temporarily lowering `AccessTokenTTL`; record the result rather than assuming it works).
+- Walk the `PHASE1_CHECKLIST.md` handoff criteria explicitly: migrations clean, `.env.example` complete, gateway routes all three prefixes, E2E passes.
+- Check off Step 8 in `PHASE1_CHECKLIST.md`.
+- Archive `SPEC.md`, `tasks/plan.md`, `tasks/todo.md` to `docs/archive/phase1-step8-frontend/` when Phase 2's spec is drafted, per the Steps 4–7 convention.
+
+**Depends on:** Task 5.
 
 ---
 
 ## Dependency graph
 
 ```
-Task 1 (proxy) ──┬─→ Task 2 (middleware) ──┐
-                 │                          ├─→ Task 3 (router + wiring) ─→ Task 4 (hardening) ─→ Task 5 (close out)
-                 └──────────────────────────┘
+Task 1 (scaffold) → Task 2 (api client) → Task 3 (auth) → Task 4 (dashboard) → Task 5 (chart) → Task 6 (close out)
 ```
 
-Tasks 1 and 2 are independent of each other past module setup, but the review-one-at-a-time rule means they still land in order.
+Strictly linear, unlike Step 7's. Each slice renders something the next one needs, and there is no independent pair worth parallelizing — the frontend is a single dependency chain from transport up to view.
+
+## Risks
+
+- **CORS surfaces here for the first time** (SPEC.md §1, §7). If the gateway's middleware has a defect, it appears in Task 3 as a browser error. The fix goes in the gateway and needs its own small spec — it is not frontend work, and it must not be worked around with Vite's `server.proxy`.
+- **Empty data is likely on a first run.** If `historical_prices` was never populated, Task 5's chart will be blank through no fault of the code. Run the ingest curl in SPEC.md §3 before concluding the chart is broken.
+- **Markets closed** means `—` everywhere in Task 4. That is correct behavior (§2.7), not a failure — verify against `redis-cli GET price:AAPL` before debugging.
+- **Stale v3/v4 guides.** Tailwind v4 and Lightweight Charts v5 both changed their setup/API from the versions most examples describe. SPEC.md §2.8 and §2.11 record the verified current form; deviations from those are the likeliest source of a confusing build error.
