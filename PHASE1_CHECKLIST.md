@@ -172,14 +172,14 @@ Working directory: `services/market-data/`
 
 ## Step 6: Market Data Service — Live Polling + Redis
 
-- [ ] Add `go-redis/redis/v9` dependency
-- [ ] Add background goroutine that:
-  - [ ] Polls Alpaca `/v2/stocks/snapshots` every 10–15 seconds for the watchlist
-  - [ ] Writes latest prices to Redis keys (e.g., `price:AAPL`)
-  - [ ] Publishes updates to Redis pub/sub channel `prices:{symbol}` (consumed by gateway/WebSocket in a later phase)
-- [ ] Implement endpoint:
-  - [ ] `GET /market-data/prices/:symbol` — read latest price from Redis cache
-- [ ] Start the service and verify Redis keys are populated and updating
+- [x] Add `go-redis/redis/v9` dependency
+- [x] Add background goroutine that:
+  - [x] Polls Alpaca `/v2/stocks/snapshots` every 10–15 seconds for the watchlist
+  - [x] Writes latest prices to Redis keys (e.g., `price:AAPL`)
+  - [x] Publishes updates to Redis pub/sub channel `prices:{symbol}` (consumed by gateway/WebSocket in a later phase)
+- [x] Implement endpoint:
+  - [x] `GET /market-data/prices/:symbol` — read latest price from Redis cache
+- [x] Start the service and verify Redis keys are populated and updating
 
 ---
 
