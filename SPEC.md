@@ -1,6 +1,6 @@
 # SPEC — QuantSim Minimal Frontend (Phase 1, Step 8)
 
-Status: **Draft 2026-07-29** — awaiting architect review. Four decisions were settled before drafting (§2.1 scope, §2.2 polling, §2.5 token storage, §2.8 charting); the rest are proposed in §2 and listed for accept/reverse in §9.
+Status: **Approved 2026-07-29** — all nine proposed decisions accepted as drafted (§9), on top of the four settled before drafting (§2.1 scope, §2.2 polling, §2.5 token storage, §2.8 charting). One item remains open and does not block this step: the auth-service validation gap in §2.12. Implementation is unblocked; checkpoint slicing is in `tasks/plan.md`.
 Scope: `frontend/` — the minimal React UI that proves Phase 1 works end to end. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service), `docs/archive/phase1-step5-market-data/` (historical ingestion), `docs/archive/phase1-step6-market-data-live/` (live polling + Redis), `docs/archive/phase1-step7-gateway/` (API Gateway) — all complete.
 
 ---
@@ -304,20 +304,22 @@ Settled by the architect on 2026-07-29, written in as decided:
 - [x] Both tokens in memory only; page refresh logs you out (§2.5)
 - [x] Lightweight Charts over Recharts (§2.8)
 
-Proposed by me — please accept or reverse:
+Proposed by me — **all accepted as drafted by the architect on 2026-07-29**, no reversals:
 
-- [ ] **§2.4** — Vite pinned to port 5173 with `strictPort: true`, because the gateway's CORS origin is a hardcoded constant and a silent fallback to 5174 breaks every request confusingly
-- [ ] **§2.6** — 401 → refresh → retry-once, with a shared in-flight promise so a tick's seven parallel requests trigger one refresh. Verified the backend's refresh is stateless, so this is efficiency today but becomes correctness if Phase 2 adds rotation
-- [ ] **§2.7** — `price_not_cached` renders `—`; only non-404 failures show as errors
-- [ ] **§2.9** — No router; conditional render on auth state. Costs deep links and the back button, neither of which the checklist asks for
-- [ ] **§2.10** — Four runtime deps, nothing else: react, react-dom, lightweight-charts, tailwindcss
-- [ ] **§6** — **No frontend test framework in Step 8.** The deviation most worth your attention: Steps 4–7 all shipped tests. Rationale and the accepted cost are in §6; I will flag mid-build if `client.ts` proves fiddly enough to warrant Vitest for that module alone
-- [ ] **§2.3** — `VITE_API_BASE_URL` lives in `frontend/.env.example`, not the root `.env.example`, since the root file feeds the Makefile and the Go services
-- [ ] **§5** — TypeScript types use wire-format `snake_case` rather than a camelCase remapping layer
-- [ ] **§7** — A CORS failure gets fixed in the gateway; using Vite's `server.proxy` to dodge it is explicitly forbidden, since it would leave Step 7's middleware unproven
+- [x] **§2.4** — Vite pinned to port 5173 with `strictPort: true`, because the gateway's CORS origin is a hardcoded constant and a silent fallback to 5174 breaks every request confusingly
+- [x] **§2.6** — 401 → refresh → retry-once, with a shared in-flight promise so a tick's seven parallel requests trigger one refresh. Verified the backend's refresh is stateless, so this is efficiency today but becomes correctness if Phase 2 adds rotation
+- [x] **§2.7** — `price_not_cached` renders `—`; only non-404 failures show as errors
+- [x] **§2.9** — No router; conditional render on auth state. Costs deep links and the back button, neither of which the checklist asks for
+- [x] **§2.10** — Four runtime deps, nothing else: react, react-dom, lightweight-charts, tailwindcss
+- [x] **§6** — **No frontend test framework in Step 8.** The deviation most worth your attention: Steps 4–7 all shipped tests. Rationale and the accepted cost are in §6; I will flag mid-build if `client.ts` proves fiddly enough to warrant Vitest for that module alone
+- [x] **§2.3** — `VITE_API_BASE_URL` lives in `frontend/.env.example`, not the root `.env.example`, since the root file feeds the Makefile and the Go services
+- [x] **§5** — TypeScript types use wire-format `snake_case` rather than a camelCase remapping layer
+- [x] **§7** — A CORS failure gets fixed in the gateway; using Vite's `server.proxy` to dodge it is explicitly forbidden, since it would leave Step 7's middleware unproven
 
-Separate decision, not blocking this step:
+Contract for the build: these are now settled. Reversing one mid-implementation is a spec edit, not an in-flight judgment call — the §8 "Ask first" list governs.
 
-- [ ] **§2.12 — backend finding.** The auth service enforces *only* non-empty email/username/password on registration: no password minimum, no email format check. A 1-character password is accepted today. Fixing it is an auth-service change needing its own spec — **do you want that scheduled before Phase 2, or logged as known debt?** Step 8 proceeds either way; the form just won't claim guarantees the server doesn't make.
+Resolved separately — does **not** block this step:
+
+- [x] **§2.12 — backend finding.** The auth service enforces *only* non-empty email/username/password on registration: no password minimum, no email format check, so a one-character password registers today. **Decided 2026-07-29: fix it as a small auth-hardening step after Step 8 closes and before Phase 2 begins**, with its own spec. Rationale — finishing Phase 1 keeps the E2E momentum, and the fix lands while the auth service is still fresh rather than buried inside the trading-engine spec. Step 8 is unaffected; the register form simply won't claim guarantees the server doesn't make (§2.12).
 
 Checkpoint slicing lives in `tasks/plan.md`, mirroring how Steps 5, 6, and 7 were sliced.

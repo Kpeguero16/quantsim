@@ -230,5 +230,23 @@ When all boxes above are checked, you have a working foundation:
 - `.env.example` is complete and documented
 - Gateway routes `/auth/*`, `/market-data/*`, and `/trading/*` (placeholder)
 - E2E: register → login → dashboard with prices → chart for one symbol works
+- Auth-hardening step below is complete
+
+---
+
+## Step 9: Auth Input Validation (hardening, before Phase 2)
+
+Found while drafting the Step 8 frontend spec (see that spec's §2.12): the auth service's registration path validates only that `email`, `username`, and `password` are **non-empty** (`services/auth/internal/handler/auth.go:28`). There is no password minimum length and no email format check anywhere in the handler or service layer — a one-character password and `email = "x"` both register successfully today.
+
+Scheduled 2026-07-29 to land **after Step 8 and before Phase 2**: finishing Phase 1 first keeps the end-to-end momentum, and the fix lands while the auth service is still fresh rather than buried inside the trading-engine spec.
+
+- [ ] Write a short spec for the change (validation rules, error codes, where the check lives)
+- [ ] Enforce a password minimum length and a maximum (bcrypt errors above 72 bytes, which currently surfaces as a `500` rather than a `400`)
+- [ ] Validate email format
+- [ ] Return the standard `{code, message}` JSON shape for each rejection, consistent with the existing `invalid_request`
+- [ ] Table-driven tests covering each rule, matching the Step 4 test conventions
+- [ ] Verify the Step 8 register form still surfaces the backend's messages correctly
+
+---
 
 Next up: **Phase 2 — Trading Engine** (order execution, trade history, P/L tracking).
