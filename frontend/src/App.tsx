@@ -1,38 +1,31 @@
 /**
- * Task 1 placeholder. Exists to prove the Tailwind v4 pipeline and the design
- * tokens in index.css actually render; Task 3 replaces this with the real
- * logged-out / logged-in switch.
+ * Two states, one switch. There is no router: with exactly two views,
+ * react-router-dom would be a dependency, a provider, and route config for
+ * what a conditional does in one line (SPEC.md 2.9). The trade is no deep
+ * links and no back button between views, neither of which Phase 1 needs.
  */
+import LoginPage from './auth/LoginPage'
+import { useAuth } from './auth/context'
+
 export default function App() {
+  const { user, logout } = useAuth()
+
+  if (!user) return <LoginPage />
+
+  // Task 4 replaces this panel with the dashboard.
   return (
-    <main className="min-h-dvh grid place-items-center p-6">
-      <div className="w-full max-w-md rounded-lg border border-line bg-surface p-6">
-        <h1 className="text-xl font-semibold text-ink">QuantSim</h1>
-        <p className="mt-1 text-sm text-ink-muted">
-          Frontend scaffold is up. Design tokens below should render as
-          described.
-        </p>
-
-        <dl className="mt-5 space-y-2 text-sm">
-          <div className="flex items-center justify-between gap-4">
-            <dt className="text-ink-muted">Rising</dt>
-            <dd className="tabular font-mono text-up">&uarr; 182.41</dd>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <dt className="text-ink-muted">Falling</dt>
-            <dd className="tabular font-mono text-down">&darr; 411.09</dd>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <dt className="text-ink-muted">Not cached</dt>
-            <dd className="tabular font-mono text-ink-subtle">&mdash;</dd>
-          </div>
-        </dl>
-
+    <main className="min-h-dvh px-4 py-10">
+      <div className="mx-auto max-w-sm rounded-lg border border-line bg-surface p-6">
+        <h1 className="text-lg font-semibold text-ink">
+          Signed in as {user.username}
+        </h1>
+        <p className="mt-1 text-sm text-ink-muted">{user.email}</p>
         <button
           type="button"
-          className="mt-6 w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-canvas transition-colors hover:bg-accent-hover"
+          onClick={logout}
+          className="mt-5 rounded-md border border-line-strong px-3 py-1.5 text-sm text-ink transition-colors hover:bg-elevated"
         >
-          Accent button
+          Sign out
         </button>
       </div>
     </main>
