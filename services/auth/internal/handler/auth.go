@@ -63,3 +63,27 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, tokens)
 }
+
+func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	var req service.RefreshTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	if req.RefreshToken == "" {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
+		return
+	}
+
+	tokens, err := h.service.Refresh(r.Context(), req)
+	if err != nil {
+		if errors.Is(err, service.ErrTokenInvalid) {
+			WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "internal_error", "something went wrong")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, tokens)
+}

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 
+	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
 	"github.com/kpeguero/quantsim/services/auth/internal/service"
 	"github.com/kpeguero/quantsim/services/auth/internal/service/mock"
 )
@@ -116,4 +119,85 @@ func TestLogin_UnknownEmail(t *testing.T) {
 	if !errors.Is(err, service.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
+}
+
+func TestRefresh_Success(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	ctx := context.Background()
+	registerTokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	newTokens, err := svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: registerTokens.RefreshToken})
+	if err != nil {
+		t.Fatalf("unexpected error on refresh: %v", err)
+	}
+	if newTokens.AccessToken == "" || newTokens.RefreshToken == "" {
+		t.Fatal("expected non-empty access and refresh tokens")
+	}
+}
+
+func TestRefresh_ExpiredToken(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	expired := fabricateToken(t, testSecret, "some-user-id", pkgauth.TokenTypeRefresh, -1*time.Hour)
+
+	_, err := svc.Refresh(context.Background(), service.RefreshTokenRequest{RefreshToken: expired})
+	if !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
+	}
+}
+
+func TestRefresh_GarbageToken(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	_, err := svc.Refresh(context.Background(), service.RefreshTokenRequest{RefreshToken: "not-a-real-token"})
+	if !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
+	}
+}
+
+func TestRefresh_AccessTokenRejected(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	ctx := context.Background()
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	_, err = svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: tokens.AccessToken})
+	if !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid for access token used as refresh, got %v", err)
+	}
+}
+
+// fabricateToken signs a token directly (bypassing GenerateToken's TTL
+// choices) so tests can construct expired or wrongly-typed tokens.
+func fabricateToken(t *testing.T, secret []byte, userID, tokenType string, ttl time.Duration) string {
+	t.Helper()
+	now := time.Now()
+	claims := pkgauth.Claims{
+		TokenType: tokenType,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID,
+			IssuedAt:  jwt.NewNumericDate(now.Add(-2 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+	if err != nil {
+		t.Fatalf("failed to fabricate token: %v", err)
+	}
+	return token
 }

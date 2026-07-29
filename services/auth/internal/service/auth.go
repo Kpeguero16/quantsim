@@ -79,6 +79,27 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenPair, erro
 	return s.issueTokenPair(user.ID)
 }
 
+// Refresh validates a refresh token and issues a brand-new token pair. The
+// old refresh token is not revoked and remains valid until its natural
+// expiry -- refresh tokens are stateless by design (see SPEC.md); no
+// revocation list exists.
+func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (*TokenPair, error) {
+	claims, err := pkgauth.ValidateToken(s.jwtSecret, req.RefreshToken)
+	if err != nil {
+		return nil, ErrTokenInvalid
+	}
+	if claims.TokenType != pkgauth.TokenTypeRefresh {
+		return nil, ErrTokenInvalid
+	}
+
+	userID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		return nil, ErrTokenInvalid
+	}
+
+	return s.issueTokenPair(userID)
+}
+
 func (s *Service) issueTokenPair(userID uuid.UUID) (*TokenPair, error) {
 	access, err := pkgauth.GenerateToken(s.jwtSecret, userID.String(), pkgauth.TokenTypeAccess, AccessTokenTTL)
 	if err != nil {

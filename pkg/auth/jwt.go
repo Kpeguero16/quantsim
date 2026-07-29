@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"errors"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -13,6 +14,12 @@ const (
 	TokenTypeAccess  = "access"
 	TokenTypeRefresh = "refresh"
 )
+
+// ErrInvalidToken covers every way a token can fail validation (bad
+// signature, malformed, expired). One sentinel, one error vocabulary --
+// distinguishing the failure modes to the caller would only help an
+// attacker probe which case they hit.
+var ErrInvalidToken = errors.New("invalid or expired token")
 
 // Claims is the JWT payload QuantSim tokens carry: a standard subject (the
 // user ID) plus a type distinguishing access from refresh tokens.
@@ -34,4 +41,21 @@ func GenerateToken(secret []byte, userID, tokenType string, ttl time.Duration) (
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(secret)
+}
+
+// ValidateToken checks signature and expiry and returns the parsed claims.
+// It rejects anything not signed with HMAC, regardless of what alg the
+// token header claims, so a token can't downgrade its own verification.
+func ValidateToken(secret []byte, tokenString string) (*Claims, error) {
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, ErrInvalidToken
+		}
+		return secret, nil
+	})
+	if err != nil || !token.Valid {
+		return nil, ErrInvalidToken
+	}
+	return claims, nil
 }

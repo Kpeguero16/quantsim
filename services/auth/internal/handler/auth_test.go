@@ -144,6 +144,61 @@ func TestLoginHandler_WrongPasswordAndUnknownEmail_IdenticalResponse(t *testing.
 	}
 }
 
+func TestRefreshHandler_Success(t *testing.T) {
+	r := newTestRouter()
+	registerBody, _ := json.Marshal(map[string]string{
+		"email": "a@b.com", "username": "alice", "password": "pw12345678",
+	})
+	registerRec := doRequest(t, r, http.MethodPost, "/auth/register", registerBody)
+	var registerTokens service.TokenPair
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registerTokens); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+
+	refreshBody, _ := json.Marshal(map[string]string{"refresh_token": registerTokens.RefreshToken})
+	rec := doRequest(t, r, http.MethodPost, "/auth/refresh", refreshBody)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var newTokens service.TokenPair
+	if err := json.Unmarshal(rec.Body.Bytes(), &newTokens); err != nil {
+		t.Fatalf("failed to decode refresh response: %v", err)
+	}
+	if newTokens.AccessToken == "" || newTokens.RefreshToken == "" {
+		t.Fatal("expected non-empty tokens in refresh response")
+	}
+}
+
+func TestRefreshHandler_AccessTokenRejected(t *testing.T) {
+	r := newTestRouter()
+	registerBody, _ := json.Marshal(map[string]string{
+		"email": "a@b.com", "username": "alice", "password": "pw12345678",
+	})
+	registerRec := doRequest(t, r, http.MethodPost, "/auth/register", registerBody)
+	var registerTokens service.TokenPair
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registerTokens); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+
+	refreshBody, _ := json.Marshal(map[string]string{"refresh_token": registerTokens.AccessToken})
+	rec := doRequest(t, r, http.MethodPost, "/auth/refresh", refreshBody)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for access token used as refresh, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRefreshHandler_GarbageToken(t *testing.T) {
+	r := newTestRouter()
+	body, _ := json.Marshal(map[string]string{"refresh_token": "not-a-real-token"})
+	rec := doRequest(t, r, http.MethodPost, "/auth/refresh", body)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	r := newTestRouter()
 	rec := doRequest(t, r, http.MethodGet, "/healthz", nil)
