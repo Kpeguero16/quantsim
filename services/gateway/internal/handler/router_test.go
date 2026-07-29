@@ -1,0 +1,263 @@
+package handler_test
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+	"time"
+
+	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
+	"github.com/kpeguero/quantsim/services/gateway/internal/handler"
+	"github.com/kpeguero/quantsim/services/gateway/internal/httperr"
+	"github.com/kpeguero/quantsim/services/gateway/internal/proxy"
+)
+
+const (
+	testOrigin = "http://localhost:5173"
+	testUserID = "11111111-2222-3333-4444-555555555555"
+)
+
+var testSecret = []byte("test-secret-at-least-32-bytes-long!!")
+
+// backendCall records what a backend service actually received, so tests can
+// assert both that a request arrived and that it arrived unchanged.
+type backendCall struct {
+	hit    bool
+	path   string
+	userID string
+	auth   string
+}
+
+// newGateway spins up fake auth and market-data backends and returns a router
+// wired to them, plus the recorders for each backend.
+func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
+	t.Helper()
+
+	authCall := &backendCall{}
+	mdCall := &backendCall{}
+
+	record := func(c *backendCall) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			c.hit = true
+			c.path = r.URL.Path
+			c.userID = r.Header.Get("X-User-ID")
+			c.auth = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}
+
+	authBackend := httptest.NewServer(record(authCall))
+	t.Cleanup(authBackend.Close)
+	mdBackend := httptest.NewServer(record(mdCall))
+	t.Cleanup(mdBackend.Close)
+
+	authURL, err := url.Parse(authBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing auth backend URL: %v", err)
+	}
+	mdURL, err := url.Parse(mdBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing market-data backend URL: %v", err)
+	}
+
+	transport := proxy.NewTransport()
+	r := handler.NewRouter(
+		proxy.New(authURL, transport, "auth"),
+		proxy.New(mdURL, transport, "market-data"),
+		testSecret,
+		testOrigin,
+	)
+	return r, authCall, mdCall
+}
+
+func accessToken(t *testing.T) string {
+	t.Helper()
+	token, err := pkgauth.GenerateToken(testSecret, testUserID, pkgauth.TokenTypeAccess, time.Minute)
+	if err != nil {
+		t.Fatalf("generating token: %v", err)
+	}
+	return token
+}
+
+func TestHealthzIsLocalAndUnauthenticated(t *testing.T) {
+	gw, authCall, mdCall := newGateway(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200", rec.Code)
+	}
+	if authCall.hit || mdCall.hit {
+		t.Error("/healthz reached a backend; it must be answered by the gateway itself")
+	}
+}
+
+func TestAuthRoutesArePublic(t *testing.T) {
+	gw, authCall, _ := newGateway(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", nil)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if !authCall.hit {
+		t.Fatal("/auth/register did not reach the auth backend without a token")
+	}
+	if authCall.path != "/auth/register" {
+		t.Errorf("auth backend saw path %q, want /auth/register unchanged", authCall.path)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want the backend's 200", rec.Code)
+	}
+}
+
+// TestProtectedRouteWithoutTokenIsBlocked is the central authorization
+// guarantee: the request must be rejected at the gateway and never forwarded.
+func TestProtectedRouteWithoutTokenIsBlocked(t *testing.T) {
+	for _, path := range []string{"/market-data/symbols", "/trading/orders"} {
+		t.Run(path, func(t *testing.T) {
+			gw, _, mdCall := newGateway(t)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			gw.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("got status %d, want 401", rec.Code)
+			}
+			if mdCall.hit {
+				t.Error("request reached a backend without a valid token")
+			}
+
+			var body httperr.ErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("401 body is not the JSON error shape: %v (body %q)", err, rec.Body.String())
+			}
+			if body.Code != "invalid_token" {
+				t.Errorf("got code %q, want invalid_token", body.Code)
+			}
+		})
+	}
+}
+
+func TestProtectedRouteWithTokenIsProxied(t *testing.T) {
+	gw, _, mdCall := newGateway(t)
+	token := accessToken(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/market-data/prices/AAPL", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+	if !mdCall.hit {
+		t.Fatal("request did not reach the market-data backend")
+	}
+	if mdCall.path != "/market-data/prices/AAPL" {
+		t.Errorf("backend saw path %q, want it unchanged", mdCall.path)
+	}
+	if mdCall.userID != testUserID {
+		t.Errorf("backend saw X-User-ID %q, want %q", mdCall.userID, testUserID)
+	}
+	if mdCall.auth != "Bearer "+token {
+		t.Error("Authorization header was not forwarded intact")
+	}
+}
+
+// TestSpoofedUserIDNeverReachesBackend covers the two ways a caller might try
+// to set identity by hand: with no token at all, and alongside a valid one.
+func TestSpoofedUserIDNeverReachesBackend(t *testing.T) {
+	t.Run("public route, no token", func(t *testing.T) {
+		gw, authCall, _ := newGateway(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.Header.Set("X-User-ID", "attacker-chosen")
+		gw.ServeHTTP(httptest.NewRecorder(), req)
+
+		if !authCall.hit {
+			t.Fatal("request did not reach the auth backend")
+		}
+		if authCall.userID != "" {
+			t.Errorf("auth backend saw X-User-ID %q; it must be stripped", authCall.userID)
+		}
+	})
+
+	t.Run("protected route, valid token plus spoof", func(t *testing.T) {
+		gw, _, mdCall := newGateway(t)
+
+		req := httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil)
+		req.Header.Set("Authorization", "Bearer "+accessToken(t))
+		req.Header.Set("X-User-ID", "attacker-chosen")
+		gw.ServeHTTP(httptest.NewRecorder(), req)
+
+		if mdCall.userID != testUserID {
+			t.Errorf("backend saw X-User-ID %q, want the token subject %q", mdCall.userID, testUserID)
+		}
+	})
+}
+
+func TestTradingReturns501(t *testing.T) {
+	gw, _, _ := newGateway(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/trading/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("got status %d, want 501", rec.Code)
+	}
+
+	var body httperr.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("501 body is not the JSON error shape: %v", err)
+	}
+	if body.Code != "not_implemented" {
+		t.Errorf("got code %q, want not_implemented", body.Code)
+	}
+}
+
+// TestUnauthorizedResponseCarriesCORSHeaders is why CORS sits outside
+// RequireAuth. Without it the browser turns a 401 into an opaque network
+// error and the real status never reaches the frontend.
+func TestUnauthorizedResponseCarriesCORSHeaders(t *testing.T) {
+	gw, _, _ := newGateway(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil)
+	req.Header.Set("Origin", testOrigin)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got status %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != testOrigin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q on a 401", got, testOrigin)
+	}
+}
+
+// TestPreflightNeedsNoTokenAndIsNotProxied: a browser sends preflights
+// without Authorization, so a preflight that required auth would make every
+// cross-origin call from the frontend fail.
+func TestPreflightNeedsNoTokenAndIsNotProxied(t *testing.T) {
+	gw, _, mdCall := newGateway(t)
+
+	req := httptest.NewRequest(http.MethodOptions, "/market-data/symbols", nil)
+	req.Header.Set("Origin", testOrigin)
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("got status %d, want 204", rec.Code)
+	}
+	if mdCall.hit {
+		t.Error("preflight was proxied to the backend")
+	}
+}

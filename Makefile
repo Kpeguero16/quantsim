@@ -40,4 +40,4 @@ run-market-data:
 	cd services/market-data && go run ./cmd/server
 
 run-gateway:
-	cd services/gateway && go run .
+	cd services/gateway && go run ./cmd/server
