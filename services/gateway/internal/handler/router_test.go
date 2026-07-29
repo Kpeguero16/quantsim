@@ -223,6 +223,48 @@ func TestTradingReturns501(t *testing.T) {
 	}
 }
 
+// TestUnmatchedRoutesUseTheJSONErrorShape: chi answers these in plain text by
+// default. A frontend calling response.json() on an error path -- reasonable,
+// since every other QuantSim endpoint honours the shape -- would otherwise
+// throw a parse error on a typo'd URL instead of showing the real problem.
+func TestUnmatchedRoutesUseTheJSONErrorShape(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"unknown path", http.MethodGet, "/nope", http.StatusNotFound, "not_found"},
+		{"wrong method on healthz", http.MethodPost, "/healthz", http.StatusMethodNotAllowed, "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw, _, _ := newGateway(t)
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			gw.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("got Content-Type %q, want application/json", ct)
+			}
+
+			var body httperr.ErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not the JSON error shape: %v (body %q)", err, rec.Body.String())
+			}
+			if body.Code != tt.wantCode {
+				t.Errorf("got code %q, want %q", body.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
 // TestUnauthorizedResponseCarriesCORSHeaders is why CORS sits outside
 // RequireAuth. Without it the browser turns a 401 into an opaque network
 // error and the real status never reaches the frontend.

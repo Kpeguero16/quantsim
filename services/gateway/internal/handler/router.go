@@ -28,6 +28,17 @@ func NewRouter(authProxy, marketDataProxy http.Handler, jwtSecret []byte, allowe
 	r.Use(middleware.StripUserID())
 	r.Use(middleware.CORS(allowedOrigin))
 
+	// chi's defaults answer these in plain text, which breaks the JSON error
+	// contract every other QuantSim endpoint honours -- a frontend that calls
+	// response.json() on an error path would throw on a typo'd URL rather
+	// than showing the error.
+	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+		httperr.Write(w, http.StatusNotFound, "not_found", "no route matches this path")
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
+		httperr.Write(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed for this path")
+	})
+
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
