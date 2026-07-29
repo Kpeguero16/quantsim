@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -125,17 +126,19 @@ func TestForwardingHeadersAreNotClientControlled(t *testing.T) {
 	}
 }
 
+// failingTransport fails every request, so the ErrorHandler path is exercised
+// without depending on a port staying closed between bind and dial.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("dial tcp 127.0.0.1:8082: connect: connection refused")
+}
+
 // TestUnreachableBackendReturnsJSON502 covers SPEC.md 2.8. ReverseProxy's
 // default ErrorHandler writes an empty body; the gateway must not, or the
 // frontend has nothing to show and the JSON error contract is broken.
 func TestUnreachableBackendReturnsJSON502(t *testing.T) {
-	// Start a server only to take a port, then close it -- the address is
-	// now guaranteed to refuse connections.
-	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	deadURL := dead.URL
-	dead.Close()
-
-	p := proxy.New(mustURL(t, deadURL), proxy.NewTransport(), "market-data")
+	p := proxy.New(mustURL(t, "http://market-data.invalid"), failingTransport{}, "market-data")
 
 	req := httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil)
 	rec := httptest.NewRecorder()
