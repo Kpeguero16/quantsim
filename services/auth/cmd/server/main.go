@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
 	"github.com/kpeguero/quantsim/services/auth/internal/handler"
 	"github.com/kpeguero/quantsim/services/auth/internal/service"
 	"github.com/kpeguero/quantsim/services/auth/internal/store"
@@ -22,9 +23,19 @@ func main() {
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET is required")
 	}
+	if err := pkgauth.ValidateSecret([]byte(jwtSecret)); err != nil {
+		log.Fatal(err)
+	}
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
+	}
+	// Loopback by default: this service has no authentication of its own, so
+	// only the gateway is meant to reach it. Set BIND_ADDR=0.0.0.0 when it
+	// runs in a container behind a real network boundary.
+	bindAddr := os.Getenv("BIND_ADDR")
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
 	}
 
 	ctx := context.Background()
@@ -39,8 +50,9 @@ func main() {
 	authHandler := handler.NewAuthHandler(svc)
 	router := handler.NewRouter(authHandler, []byte(jwtSecret))
 
-	log.Printf("auth service listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, router); err != nil {
+	addr := bindAddr + ":" + port
+	log.Printf("auth service listening on %s", addr)
+	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Fatal(err)
 	}
 }

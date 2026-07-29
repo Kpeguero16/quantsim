@@ -37,6 +37,13 @@ func main() {
 	if port == "" {
 		port = "8082"
 	}
+	// Loopback by default: this service has no authentication of its own, so
+	// only the gateway is meant to reach it. Set BIND_ADDR=0.0.0.0 when it
+	// runs in a container behind a real network boundary.
+	bindAddr := os.Getenv("BIND_ADDR")
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, databaseURL)
@@ -62,8 +69,9 @@ func main() {
 	poller := service.NewPoller(alpacaClient, priceCache, service.DefaultWatchlist, service.PollInterval)
 	go poller.Run(context.Background())
 
-	log.Printf("market-data service listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, router); err != nil {
+	addr := bindAddr + ":" + port
+	log.Printf("market-data service listening on %s", addr)
+	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Fatal(err)
 	}
 }
