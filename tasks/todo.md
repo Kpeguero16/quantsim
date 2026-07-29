@@ -1,11 +1,9 @@
-# QuantSim Market Data Service — Task Checklist
+# QuantSim Market Data Service — Live Polling Task Checklist
 
 Full detail (acceptance criteria, verification commands, dependency graph) in `tasks/plan.md`. Each task is a checkpoint: implement, verify, stop for architect review before starting the next.
 
-Prior Auth Service (Step 4) checklist archived at `docs/archive/phase1-step4-auth/todo.md` — complete.
+Prior Market Data (Step 5, historical ingestion) checklist archived at `docs/archive/phase1-step5-market-data/todo.md` — complete. Auth Service (Step 4) archived at `docs/archive/phase1-step4-auth/todo.md` — complete.
 
-- [x] **Module wiring** — add `./services/market-data` to root `go.work`
-- [x] **Task 1** — Skeleton + `GET /market-data/symbols`
-- [x] **Task 2** — Alpaca client (`internal/alpaca`)
-- [x] **Task 3** — `POST /market-data/ingest` end-to-end
-- [x] **Task 4** — `GET /market-data/history/:symbol`
+- [x] **Task 1** — Redis price cache + `GET /market-data/prices/:symbol` (read path)
+- [ ] **Task 2** — Alpaca snapshot client (`internal/alpaca`)
+- [ ] **Task 3** — Poller: background tick loop, end-to-end

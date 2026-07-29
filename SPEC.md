@@ -1,50 +1,62 @@
-# SPEC — QuantSim Market Data Service (Phase 1, Step 5)
+# SPEC — QuantSim Market Data Service (Phase 1, Step 6)
 
-Status: **Approved 2026-07-29**
-Scope: Alpaca REST client + historical ingestion for the Market Data Service. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior spec/plan/todo for the Auth Service (Step 4, complete) archived at `docs/archive/phase1-step4-auth/`.
+Status: **Draft — awaiting architect review**
+Scope: live price polling + Redis for the Market Data Service. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service) and `docs/archive/phase1-step5-market-data/` (historical ingestion — same service, complete).
 
 ---
 
 ## 1. Objective
 
-Per `PHASE1_CHECKLIST.md` Step 5, build the historical half of the Market Data Service, so that:
+Per `PHASE1_CHECKLIST.md` Step 6, add the live half of the Market Data Service, so that:
 
-- An operator can trigger ingestion of daily OHLC bars for one or more symbols from Alpaca into Postgres (`historical_prices`, already migrated in `003_historical_prices.up.sql`)
-- Ingestion is idempotent — re-running it for the same symbol/timeframe/timestamp updates rather than duplicates
-- Any client (frontend later, curl now) can query stored historical candles for a symbol
-- Any client can fetch the curated watchlist QuantSim supports
+- A background process polls Alpaca for the watchlist's latest prices every 10–15s
+- Latest prices land in Redis, keyed per symbol, so any HTTP request can read them without hitting Alpaca
+- Each update is also published to a per-symbol Redis pub/sub channel, for a future WebSocket fan-out (gateway, later phase) to consume — this spec only needs the publish side to be correct and independently verifiable
+- Any client (frontend later, curl/redis-cli now) can read the latest cached price for one symbol
 
-This unblocks Step 6 (live polling + Redis, same service) and Step 8 (frontend price chart), both of which read from this service.
+This unblocks Step 8's dashboard (symbol list with live prices) and the future WebSocket work mentioned in the checklist. It does **not** unblock anything in Step 7 (gateway) beyond having another `/market-data/*` route to proxy.
 
-**Out of scope for this spec:** live/streaming prices, Redis, WebSocket fan-out (Step 6); gateway routing (Step 7); frontend (Step 8); trading engine, backtesting, AI insights.
+**Out of scope for this spec:** WebSocket fan-out itself, gateway routing (Step 7), frontend (Step 8), any symbol outside the curated watchlist, historical data (Step 5, complete).
 
 ---
 
 ## 2. Decisions
 
-### 2.1 Alpaca data feed: `iex` (confirm your plan tier)
+### 2.1 Redis client: `github.com/redis/go-redis/v9` (checklist's import path is stale)
 
-Alpaca's free market data plan only entitles you to the `iex` feed (real-time IEX exchange only), not `sip` (full consolidated tape, paid). This spec defaults every Alpaca request to `feed=iex`. **If you're on a paid Alpaca data plan, tell me and I'll default to `sip` instead** — this is a one-line change but changes what data quality to expect (IEX is a single exchange's view, thinner volume than SIP).
+`PHASE1_CHECKLIST.md` says `go-redis/redis/v9`. The module renamed — current canonical import is `github.com/redis/go-redis/v9` (verified against the package's current docs, not memory). Using the old path would fail to resolve.
 
-### 2.2 Ingestion date range: last 2 years by default, overridable per request
+### 2.2 One batched Alpaca call per tick, not one call per symbol
 
-`POST /market-data/ingest` accepts optional `start`/`end` (ISO 8601 dates). If omitted: `end = yesterday` (today's daily bar may not exist yet mid-session), `start = end - 2 years`. Matches `agents.md`'s "multi-year historical price history" goal without hardcoding "all history," which Alpaca doesn't offer a clean "since IPO" query for anyway.
+Alpaca's snapshot endpoint (`GET /v2/stocks/snapshots?symbols=...`) accepts a comma-separated symbol list and returns all of them in one response. The poller makes **one** request per tick for the full watchlist, not seven. This also means a single Alpaca failure is atomic across the whole tick — unlike `Ingest` (Step 5), there's no per-symbol try/catch here, because there's no per-symbol request to fail independently.
 
-### 2.3 Symbol input: any symbol accepted, watchlist is just the default
+### 2.3 Poll interval: 15s, fixed
 
-`POST /market-data/ingest` accepts an arbitrary `symbols` list (not restricted to the curated watchlist) — useful later for backtesting on symbols outside the dashboard's default view. If `symbols` is omitted/empty, ingest the curated watchlist (`AAPL, MSFT, GOOGL, AMZN, TSLA, SPY, QQQ`) as a convenience default.
+Middle-to-upper end of the checklist's "10-15 seconds," as a constant (`PollInterval`), not env-configurable — Phase 1 doesn't need that knob yet. One batched request every 15s is trivially within Alpaca's free-tier rate limit (the snapshot endpoint reports `X-RateLimit-*` headers; a request every 15s is nowhere near typical per-minute limits).
 
-### 2.4 Idempotency: Postgres `ON CONFLICT` upsert
+### 2.4 "Latest price" = `latestTrade.p` only, no `dailyBar` fallback
 
-`historical_prices` already has `UNIQUE(symbol, timeframe, timestamp)` (migration 003). Ingestion upserts on that constraint — re-running ingestion for an overlapping range updates OHLCV in place, never errors, never duplicates.
+Alpaca's snapshot payload includes `latestTrade`, `latestQuote`, `minuteBar`, `dailyBar`, and `prevDailyBar`. This spec uses `latestTrade.p` (the actual last executed trade price) as "the" price — it's what a trading dashboard means by "latest price." If a symbol's snapshot has no `latestTrade` for a tick (e.g., pre-market on a thin feed), that symbol is **skipped for that tick** — old cached value stays until TTL (§2.5) or the next successful tick — rather than substituting `dailyBar.c` or similar. Keeps the poller's logic to "cache what's real, skip what isn't," matching `Ingest`'s existing "skip and report" instinct without adding a fallback chain nobody asked for.
 
-### 2.5 Partial failure: per-symbol result, not all-or-nothing
+### 2.5 Redis key TTL: 45s (3× poll interval)
 
-`POST /market-data/ingest` with multiple symbols processes each independently; one symbol's Alpaca error (bad ticker, rate limit) doesn't abort the others. Response reports a per-symbol result so the caller can see exactly what succeeded.
+`price:{symbol}` is written with a 45s TTL on every successful tick. If the poller stalls or Alpaca is down for more than ~3 ticks, the key expires and `GET /market-data/prices/:symbol` starts returning 404 instead of silently serving an arbitrarily stale price forever. Cheap correctness win, no extra moving parts (Redis does the expiry).
 
-### 2.6 History query defaults
+### 2.6 Pub/sub: publish every tick, no change-dedup
 
-`GET /market-data/history/:symbol` defaults `timeframe=1Day` (the only timeframe this spec ingests), `limit=500` bars (most recent first... actually chronological ascending, see §5), max `limit=2000`. No data for a valid-looking symbol → `200` with an empty `bars` array, not `404` — an unfetched symbol isn't a client error.
+Every successful per-symbol cache write also publishes the same JSON payload to `prices:{symbol}`. No "only publish if price changed" logic — that's an optimization for a consumer that doesn't exist yet in Phase 1 (the WebSocket fan-out is explicitly a later phase per the checklist). Verified this spec by `redis-cli SUBSCRIBE`, not by a real consumer.
+
+### 2.7 Polling scope: fixed to `DefaultWatchlist`, not request-configurable
+
+The poller always polls the existing `DefaultWatchlist` (7 symbols, already defined in `internal/service/market_data.go`). No endpoint to add/remove symbols from live polling in Phase 1 — matches the checklist's "for the watchlist" wording and keeps this step's scope to what Step 8's dashboard actually needs.
+
+### 2.8 `GET /market-data/prices/:symbol` on a cache miss: `404`, not `200` with a null price
+
+This is a deliberate contrast with `History` (Step 5, §2.6 of the archived spec), which treats "no data yet" as a valid empty result. Here the watchlist is small and fixed, and a cache miss means one of: the service just started and hasn't ticked yet, Redis had an issue, the TTL expired because polling stalled, or the symbol isn't in the watchlist at all. All four are worth surfacing as "not available right now," not silently returning a null/zero price a chart could plot as real data.
+
+### 2.9 Poller lifecycle: goroutine + `context.Background()`, no graceful shutdown
+
+Started once in `main.go` alongside the HTTP server; runs until the process exits. No cancellation, no drain-on-SIGTERM. This matches the HTTP server's own current lifecycle (also no graceful shutdown) — adding one only for the poller, ahead of doing it for the server too, would be inconsistent scope creep for a Phase 1 checklist item. Flagging so it's a conscious call, not an oversight.
 
 ---
 
@@ -53,99 +65,111 @@ Alpaca's free market data plan only entitles you to the `iex` feed (real-time IE
 | Command | Purpose |
 |---|---|
 | `make docker-up` / `make docker-down` | Start/stop Postgres + Redis |
-| `cd services/market-data && go run ./cmd/server` (or `make run-market-data` once wired) | Run the service locally |
+| `cd services/market-data && go run ./cmd/server` (or `make run-market-data`) | Run the service locally |
 | `cd services/market-data && go test ./...` | Run unit tests |
-| `cd services/market-data && go mod tidy` | Sync deps after adding imports |
+| `cd services/market-data && go mod tidy` | Sync deps after adding `go-redis` |
 
-Manual verification (real Alpaca account + keys required, per checklist "run ingestion once to populate the database"):
+Manual verification (real Alpaca + Redis running, per checklist "verify Redis keys are populated and updating"):
 ```
-curl localhost:8082/market-data/symbols
-curl -X POST localhost:8082/market-data/ingest -d '{"symbols":["AAPL","MSFT"]}'
-curl "localhost:8082/market-data/history/AAPL?limit=50"
+JWT_SECRET=unused DATABASE_URL=<...> REDIS_URL=<...> ALPACA_API_KEY=<real> ALPACA_API_SECRET=<real> PORT=8082 make run-market-data
+
+redis-cli -u "$REDIS_URL" GET price:AAPL              # JSON price payload, updates every ~15s
+redis-cli -u "$REDIS_URL" SUBSCRIBE prices:AAPL       # (separate terminal) watch publishes roll in
+curl -i localhost:8082/market-data/prices/AAPL         # 200 once the poller has ticked at least once
+curl -i localhost:8082/market-data/prices/ZZZZ         # 404 (not in watchlist, never cached)
 ```
-(Port `8082` proposed — auth used `8081`, gateway will route both later. Confirm or override.)
 
 ---
 
 ## 4. Project structure
 
+Existing (committed, unchanged by this spec except where noted):
+```
+services/market-data/
+  internal/alpaca/client.go, types.go      # GetBars (Step 5)
+  internal/service/market_data.go          # Timeframe, DefaultWatchlist, Ingest, History
+  internal/service/interfaces.go           # AlpacaClient, HistoricalPriceStore
+  internal/handler/router.go               # mounts /market-data/{symbols,ingest,history/{symbol}}
+  internal/handler/errors.go               # ErrorResponse, WriteError, WriteJSON
+```
+
 New, to be created by this spec:
 ```
 services/market-data/
-  cmd/server/main.go                     # env loading (fail-fast), pgx pool, wire client→store→service→handlers
-  internal/alpaca/client.go              # AlpacaClient: GetBars(ctx, symbol, timeframe, start, end) ([]Bar, error), pagination
-  internal/alpaca/client_test.go         # unit tests against httptest fixture server (no real Alpaca calls)
-  internal/alpaca/types.go               # Alpaca API response shapes (bars, next_page_token)
-  internal/service/types.go              # Bar, IngestRequest, IngestResult, HistoryResponse
-  internal/service/interfaces.go         # AlpacaClient, HistoricalPriceStore
-  internal/service/market_data.go        # Ingest, History, Symbols (business logic)
-  internal/service/errors.go             # sentinel errors mapped to HTTP status in handlers
-  internal/service/market_data_test.go   # unit tests, mocked AlpacaClient/HistoricalPriceStore
-  internal/store/historical_price_store.go      # PostgresHistoricalPriceStore: UpsertBars, GetHistory
-  internal/store/historical_price_store_test.go # mirrors auth's mock-store-is-enough-for-Phase-1 convention; real-Postgres check is the manual curl step
-  internal/handler/router.go             # chi router; mounts /healthz, /market-data/*
-  internal/handler/errors.go             # ErrorResponse{Code,Message} + WriteError (copy of auth's pattern — no shared pkg for this yet, see §7)
-  internal/handler/market_data.go        # IngestHandler, HistoryHandler, SymbolsHandler
-  internal/handler/market_data_test.go   # httptest-based handler tests
+  internal/alpaca/
+    client.go                    # + GetSnapshots(ctx, symbols []string) (map[string]Snapshot, error)
+    types.go                     # + Snapshot{LatestTrade *Trade; DailyBar, PrevDailyBar *Bar} wire shape
+    client_test.go               # + snapshot cases (httptest fixtures, no real Alpaca calls)
+  internal/cache/
+    redis_price_cache.go         # RedisPriceCache: SetPrice, GetPrice, PublishPrice (wraps go-redis/v9)
+  internal/service/
+    interfaces.go                # + SnapshotClient (added to existing AlpacaClient) or new SnapshotClient interface; + PriceCache
+    types.go                     # + Price{Symbol, Price, Timestamp}
+    errors.go                    # + ErrPriceNotCached (maps to 404)
+    live.go                      # Poller{snapshots, cache, symbols, interval}; Run(ctx) ticks + calls pollOnce; LatestPrice(ctx, symbol) reads cache
+    live_test.go                 # unit tests, mocked SnapshotClient/PriceCache
+    mock/mock.go                 # extend hand-written mocks with the new interface methods
+  internal/handler/
+    market_data.go                # + PricesHandler
+    market_data_test.go           # + cases (cache hit, cache miss)
+    router.go                     # + mount GET /market-data/prices/{symbol}
+  cmd/server/main.go              # + REDIS_URL fail-fast load, go-redis client, wire cache + Poller, `go poller.Run(ctx)`
 ```
 
-`go.work` at repo root gains `./services/market-data` (currently only `./pkg` and `./services/auth`).
+`services/market-data/go.mod` gains `github.com/redis/go-redis/v9` as a direct dependency (via `go get` + `go mod tidy`).
 
 ---
 
 ## 5. Code style / conventions
 
-- **Layering:** handler → service → store/client, one direction — same rule as the Auth Service. Service depends on `AlpacaClient`/`HistoricalPriceStore` interfaces, never on the concrete Postgres or HTTP types.
-- **Errors:** service returns sentinels (`ErrInvalidSymbol`, `ErrUpstreamUnavailable` for Alpaca failures → maps to `502`); handlers map to `{"code": "...", "message": "..."}` JSON, per `agents.md`'s standing rule.
-- **No Alpaca SDK** — plain `net/http`, per `PHASE1_CHECKLIST.md` Step 5. Base URL `https://data.alpaca.markets/v2`, headers `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY` from `ALPACA_API_KEY`/`ALPACA_API_SECRET` env vars.
-- **Alpaca pagination:** the bars endpoint returns `next_page_token`; loop until it's empty/absent. Confirm exact request/response field names against Alpaca's current docs before implementing the client (Task 2) — don't guess from memory, their API has changed shape across versions.
-- **Bar ordering:** store and return bars in ascending timestamp order (oldest → newest) — matches how a chart would consume them (Step 8) and how Alpaca returns them natively, so no re-sort needed if the client behaves.
-- **Router:** `go-chi/chi/v5`, routes mounted under `/market-data` via `r.Route("/market-data", ...)`, same convention as auth's `/auth`.
-- **New dependencies beyond `chi`/`pgx` require sign-off first** — none expected; no HTTP client library, no Alpaca SDK.
+- **Layering:** unchanged — handler → service → client/cache, service depends on interfaces only (`SnapshotClient`, `PriceCache`), never on `*alpaca.Client` or `*redis.Client` directly.
+- **Errors:** `ErrPriceNotCached` (service-level sentinel) → handler maps to `404` with the existing JSON error shape (`{"code": "...", "message": "..."}`). No new error shape.
+- **Redis key/channel naming:** `price:{SYMBOL}` (cache key), `prices:{SYMBOL}` (pub/sub channel) — symbol uppercased, matching `History`'s existing normalization.
+- **JSON payload (cache value = pub/sub message = `GET /prices/:symbol` response body):** `{"symbol": "AAPL", "price": 123.45, "timestamp": "2026-07-29T14:32:01Z"}`.
+- **No polling-specific HTTP client tuning beyond what `alpaca.Client` already has** (15s request timeout, from Step 5).
+- **New dependency beyond `github.com/redis/go-redis/v9` requires sign-off first** — none else expected.
 
 ---
 
 ## 6. Testing strategy
 
-- **Alpaca client:** unit tests using `httptest.Server` to fake Alpaca's responses (fixture JSON) — verifies auth headers sent, pagination looped correctly, non-200 mapped to an error. No real network calls in `go test`.
-- **Service layer:** table-driven unit tests, mocked `AlpacaClient`/`HistoricalPriceStore` (hand-written, no mocking library — matches `docs/TESTING_STRUCTURE.md`). Cover: successful ingest (single + multi-symbol), partial failure (one symbol errors, others succeed), empty history query, invalid `start`/`end`.
-- **Handlers:** `httptest`-based tests hitting the chi router, asserting status + JSON body.
-- **Not in scope:** real-Postgres integration tests, real-Alpaca integration tests, load testing — the manual curl checklist step is the real-dependency proof, per Phase 1's "manual/curl verification is sufficient" (`agents.md`).
+- **Alpaca client (`GetSnapshots`):** same `httptest.Server` fixture pattern as `GetBars` (Step 5) — verifies auth headers, multi-symbol response parsing, a symbol missing `latestTrade`, non-2xx status, malformed JSON. No real network calls.
+- **Service (`Poller`, `live_test.go`):** table-driven, mocked `SnapshotClient`/`PriceCache`. Cover: successful tick caches + publishes every symbol; one symbol missing `latestTrade` is skipped, others still succeed (§2.4); `SnapshotClient` error aborts the tick with no cache writes (§2.2, atomic failure); `LatestPrice` cache hit vs. `ErrPriceNotCached` on miss.
+- **Handlers:** `httptest`-based, mocked service — `200` on cache hit, `404` + JSON error shape on miss.
+- **`internal/cache` (Redis wrapper itself):** no dedicated unit test file, same call as Step 5 made for the Postgres store — it's a thin wrapper over `go-redis`, exercised for real via the manual `redis-cli`/curl steps in §3, not mocked-and-unit-tested. If that call turns out wrong, easy to add later.
+- **Not in scope:** real-Redis integration tests, load/concurrency testing, testing the 15s ticker's actual timing (tests call `pollOnce` directly, not `Run`'s ticker loop).
 - `go test ./...` passes before any checkpoint is marked done.
 
 ---
 
-## 7. Open question: JSON error helper duplication
-
-Auth's `internal/handler/errors.go` (`ErrorResponse`/`WriteError`) is service-local, not in `pkg/`. This spec repeats that same small file in market-data rather than extracting a shared `pkg/httputil` — it's ~15 lines, and premature sharing across 2 data points isn't worth a new `pkg/` package yet. **Flagging in case you'd rather extract it now** while there's a clean second caller to validate the abstraction against; happy to do either.
-
----
-
-## 8. Boundaries
+## 7. Boundaries
 
 **Always do:**
-- Follow the checkpoint order in `tasks/plan.md` — stop after each for review
-- Keep handler → service → store/client layering; service depends on interfaces only
-- Use the JSON error shape for every 4xx/5xx response
+- Keep handler → service → client/cache layering; service depends on interfaces only
+- Use the existing JSON error shape for `404`
 - Run `go test ./...` before flagging a checkpoint done
-- Verify Alpaca's bars endpoint contract against current official docs before writing the client (don't implement from memory/training data alone)
+- Verify the snapshot endpoint's request/response shape against current official Alpaca docs before implementing `GetSnapshots` (already done for this spec — see §2 — but re-verify at implementation time in case the docs changed)
 
 **Ask first:**
-- Any dependency beyond `go-chi/chi/v5`, `jackc/pgx/v5`
-- Any DB schema/migration change (none expected — `historical_prices` already fits)
-- Switching the default feed from `iex` to `sip` (§2.1) — needs to know your Alpaca plan tier
-- Extracting the JSON error helper into `pkg/` (§7)
+- Any dependency beyond `github.com/redis/go-redis/v9`
+- Any change to poll interval, TTL, or watchlist scope (§2.3, §2.5, §2.7) once implementation starts
+- Adding graceful shutdown for the poller and/or HTTP server (§2.9), if that becomes a priority
 
 **Never do:**
-- Commit `.env` or real Alpaca keys
-- Log API keys in plaintext (headers included)
-- Bypass the JSON error shape or interface-based dependency
+- Commit `.env` or real Redis/Alpaca credentials
+- Log API keys or the full `REDIS_URL` (may embed a password) in plaintext
+- Fabricate a price when `latestTrade` is missing (§2.4) — skip instead
 
 ---
 
-## Confirm before I start
+## 8. Confirm before I start
 
-- [x] Alpaca feed tier (§2.1): free tier only — `iex` confirmed
-- [x] Port `8082` (§3) — confirmed
-- [x] Checkpoint plan in `tasks/plan.md` (companion doc) — confirmed
-- [x] JSON error helper duplication (§7) — leave duplicated, confirmed
+- [ ] Redis client + import path (§2.1)
+- [ ] Batched single-call polling, 15s fixed interval (§2.2, §2.3)
+- [ ] `latestTrade`-only price, skip-on-missing, no `dailyBar` fallback (§2.4)
+- [ ] 45s TTL (§2.5)
+- [ ] Publish-every-tick pub/sub, no dedup (§2.6)
+- [ ] Watchlist-only polling scope (§2.7)
+- [ ] 404-on-miss for `/prices/:symbol`, contrasted with `History`'s empty-is-fine (§2.8)
+- [ ] No graceful shutdown for the poller (§2.9)
+- [ ] Project structure / checkpoint granularity in §4 — or would you rather see this broken into `tasks/plan.md` checkpoints (Alpaca snapshot client → Redis cache → poller → handler, mirroring Step 5's task order) before any code starts?
