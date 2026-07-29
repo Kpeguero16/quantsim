@@ -6,4 +6,4 @@ Prior Market Data (Step 5, historical ingestion) checklist archived at `docs/arc
 
 - [x] **Task 1** — Redis price cache + `GET /market-data/prices/:symbol` (read path)
 - [x] **Task 2** — Alpaca snapshot client (`internal/alpaca`)
-- [ ] **Task 3** — Poller: background tick loop, end-to-end
+- [x] **Task 3** — Poller: background tick loop, end-to-end

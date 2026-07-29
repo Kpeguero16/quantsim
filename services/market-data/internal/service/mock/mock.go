@@ -143,3 +143,26 @@ func (m *PriceCache) PublishPrice(ctx context.Context, symbol string, price serv
 	m.Published = append(m.Published, price)
 	return nil
 }
+
+// SnapshotClient is a scriptable SnapshotClient double keyed by symbol.
+type SnapshotClient struct {
+	Snapshots map[string]alpaca.Snapshot
+	Err       error
+
+	// LastSymbols records the symbols slice passed to the most recent
+	// GetSnapshots call, so tests can verify the poller makes one batched
+	// call for the whole watchlist rather than one call per symbol.
+	LastSymbols []string
+}
+
+func NewSnapshotClient() *SnapshotClient {
+	return &SnapshotClient{Snapshots: make(map[string]alpaca.Snapshot)}
+}
+
+func (m *SnapshotClient) GetSnapshots(ctx context.Context, symbols []string) (map[string]alpaca.Snapshot, error) {
+	m.LastSymbols = symbols
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.Snapshots, nil
+}

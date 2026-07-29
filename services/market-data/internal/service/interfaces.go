@@ -30,3 +30,10 @@ type PriceCache interface {
 	GetPrice(ctx context.Context, symbol string) (Price, error)
 	PublishPrice(ctx context.Context, symbol string, price Price) error
 }
+
+// SnapshotClient fetches latest-trade snapshots for a batch of symbols in
+// one request. Implemented by *alpaca.Client (same type as AlpacaClient) in
+// production; mocked in tests.
+type SnapshotClient interface {
+	GetSnapshots(ctx context.Context, symbols []string) (map[string]alpaca.Snapshot, error)
+}

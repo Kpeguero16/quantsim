@@ -59,6 +59,9 @@ func main() {
 	marketDataHandler := handler.NewMarketDataHandler(svc)
 	router := handler.NewRouter(marketDataHandler)
 
+	poller := service.NewPoller(alpacaClient, priceCache, service.DefaultWatchlist, service.PollInterval)
+	go poller.Run(context.Background())
+
 	log.Printf("market-data service listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, router); err != nil {
 		log.Fatal(err)
