@@ -34,7 +34,7 @@ migrate-force:
 	migrate -path infra/migrations -database "$$DATABASE_URL" force $(VERSION)
 
 run-auth:
-	cd services/auth && go run .
+	cd services/auth && go run ./cmd/server
 
 run-market-data:
 	cd services/market-data && go run .
