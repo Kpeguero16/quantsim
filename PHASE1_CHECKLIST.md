@@ -156,17 +156,17 @@ Working directory: `services/market-data/`
 
 *(Steps 5–8 are not started until Step 4 exposes a working HTTP auth API.)*
 
-- [ ] Add Go dependencies: `go-chi/chi/v5`, `jackc/pgx/v5`
-- [ ] Build Alpaca REST client (plain HTTP, no SDK):
+- [x] Add Go dependencies: `go-chi/chi/v5`, `jackc/pgx/v5`
+- [x] Build Alpaca REST client (plain HTTP, no SDK):
   - Base URL: `https://data.alpaca.markets/v2`
   - Auth headers: `APCA-API-KEY-ID` (from `ALPACA_API_KEY`), `APCA-API-SECRET-KEY` (from `ALPACA_API_SECRET`)
-- [ ] Implement endpoints:
-  - [ ] `POST /market-data/ingest` — accepts symbol list, fetches **daily** bars from Alpaca (`/v2/stocks/{symbol}/bars`, timeframe=1Day), upserts into `historical_prices` by (symbol, timeframe, timestamp) for idempotency
-  - [ ] `GET /market-data/history/:symbol` — query historical candles from Postgres
-  - [ ] `GET /market-data/symbols` — return curated watchlist (AAPL, MSFT, GOOGL, AMZN, TSLA, SPY, QQQ)
-- [ ] Return 4xx/5xx with JSON body for errors
-- [ ] Run ingestion once to populate the database
-- [ ] Verify historical data is queryable
+- [x] Implement endpoints:
+  - [x] `POST /market-data/ingest` — accepts symbol list, fetches **daily** bars from Alpaca (`/v2/stocks/{symbol}/bars`, timeframe=1Day), upserts into `historical_prices` by (symbol, timeframe, timestamp) for idempotency
+  - [x] `GET /market-data/history/:symbol` — query historical candles from Postgres
+  - [x] `GET /market-data/symbols` — return curated watchlist (AAPL, MSFT, GOOGL, AMZN, TSLA, SPY, QQQ)
+- [x] Return 4xx/5xx with JSON body for errors
+- [x] Run ingestion once to populate the database
+- [x] Verify historical data is queryable
 
 ---
 
