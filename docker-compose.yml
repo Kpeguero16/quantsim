@@ -1,12 +1,19 @@
 # QuantSim — Postgres and Redis for local development.
 # Run from repo root: docker compose up -d (or make docker-up)
+#
+# Every published port is bound to 127.0.0.1 on purpose. Docker publishes
+# ports by writing NAT rules that bypass the host firewall, so "0.0.0.0:6379"
+# in a compose file really does mean "reachable from anyone on the network" --
+# and Redis here has no password at all. The Go services bind to loopback for
+# the same reason (see BIND_ADDR in .env.example); leaving the datastores
+# behind them exposed would defeat that entirely.
 
 services:
   postgres:
     image: postgres:16
     container_name: quantsim-postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -24,7 +31,7 @@ services:
     image: redis:7
     container_name: quantsim-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - quantsim_redis:/data
     healthcheck:
@@ -40,7 +47,7 @@ services:
     profiles:
       - tools
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@quantsim.local}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
