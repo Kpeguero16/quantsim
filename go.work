@@ -3,5 +3,6 @@ go 1.25.0
 use (
 	./pkg
 	./services/auth
+	./services/gateway
 	./services/market-data
 )
