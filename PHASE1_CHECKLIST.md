@@ -136,17 +136,17 @@ Working directory: `services/auth/`
   - [x] `jackc/pgx/v5` (Postgres), `google/uuid` — direct `require`s in `go.mod`
   - [x] `PostgresUserStore` / `PostgresAccountStore` in `internal/store/` (create user, get by email, create account)
   - [x] `UserStore` / `AccountStore` interfaces and request/response types in `internal/service/` (`RegisterRequest`, `LoginRequest`, `TokenPair`, `MeResponse`, etc.)
-- [ ] Add **direct** dependencies and wire them in HTTP code: `go-chi/chi/v5`, `golang-jwt/jwt/v5`, `golang.org/x/crypto` (bcrypt); run `go mod tidy` after adding imports.
-- [ ] Implement endpoints:
-  - [ ] `POST /auth/register` — hash password, insert user, create account with $100k balance, return JWT
-  - [ ] `POST /auth/login` — validate credentials, return access token + refresh token
-  - [ ] `POST /auth/refresh` — validate refresh token, issue new pair
-  - [ ] `GET /auth/me` — protected; return user profile from JWT claims
-- [ ] JWT config: HS256 signing, ~15min access token, ~7 day refresh token
-- [ ] Extract shared JWT middleware into `pkg/auth/` for reuse by other services
-- [ ] Return 4xx/5xx with JSON body (code + message) for invalid input and server errors
-- [ ] Test all endpoints with curl or Postman
-- [ ] (Optional) Add 1–2 integration tests per service
+- [x] Add **direct** dependencies and wire them in HTTP code: `go-chi/chi/v5`, `golang-jwt/jwt/v5`, `golang.org/x/crypto` (bcrypt); run `go mod tidy` after adding imports.
+- [x] Implement endpoints:
+  - [x] `POST /auth/register` — hash password, insert user, create account with $100k balance, return JWT
+  - [x] `POST /auth/login` — validate credentials, return access token + refresh token
+  - [x] `POST /auth/refresh` — validate refresh token, issue new pair
+  - [x] `GET /auth/me` — protected; return user profile from JWT claims
+- [x] JWT config: HS256 signing, ~15min access token, ~7 day refresh token
+- [x] Extract shared JWT middleware into `pkg/auth/` for reuse by other services
+- [x] Return 4xx/5xx with JSON body (code + message) for invalid input and server errors
+- [x] Test all endpoints with curl or Postman
+- [x] Add unit tests per service (service + handler layers, table-driven, mocked stores; see `tasks/plan.md`)
 
 ---
 
