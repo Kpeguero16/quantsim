@@ -1,9 +1,11 @@
-# QuantSim Auth Service — Task Checklist
+# QuantSim Market Data Service — Task Checklist
 
 Full detail (acceptance criteria, verification commands, dependency graph) in `tasks/plan.md`. Each task is a checkpoint: implement, verify, stop for architect review before starting the next.
 
-- [x] **Module wiring** — `go.work` at repo root, `Makefile` `run-auth` fix
-- [x] **Task 1** — Skeleton + `POST /auth/register` end-to-end
-- [x] **Task 2** — `POST /auth/login`
-- [x] **Task 3** — `POST /auth/refresh`
-- [x] **Task 4** — `GET /auth/me` (protected) + `pkg/auth` middleware
+Prior Auth Service (Step 4) checklist archived at `docs/archive/phase1-step4-auth/todo.md` — complete.
+
+- [ ] **Module wiring** — add `./services/market-data` to root `go.work`
+- [ ] **Task 1** — Skeleton + `GET /market-data/symbols`
+- [ ] **Task 2** — Alpaca client (`internal/alpaca`)
+- [ ] **Task 3** — `POST /market-data/ingest` end-to-end
+- [ ] **Task 4** — `GET /market-data/history/:symbol`
