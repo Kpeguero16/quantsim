@@ -100,6 +100,23 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (*TokenP
 	return s.issueTokenPair(userID)
 }
 
+// Me returns the profile for an already-authenticated user. The caller
+// (pkg/auth's middleware, via the handler) is the sole JWT gatekeeper for
+// this path -- Me does no token parsing, just a store lookup.
+func (s *Service) Me(ctx context.Context, userID uuid.UUID) (*MeResponse, error) {
+	user, err := s.users.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, ErrUserNotFound
+	}
+	return &MeResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		Username:  user.Username,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}, nil
+}
+
 func (s *Service) issueTokenPair(userID uuid.UUID) (*TokenPair, error) {
 	access, err := pkgauth.GenerateToken(s.jwtSecret, userID.String(), pkgauth.TokenTypeAccess, AccessTokenTTL)
 	if err != nil {

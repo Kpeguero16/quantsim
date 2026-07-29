@@ -15,3 +15,8 @@ var ErrInvalidCredentials = errors.New("invalid email or password")
 // malformed, wrong signature, or the wrong token type presented. Handlers
 // map this to 401.
 var ErrTokenInvalid = errors.New("invalid or expired token")
+
+// ErrUserNotFound is returned by Me when the token is valid but the user row
+// is gone (e.g. deleted after the token was issued). Handlers map this to
+// 401, not 404 -- same failure vocabulary as every other /auth/me rejection.
+var ErrUserNotFound = errors.New("user not found")

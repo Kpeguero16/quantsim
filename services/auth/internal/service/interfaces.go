@@ -5,6 +5,7 @@ import "github.com/google/uuid"
 type UserStore interface {
 	CreateUser(ctx context.Context, email, username string, passwordHash []byte) (uuid.UUID, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
+	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
 }
 
 type AccountStore interface {

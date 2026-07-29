@@ -18,7 +18,7 @@ func newTestRouter() http.Handler {
 	users := mock.NewUserStore()
 	accounts := &mock.AccountStore{}
 	svc := service.NewService(users, accounts, testSecret)
-	return handler.NewRouter(handler.NewAuthHandler(svc))
+	return handler.NewRouter(handler.NewAuthHandler(svc), testSecret)
 }
 
 func doRequest(t *testing.T, r http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
@@ -194,6 +194,89 @@ func TestRefreshHandler_GarbageToken(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"refresh_token": "not-a-real-token"})
 	rec := doRequest(t, r, http.MethodPost, "/auth/refresh", body)
 
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func registerAndDecode(t *testing.T, r http.Handler, email, username, password string) service.TokenPair {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{
+		"email": email, "username": username, "password": password,
+	})
+	rec := doRequest(t, r, http.MethodPost, "/auth/register", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected register to succeed with 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var tokens service.TokenPair
+	if err := json.Unmarshal(rec.Body.Bytes(), &tokens); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+	return tokens
+}
+
+func doMeRequest(t *testing.T, r http.Handler, authHeader string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestMeHandler_Success(t *testing.T) {
+	r := newTestRouter()
+	tokens := registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+
+	rec := doMeRequest(t, r, "Bearer "+tokens.AccessToken)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var profile service.MeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &profile); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if profile.Email != "a@b.com" || profile.Username != "alice" {
+		t.Fatalf("expected profile for a@b.com/alice, got %+v", profile)
+	}
+}
+
+func TestMeHandler_NoHeader(t *testing.T) {
+	r := newTestRouter()
+	registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+
+	rec := doMeRequest(t, r, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMeHandler_MalformedHeader(t *testing.T) {
+	r := newTestRouter()
+	registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+
+	rec := doMeRequest(t, r, "Basic sometoken")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMeHandler_RefreshTokenRejected(t *testing.T) {
+	r := newTestRouter()
+	tokens := registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+
+	rec := doMeRequest(t, r, "Bearer "+tokens.RefreshToken)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for refresh token used at /auth/me, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMeHandler_GarbageToken(t *testing.T) {
+	r := newTestRouter()
+	rec := doMeRequest(t, r, "Bearer garbage")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}

@@ -201,3 +201,49 @@ func fabricateToken(t *testing.T, secret []byte, userID, tokenType string, ttl t
 	}
 	return token
 }
+
+func TestMe_Success(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	ctx := context.Background()
+	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}); err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+	stored, err := users.GetUserByEmail(ctx, "a@b.com")
+	if err != nil {
+		t.Fatalf("expected user to exist: %v", err)
+	}
+
+	profile, err := svc.Me(ctx, stored.ID)
+	if err != nil {
+		t.Fatalf("unexpected error on Me: %v", err)
+	}
+	if profile.Email != "a@b.com" || profile.Username != "alice" {
+		t.Fatalf("expected profile for a@b.com/alice, got %+v", profile)
+	}
+}
+
+func TestMe_UserNotFound(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	ctx := context.Background()
+	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}); err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+	stored, err := users.GetUserByEmail(ctx, "a@b.com")
+	if err != nil {
+		t.Fatalf("expected user to exist: %v", err)
+	}
+
+	// Simulate the user row vanishing between token issuance and use.
+	users.DeleteUser(stored.ID)
+
+	_, err = svc.Me(ctx, stored.ID)
+	if !errors.Is(err, service.ErrUserNotFound) {
+		t.Fatalf("expected ErrUserNotFound, got %v", err)
+	}
+}

@@ -48,6 +48,23 @@ func (m *UserStore) GetUserByEmail(ctx context.Context, email string) (*service.
 	return u, nil
 }
 
+func (m *UserStore) GetUserByID(ctx context.Context, id uuid.UUID) (*service.User, error) {
+	u, ok := m.byID[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return u, nil
+}
+
+// DeleteUser removes a user by ID, letting tests simulate a user vanishing
+// between token issuance and use (e.g. a valid token, but no matching row).
+func (m *UserStore) DeleteUser(id uuid.UUID) {
+	if u, ok := m.byID[id]; ok {
+		delete(m.byEmail, u.Email)
+		delete(m.byID, id)
+	}
+}
+
 type AccountCreation struct {
 	UserID  uuid.UUID
 	Balance float64

@@ -38,7 +38,7 @@ func main() {
 	accountStore := store.NewPostgresAccountStore(pool)
 	svc := service.NewService(userStore, accountStore, []byte(jwtSecret))
 	authHandler := handler.NewAuthHandler(svc)
-	router := handler.NewRouter(authHandler)
+	router := handler.NewRouter(authHandler, []byte(jwtSecret))
 
 	log.Printf("auth service listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

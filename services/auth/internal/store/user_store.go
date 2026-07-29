@@ -51,3 +51,15 @@ func (s *PostgresUserStore) GetUserByEmail(ctx context.Context, email string) (*
 	u.PasswordHash = []byte(hash)
 	return &u, nil
 }
+
+func (s *PostgresUserStore) GetUserByID(ctx context.Context, id uuid.UUID) (*service.User, error) {
+	query := `
+	SELECT id, email, username, created_at, updated_at FROM users WHERE id = $1
+	`
+	var u service.User
+	err := s.pool.QueryRow(ctx, query, id).Scan(&u.ID, &u.Email, &u.Username, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
