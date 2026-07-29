@@ -1,9 +1,11 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
+	"github.com/kpeguero/quantsim/services/gateway/internal/httperr"
 )
 
 // UserIDHeader carries the authenticated user's ID to backend services.
@@ -41,12 +43,17 @@ func InjectUserID() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := pkgauth.UserIDFromContext(r.Context())
 			if !ok || userID == "" {
-				// Fail closed. Reaching here means the middleware chain is
-				// misordered (no RequireAuth ahead of us), and forwarding a
-				// request with no identity is safer than forwarding one with
-				// a half-set header a backend might trust.
-				r.Header.Del(UserIDHeader)
-				next.ServeHTTP(w, r)
+				// Reaching here means the chain is misordered -- RequireAuth
+				// is not ahead of us -- so this request was never
+				// authenticated. Forwarding it minus the header would let a
+				// deployment mistake quietly serve unauthenticated traffic;
+				// refusing surfaces the bug the first time it is exercised.
+				//
+				// The client gets a generic message: it is our bug, not
+				// theirs, and the detail belongs in the log.
+				log.Printf("gateway: InjectUserID reached with no authenticated user on %s %s -- middleware chain is misordered",
+					r.Method, r.URL.Path)
+				httperr.Write(w, http.StatusInternalServerError, "internal_error", "internal server error")
 				return
 			}
 			r.Header.Set(UserIDHeader, userID)

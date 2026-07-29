@@ -80,19 +80,26 @@ func TestInjectUserIDSetsHeaderFromClaims(t *testing.T) {
 	}
 }
 
-// TestInjectUserIDFailsClosed: with no user ID on the context (a misordered
-// chain, no RequireAuth ahead), the header must be absent rather than
-// half-set or passed through from the client.
+// TestInjectUserIDFailsClosed: with no user ID on the context the chain is
+// misordered and the request was never authenticated, so it must be refused
+// outright. Forwarding it minus the header would let a deployment mistake
+// quietly serve unauthenticated traffic.
 func TestInjectUserIDFailsClosed(t *testing.T) {
-	var seen string
-	h := middleware.InjectUserID()(backendSpy(&seen))
+	var called bool
+	h := middleware.InjectUserID()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil)
 	req.Header.Set(middleware.UserIDHeader, "attacker-chosen")
-	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
 
-	if seen != "" {
-		t.Errorf("backend saw X-User-ID %q with no authenticated user on the context", seen)
+	if called {
+		t.Error("request was forwarded with no authenticated user on the context")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("got status %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }
 
