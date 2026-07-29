@@ -13,8 +13,8 @@ import (
 	"github.com/kpeguero/quantsim/services/market-data/internal/service/mock"
 )
 
-func newTestRouter(alpacaMock *mock.AlpacaClient, storeMock *mock.HistoricalPriceStore) http.Handler {
-	svc := service.NewService(alpacaMock, storeMock)
+func newTestRouter(alpacaMock *mock.AlpacaClient, storeMock *mock.HistoricalPriceStore, cacheMock *mock.PriceCache) http.Handler {
+	svc := service.NewService(alpacaMock, storeMock, cacheMock)
 	return NewRouter(NewMarketDataHandler(svc))
 }
 
@@ -28,7 +28,7 @@ func doRequest(t *testing.T, r http.Handler, method, path string, body []byte) *
 }
 
 func TestHealthz(t *testing.T) {
-	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore())
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -40,7 +40,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestSymbolsHandler(t *testing.T) {
-	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore())
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	req := httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil)
 	w := httptest.NewRecorder()
@@ -69,7 +69,7 @@ func TestSymbolsHandler(t *testing.T) {
 func TestIngestHandler_Success(t *testing.T) {
 	alpacaMock := mock.NewAlpacaClient()
 	alpacaMock.Bars["AAPL"] = []alpaca.Bar{{Close: 100}}
-	r := newTestRouter(alpacaMock, mock.NewHistoricalPriceStore())
+	r := newTestRouter(alpacaMock, mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	body, _ := json.Marshal(map[string]any{"symbols": []string{"AAPL"}})
 	rec := doRequest(t, r, http.MethodPost, "/market-data/ingest", body)
@@ -87,7 +87,7 @@ func TestIngestHandler_Success(t *testing.T) {
 }
 
 func TestIngestHandler_DefaultsWhenBodyEmpty(t *testing.T) {
-	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore())
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	rec := doRequest(t, r, http.MethodPost, "/market-data/ingest", nil)
 
@@ -104,7 +104,7 @@ func TestIngestHandler_DefaultsWhenBodyEmpty(t *testing.T) {
 }
 
 func TestIngestHandler_MalformedJSON(t *testing.T) {
-	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore())
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	rec := doRequest(t, r, http.MethodPost, "/market-data/ingest", []byte("not-json"))
 
@@ -116,7 +116,7 @@ func TestIngestHandler_MalformedJSON(t *testing.T) {
 func TestIngestHandler_UpstreamUnavailable(t *testing.T) {
 	alpacaMock := mock.NewAlpacaClient()
 	alpacaMock.Errs["AAPL"] = &alpaca.StatusError{StatusCode: 500, Body: "boom"}
-	r := newTestRouter(alpacaMock, mock.NewHistoricalPriceStore())
+	r := newTestRouter(alpacaMock, mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	body, _ := json.Marshal(map[string]any{"symbols": []string{"AAPL"}})
 	rec := doRequest(t, r, http.MethodPost, "/market-data/ingest", body)
@@ -127,7 +127,7 @@ func TestIngestHandler_UpstreamUnavailable(t *testing.T) {
 }
 
 func TestIngestHandler_InvalidDateRange(t *testing.T) {
-	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore())
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	body, _ := json.Marshal(map[string]any{"symbols": []string{"AAPL"}, "start": "not-a-date"})
 	rec := doRequest(t, r, http.MethodPost, "/market-data/ingest", body)
@@ -142,7 +142,7 @@ func TestHistoryHandler_Found(t *testing.T) {
 	storeMock.Bars = []service.Bar{
 		{Symbol: "AAPL", Timeframe: service.Timeframe, Timestamp: time.Now(), Close: 100},
 	}
-	r := newTestRouter(mock.NewAlpacaClient(), storeMock)
+	r := newTestRouter(mock.NewAlpacaClient(), storeMock, mock.NewPriceCache())
 
 	req := httptest.NewRequest(http.MethodGet, "/market-data/history/AAPL", nil)
 	w := httptest.NewRecorder()
@@ -161,7 +161,7 @@ func TestHistoryHandler_Found(t *testing.T) {
 }
 
 func TestHistoryHandler_UnfetchedSymbolReturns200Empty(t *testing.T) {
-	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore())
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	req := httptest.NewRequest(http.MethodGet, "/market-data/history/ZZZZ", nil)
 	w := httptest.NewRecorder()
@@ -181,7 +181,7 @@ func TestHistoryHandler_UnfetchedSymbolReturns200Empty(t *testing.T) {
 
 func TestHistoryHandler_LimitQueryParamRespected(t *testing.T) {
 	storeMock := mock.NewHistoricalPriceStore()
-	r := newTestRouter(mock.NewAlpacaClient(), storeMock)
+	r := newTestRouter(mock.NewAlpacaClient(), storeMock, mock.NewPriceCache())
 
 	req := httptest.NewRequest(http.MethodGet, "/market-data/history/AAPL?limit=50", nil)
 	w := httptest.NewRecorder()
@@ -195,8 +195,41 @@ func TestHistoryHandler_LimitQueryParamRespected(t *testing.T) {
 	}
 }
 
+func TestPricesHandler_Found(t *testing.T) {
+	cacheMock := mock.NewPriceCache()
+	cacheMock.Prices["AAPL"] = service.Price{Symbol: "AAPL", Price: 123.45, Timestamp: time.Now()}
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), cacheMock)
+
+	req := httptest.NewRequest(http.MethodGet, "/market-data/prices/AAPL", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp service.Price
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Symbol != "AAPL" || resp.Price != 123.45 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestPricesHandler_NotCached(t *testing.T) {
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
+
+	req := httptest.NewRequest(http.MethodGet, "/market-data/prices/ZZZZ", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestHistoryHandler_InvalidLimit(t *testing.T) {
-	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore())
+	r := newTestRouter(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
 
 	req := httptest.NewRequest(http.MethodGet, "/market-data/history/AAPL?limit=notanumber", nil)
 	w := httptest.NewRecorder()

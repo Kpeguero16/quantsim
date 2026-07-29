@@ -7,8 +7,10 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/kpeguero/quantsim/services/market-data/internal/alpaca"
+	"github.com/kpeguero/quantsim/services/market-data/internal/cache"
 	"github.com/kpeguero/quantsim/services/market-data/internal/handler"
 	"github.com/kpeguero/quantsim/services/market-data/internal/service"
 	"github.com/kpeguero/quantsim/services/market-data/internal/store"
@@ -27,6 +29,10 @@ func main() {
 	if alpacaSecret == "" {
 		log.Fatal("ALPACA_API_SECRET is required")
 	}
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		log.Fatal("REDIS_URL is required")
+	}
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8082"
@@ -39,9 +45,17 @@ func main() {
 	}
 	defer pool.Close()
 
+	redisOpts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatalf("invalid REDIS_URL: %v", err)
+	}
+	redisClient := redis.NewClient(redisOpts)
+	defer redisClient.Close()
+
 	alpacaClient := alpaca.NewClient(alpacaKey, alpacaSecret)
 	priceStore := store.NewPostgresHistoricalPriceStore(pool)
-	svc := service.NewService(alpacaClient, priceStore)
+	priceCache := cache.NewRedisPriceCache(redisClient)
+	svc := service.NewService(alpacaClient, priceStore, priceCache)
 	marketDataHandler := handler.NewMarketDataHandler(svc)
 	router := handler.NewRouter(marketDataHandler)
 

@@ -5,6 +5,7 @@ package mock
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/kpeguero/quantsim/services/market-data/internal/alpaca"
@@ -89,4 +90,56 @@ func (m *HistoricalPriceStore) GetHistory(ctx context.Context, symbol, timeframe
 		matched = matched[len(matched)-limit:]
 	}
 	return matched, nil
+}
+
+// ErrCacheMiss is PriceCache's not-found sentinel, mirroring cache.ErrNotFound
+// without importing the cache package (mocks stay dependency-free of the real
+// implementation).
+var ErrCacheMiss = errors.New("mock: price not cached")
+
+// PriceCache is an in-memory PriceCache double keyed by symbol.
+type PriceCache struct {
+	Prices map[string]service.Price
+
+	// GetErr, when set, makes GetPrice fail with this error instead of the
+	// usual ErrCacheMiss-on-miss behavior.
+	GetErr error
+	// SetErr/PublishErr, when set, make the respective method fail.
+	SetErr     error
+	PublishErr error
+
+	// Published records every symbol/price pair passed to PublishPrice, in
+	// call order, so tests can verify what was published.
+	Published []service.Price
+}
+
+func NewPriceCache() *PriceCache {
+	return &PriceCache{Prices: make(map[string]service.Price)}
+}
+
+func (m *PriceCache) SetPrice(ctx context.Context, symbol string, price service.Price, ttl time.Duration) error {
+	if m.SetErr != nil {
+		return m.SetErr
+	}
+	m.Prices[symbol] = price
+	return nil
+}
+
+func (m *PriceCache) GetPrice(ctx context.Context, symbol string) (service.Price, error) {
+	if m.GetErr != nil {
+		return service.Price{}, m.GetErr
+	}
+	price, ok := m.Prices[symbol]
+	if !ok {
+		return service.Price{}, ErrCacheMiss
+	}
+	return price, nil
+}
+
+func (m *PriceCache) PublishPrice(ctx context.Context, symbol string, price service.Price) error {
+	if m.PublishErr != nil {
+		return m.PublishErr
+	}
+	m.Published = append(m.Published, price)
+	return nil
 }

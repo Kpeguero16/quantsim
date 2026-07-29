@@ -44,3 +44,12 @@ type HistoryResponse struct {
 	Timeframe string `json:"timeframe"`
 	Bars      []Bar  `json:"bars"`
 }
+
+// Price is the latest cached price for a symbol -- the cache value, the
+// pub/sub message payload, and GET /market-data/prices/:symbol's response
+// body all share this shape (SPEC.md §5).
+type Price struct {
+	Symbol    string    `json:"symbol"`
+	Price     float64   `json:"price"`
+	Timestamp time.Time `json:"timestamp"`
+}

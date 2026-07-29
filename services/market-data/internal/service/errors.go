@@ -16,3 +16,8 @@ var ErrUpstreamUnavailable = errors.New("market data upstream unavailable")
 // affects the whole request the same way, unlike a per-symbol problem.
 // Handlers map this to 400.
 var ErrInvalidDateRange = errors.New("invalid start/end date")
+
+// ErrPriceNotCached is LatestPrice's error when a symbol has no cached price
+// -- never polled yet, TTL expired, or not in the watchlist (SPEC.md §2.8).
+// Handlers map this to 404.
+var ErrPriceNotCached = errors.New("no cached price for symbol")

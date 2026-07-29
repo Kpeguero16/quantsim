@@ -17,7 +17,7 @@ func TestIngest_SingleSymbolSuccess(t *testing.T) {
 		{Timestamp: time.Date(2024, 1, 2, 9, 0, 0, 0, time.UTC), Open: 100, High: 101, Low: 99, Close: 100.5, Volume: 1000},
 	}
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	results, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"aapl"}})
 	if err != nil {
@@ -42,7 +42,7 @@ func TestIngest_MultiSymbolSuccess(t *testing.T) {
 	alpacaMock.Bars["AAPL"] = []alpaca.Bar{{Timestamp: time.Now(), Close: 1}}
 	alpacaMock.Bars["MSFT"] = []alpaca.Bar{{Timestamp: time.Now(), Close: 2}, {Timestamp: time.Now(), Close: 3}}
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	results, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"AAPL", "MSFT"}})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestIngest_MultiSymbolSuccess(t *testing.T) {
 func TestIngest_DefaultsToWatchlistWhenEmpty(t *testing.T) {
 	alpacaMock := mock.NewAlpacaClient()
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	results, err := svc.Ingest(context.Background(), service.IngestRequest{})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestIngest_PartialFailureOneBadSymbol(t *testing.T) {
 	alpacaMock.Bars["AAPL"] = []alpaca.Bar{{Timestamp: time.Now(), Close: 1}}
 	alpacaMock.Errs["MSFT"] = &alpaca.StatusError{StatusCode: 422, Body: "unknown symbol"}
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	results, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"AAPL", "MSFT"}})
 	if err != nil {
@@ -106,7 +106,7 @@ func TestIngest_AllSymbolsUpstreamFailure(t *testing.T) {
 	alpacaMock := mock.NewAlpacaClient()
 	alpacaMock.Errs["AAPL"] = errors.New("connection refused")
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	_, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"AAPL"}})
 	if !errors.Is(err, service.ErrUpstreamUnavailable) {
@@ -117,7 +117,7 @@ func TestIngest_AllSymbolsUpstreamFailure(t *testing.T) {
 func TestIngest_InvalidSymbolFormat(t *testing.T) {
 	alpacaMock := mock.NewAlpacaClient()
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	results, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"not a symbol!"}})
 	if err != nil {
@@ -134,7 +134,7 @@ func TestIngest_InvalidSymbolFormat(t *testing.T) {
 func TestIngest_InvalidDateRange(t *testing.T) {
 	alpacaMock := mock.NewAlpacaClient()
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	_, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"AAPL"}, Start: "not-a-date"})
 	if !errors.Is(err, service.ErrInvalidDateRange) {
@@ -148,7 +148,7 @@ func TestHistory_Found(t *testing.T) {
 		{Symbol: "AAPL", Timeframe: service.Timeframe, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Close: 1},
 		{Symbol: "AAPL", Timeframe: service.Timeframe, Timestamp: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), Close: 2},
 	}
-	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock, mock.NewPriceCache())
 
 	resp, err := svc.History(context.Background(), "aapl", 0)
 	if err != nil {
@@ -164,7 +164,7 @@ func TestHistory_Found(t *testing.T) {
 
 func TestHistory_UnfetchedSymbolReturnsEmptyNotError(t *testing.T) {
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock, mock.NewPriceCache())
 
 	resp, err := svc.History(context.Background(), "ZZZZ", 0)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestHistory_UnfetchedSymbolReturnsEmptyNotError(t *testing.T) {
 
 func TestHistory_DefaultLimitWhenZero(t *testing.T) {
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock, mock.NewPriceCache())
 
 	if _, err := svc.History(context.Background(), "AAPL", 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -192,7 +192,7 @@ func TestHistory_DefaultLimitWhenZero(t *testing.T) {
 
 func TestHistory_LimitClampedToMax(t *testing.T) {
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock, mock.NewPriceCache())
 
 	if _, err := svc.History(context.Background(), "AAPL", 999999); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -207,7 +207,7 @@ func TestIngest_StoreFailure(t *testing.T) {
 	alpacaMock.Bars["AAPL"] = []alpaca.Bar{{Timestamp: time.Now(), Close: 1}}
 	storeMock := mock.NewHistoricalPriceStore()
 	storeMock.UpsertErr = errors.New("connection reset")
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	results, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"AAPL"}})
 	if err != nil {
@@ -221,7 +221,7 @@ func TestIngest_StoreFailure(t *testing.T) {
 func TestHistory_StoreError(t *testing.T) {
 	storeMock := mock.NewHistoricalPriceStore()
 	storeMock.GetHistoryErr = errors.New("connection reset")
-	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock, mock.NewPriceCache())
 
 	_, err := svc.History(context.Background(), "AAPL", 0)
 	if !errors.Is(err, storeMock.GetHistoryErr) {
@@ -229,10 +229,33 @@ func TestHistory_StoreError(t *testing.T) {
 	}
 }
 
+func TestLatestPrice_Found(t *testing.T) {
+	cacheMock := mock.NewPriceCache()
+	cacheMock.Prices["AAPL"] = service.Price{Symbol: "AAPL", Price: 123.45, Timestamp: time.Date(2024, 1, 2, 9, 0, 0, 0, time.UTC)}
+	svc := service.NewService(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), cacheMock)
+
+	price, err := svc.LatestPrice(context.Background(), "aapl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if price.Symbol != "AAPL" || price.Price != 123.45 {
+		t.Fatalf("unexpected price: %+v", price)
+	}
+}
+
+func TestLatestPrice_NotCached(t *testing.T) {
+	svc := service.NewService(mock.NewAlpacaClient(), mock.NewHistoricalPriceStore(), mock.NewPriceCache())
+
+	_, err := svc.LatestPrice(context.Background(), "ZZZZ")
+	if !errors.Is(err, service.ErrPriceNotCached) {
+		t.Fatalf("expected ErrPriceNotCached, got %v", err)
+	}
+}
+
 func TestIngest_ValidYYYYMMDDDateHonored(t *testing.T) {
 	alpacaMock := mock.NewAlpacaClient()
 	storeMock := mock.NewHistoricalPriceStore()
-	svc := service.NewService(alpacaMock, storeMock)
+	svc := service.NewService(alpacaMock, storeMock, mock.NewPriceCache())
 
 	_, err := svc.Ingest(context.Background(), service.IngestRequest{
 		Symbols: []string{"AAPL"},

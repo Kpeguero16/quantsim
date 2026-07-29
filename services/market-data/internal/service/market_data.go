@@ -30,10 +30,11 @@ var symbolPattern = regexp.MustCompile(`^[A-Z.]{1,10}$`)
 type Service struct {
 	alpaca AlpacaClient
 	store  HistoricalPriceStore
+	cache  PriceCache
 }
 
-func NewService(alpacaClient AlpacaClient, store HistoricalPriceStore) *Service {
-	return &Service{alpaca: alpacaClient, store: store}
+func NewService(alpacaClient AlpacaClient, store HistoricalPriceStore, cache PriceCache) *Service {
+	return &Service{alpaca: alpacaClient, store: store, cache: cache}
 }
 
 // Ingest fetches and upserts daily bars for each requested symbol
@@ -156,4 +157,18 @@ func (s *Service) History(ctx context.Context, symbol string, limit int) (*Histo
 	}
 
 	return &HistoryResponse{Symbol: symbol, Timeframe: Timeframe, Bars: bars}, nil
+}
+
+// LatestPrice returns the cached latest price for symbol. Any cache error --
+// a genuine miss, an expired TTL, or a Redis-layer problem -- surfaces as
+// ErrPriceNotCached; SPEC.md §2.8 treats all of those as "not available right
+// now" rather than distinguishing a cache miss from an infrastructure error.
+func (s *Service) LatestPrice(ctx context.Context, symbol string) (Price, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+
+	price, err := s.cache.GetPrice(ctx, symbol)
+	if err != nil {
+		return Price{}, fmt.Errorf("%w: %v", ErrPriceNotCached, err)
+	}
+	return price, nil
 }

@@ -76,3 +76,19 @@ func (h *MarketDataHandler) History(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, resp)
 }
+
+func (h *MarketDataHandler) Prices(w http.ResponseWriter, r *http.Request) {
+	symbol := chi.URLParam(r, "symbol")
+
+	price, err := h.service.LatestPrice(r.Context(), symbol)
+	if err != nil {
+		if errors.Is(err, service.ErrPriceNotCached) {
+			WriteError(w, http.StatusNotFound, "price_not_cached", "no cached price for symbol yet")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "internal_error", "something went wrong")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, price)
+}
