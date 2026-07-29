@@ -17,4 +17,7 @@ type AlpacaClient interface {
 // *store.PostgresHistoricalPriceStore in production; mocked in tests.
 type HistoricalPriceStore interface {
 	UpsertBars(ctx context.Context, bars []Bar) error
+	// GetHistory returns the most recent `limit` bars for symbol/timeframe,
+	// in ascending timestamp order.
+	GetHistory(ctx context.Context, symbol, timeframe string, limit int) ([]Bar, error)
 }

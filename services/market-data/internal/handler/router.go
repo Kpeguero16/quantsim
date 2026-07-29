@@ -17,6 +17,7 @@ func NewRouter(h *MarketDataHandler) *chi.Mux {
 	r.Route("/market-data", func(r chi.Router) {
 		r.Get("/symbols", SymbolsHandler)
 		r.Post("/ingest", h.Ingest)
+		r.Get("/history/{symbol}", h.History)
 	})
 
 	return r

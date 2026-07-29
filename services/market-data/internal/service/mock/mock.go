@@ -39,6 +39,14 @@ type HistoricalPriceStore struct {
 	// failure surfaces as that symbol's IngestResult.Error rather than being
 	// silently dropped.
 	UpsertErr error
+
+	// GetHistoryErr, when set, makes GetHistory fail.
+	GetHistoryErr error
+
+	// LastLimit records the limit passed to the most recent GetHistory call,
+	// so tests can verify the service clamps/defaults it before reaching the
+	// store.
+	LastLimit int
 }
 
 func NewHistoricalPriceStore() *HistoricalPriceStore {
@@ -51,4 +59,26 @@ func (m *HistoricalPriceStore) UpsertBars(ctx context.Context, bars []service.Ba
 	}
 	m.Bars = append(m.Bars, bars...)
 	return nil
+}
+
+// GetHistory assumes Bars is already populated in ascending timestamp order
+// (as tests set it up) and returns the most recent `limit` entries by taking
+// the tail of the slice -- mirroring the real store's "ORDER BY timestamp
+// DESC LIMIT n, then reverse" behavior without needing SQL.
+func (m *HistoricalPriceStore) GetHistory(ctx context.Context, symbol, timeframe string, limit int) ([]service.Bar, error) {
+	m.LastLimit = limit
+	if m.GetHistoryErr != nil {
+		return nil, m.GetHistoryErr
+	}
+
+	var matched []service.Bar
+	for _, b := range m.Bars {
+		if b.Symbol == symbol && b.Timeframe == timeframe {
+			matched = append(matched, b)
+		}
+	}
+	if limit > 0 && len(matched) > limit {
+		matched = matched[len(matched)-limit:]
+	}
+	return matched, nil
 }

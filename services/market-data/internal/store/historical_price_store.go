@@ -47,3 +47,39 @@ func (s *PostgresHistoricalPriceStore) UpsertBars(ctx context.Context, bars []se
 	}
 	return nil
 }
+
+// GetHistory returns the most recent `limit` bars for symbol/timeframe in
+// ascending timestamp order. Queried DESC+LIMIT (so "most recent N" is
+// correct regardless of how much history exists) then reversed in place,
+// since the API always returns bars oldest-to-newest (SPEC.md §5).
+func (s *PostgresHistoricalPriceStore) GetHistory(ctx context.Context, symbol, timeframe string, limit int) ([]service.Bar, error) {
+	rows, err := s.pool.Query(ctx, `
+	SELECT timestamp, open, high, low, close, volume
+	FROM historical_prices
+	WHERE symbol = $1 AND timeframe = $2
+	ORDER BY timestamp DESC
+	LIMIT $3
+	`, symbol, timeframe, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bars []service.Bar
+	for rows.Next() {
+		b := service.Bar{Symbol: symbol, Timeframe: timeframe}
+		if err := rows.Scan(&b.Timestamp, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); err != nil {
+			return nil, err
+		}
+		bars = append(bars, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i, j := 0, len(bars)-1; i < j; i, j = i+1, j-1 {
+		bars[i], bars[j] = bars[j], bars[i]
+	}
+
+	return bars, nil
+}

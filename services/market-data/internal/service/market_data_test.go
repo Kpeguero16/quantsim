@@ -141,3 +141,63 @@ func TestIngest_InvalidDateRange(t *testing.T) {
 		t.Fatalf("expected ErrInvalidDateRange, got %v", err)
 	}
 }
+
+func TestHistory_Found(t *testing.T) {
+	storeMock := mock.NewHistoricalPriceStore()
+	storeMock.Bars = []service.Bar{
+		{Symbol: "AAPL", Timeframe: service.Timeframe, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Close: 1},
+		{Symbol: "AAPL", Timeframe: service.Timeframe, Timestamp: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), Close: 2},
+	}
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+
+	resp, err := svc.History(context.Background(), "aapl", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Symbol != "AAPL" || resp.Timeframe != service.Timeframe {
+		t.Fatalf("unexpected response header: %+v", resp)
+	}
+	if len(resp.Bars) != 2 {
+		t.Fatalf("expected 2 bars, got %d", len(resp.Bars))
+	}
+}
+
+func TestHistory_UnfetchedSymbolReturnsEmptyNotError(t *testing.T) {
+	storeMock := mock.NewHistoricalPriceStore()
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+
+	resp, err := svc.History(context.Background(), "ZZZZ", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Bars == nil {
+		t.Fatal("expected a non-nil empty slice, got nil")
+	}
+	if len(resp.Bars) != 0 {
+		t.Fatalf("expected 0 bars, got %d", len(resp.Bars))
+	}
+}
+
+func TestHistory_DefaultLimitWhenZero(t *testing.T) {
+	storeMock := mock.NewHistoricalPriceStore()
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+
+	if _, err := svc.History(context.Background(), "AAPL", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if storeMock.LastLimit != service.DefaultHistoryLimit {
+		t.Errorf("expected default limit %d, got %d", service.DefaultHistoryLimit, storeMock.LastLimit)
+	}
+}
+
+func TestHistory_LimitClampedToMax(t *testing.T) {
+	storeMock := mock.NewHistoricalPriceStore()
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+
+	if _, err := svc.History(context.Background(), "AAPL", 999999); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if storeMock.LastLimit != service.MaxHistoryLimit {
+		t.Errorf("expected limit clamped to %d, got %d", service.MaxHistoryLimit, storeMock.LastLimit)
+	}
+}

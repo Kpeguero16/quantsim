@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/kpeguero/quantsim/services/market-data/internal/service"
 )
@@ -50,4 +53,26 @@ func (h *MarketDataHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusOK, IngestResponse{Results: results})
+}
+
+func (h *MarketDataHandler) History(w http.ResponseWriter, r *http.Request) {
+	symbol := chi.URLParam(r, "symbol")
+
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "limit must be a positive integer")
+			return
+		}
+		limit = n
+	}
+
+	resp, err := h.service.History(r.Context(), symbol, limit)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "internal_error", "something went wrong")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, resp)
 }

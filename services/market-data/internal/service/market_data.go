@@ -19,6 +19,12 @@ var DefaultWatchlist = []string{"AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SPY", 
 // (SPEC.md §2.2).
 const defaultLookbackYears = 2
 
+// DefaultHistoryLimit and MaxHistoryLimit bound History's `limit` (SPEC.md §2.6).
+const (
+	DefaultHistoryLimit = 500
+	MaxHistoryLimit     = 2000
+)
+
 var symbolPattern = regexp.MustCompile(`^[A-Z.]{1,10}$`)
 
 type Service struct {
@@ -124,4 +130,30 @@ func parseDate(s string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse("2006-01-02", s)
+}
+
+// History returns stored bars for symbol, most recent `limit` bars in
+// ascending timestamp order. limit <= 0 uses DefaultHistoryLimit; anything
+// above MaxHistoryLimit is clamped. A symbol with no ingested data returns an
+// empty (not nil) Bars slice and no error (SPEC.md §2.6) -- it isn't the
+// caller's fault that ingestion hasn't run for that symbol yet.
+func (s *Service) History(ctx context.Context, symbol string, limit int) (*HistoryResponse, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+
+	if limit <= 0 {
+		limit = DefaultHistoryLimit
+	}
+	if limit > MaxHistoryLimit {
+		limit = MaxHistoryLimit
+	}
+
+	bars, err := s.store.GetHistory(ctx, symbol, Timeframe, limit)
+	if err != nil {
+		return nil, err
+	}
+	if bars == nil {
+		bars = []Bar{}
+	}
+
+	return &HistoryResponse{Symbol: symbol, Timeframe: Timeframe, Bars: bars}, nil
 }

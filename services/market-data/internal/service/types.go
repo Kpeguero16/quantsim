@@ -4,16 +4,17 @@ import "time"
 
 // Bar is a single OHLCV bar in this service's own representation, distinct
 // from Alpaca's wire format (internal/alpaca.Bar) -- it carries Symbol and
-// Timeframe since it's what the store persists.
+// Timeframe since it's what the store persists. Symbol/Timeframe are omitted
+// from JSON since HistoryResponse already carries them once at the top level.
 type Bar struct {
-	Symbol    string
-	Timeframe string
-	Timestamp time.Time
-	Open      float64
-	High      float64
-	Low       float64
-	Close     float64
-	Volume    int64
+	Symbol    string    `json:"-"`
+	Timeframe string    `json:"-"`
+	Timestamp time.Time `json:"timestamp"`
+	Open      float64   `json:"open"`
+	High      float64   `json:"high"`
+	Low       float64   `json:"low"`
+	Close     float64   `json:"close"`
+	Volume    int64     `json:"volume"`
 }
 
 // IngestRequest is the input to Ingest. Symbols defaults to DefaultWatchlist
@@ -33,4 +34,13 @@ type IngestResult struct {
 	Symbol       string `json:"symbol"`
 	BarsIngested int    `json:"bars_ingested"`
 	Error        string `json:"error,omitempty"`
+}
+
+// HistoryResponse is History's return shape. Bars is always a non-nil
+// (possibly empty) slice -- an unfetched symbol is a valid, empty result,
+// not an error (SPEC.md §2.6).
+type HistoryResponse struct {
+	Symbol    string `json:"symbol"`
+	Timeframe string `json:"timeframe"`
+	Bars      []Bar  `json:"bars"`
 }
