@@ -35,8 +35,7 @@ func main() {
 	defer pool.Close()
 
 	userStore := store.NewPostgresUserStore(pool)
-	accountStore := store.NewPostgresAccountStore(pool)
-	svc := service.NewService(userStore, accountStore, []byte(jwtSecret))
+	svc := service.NewService(userStore, []byte(jwtSecret))
 	authHandler := handler.NewAuthHandler(svc)
 	router := handler.NewRouter(authHandler, []byte(jwtSecret))
 

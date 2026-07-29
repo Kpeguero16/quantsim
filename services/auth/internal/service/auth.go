@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,28 +23,24 @@ const (
 
 type Service struct {
 	users     UserStore
-	accounts  AccountStore
 	jwtSecret []byte
 }
 
-func NewService(users UserStore, accounts AccountStore, jwtSecret []byte) *Service {
-	return &Service{users: users, accounts: accounts, jwtSecret: jwtSecret}
+func NewService(users UserStore, jwtSecret []byte) *Service {
+	return &Service{users: users, jwtSecret: jwtSecret}
 }
 
-// Register hashes the password, creates the user and a $100k starting
-// account, and returns a fresh token pair.
+// Register hashes the password and creates the user and its $100k starting
+// account atomically (see UserStore.CreateUserWithAccount), then returns a
+// fresh token pair.
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (*TokenPair, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
 	if err != nil {
 		return nil, err
 	}
 
-	userID, err := s.users.CreateUser(ctx, req.Email, req.Username, hash)
+	userID, err := s.users.CreateUserWithAccount(ctx, req.Email, req.Username, hash, StartingBalance)
 	if err != nil {
-		return nil, err
-	}
-
-	if _, err := s.accounts.CreateAccount(ctx, userID, StartingBalance); err != nil {
 		return nil, err
 	}
 
@@ -64,10 +61,15 @@ func mustHash(password string) []byte {
 
 // Login verifies credentials and returns a fresh token pair. Unknown email
 // and wrong password return the identical error so the API doesn't leak
-// whether an email is registered.
+// whether an email is registered. A store error other than "no such user"
+// (a DB outage, a timeout) is not an auth failure and propagates as-is, so
+// it surfaces as a 500 rather than a misleading "invalid credentials".
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenPair, error) {
 	user, err := s.users.GetUserByEmail(ctx, req.Email)
 	if err != nil {
+		if !errors.Is(err, ErrUserNotFound) {
+			return nil, err
+		}
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(req.Password))
 		return nil, ErrInvalidCredentials
 	}
@@ -79,10 +81,13 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenPair, erro
 	return s.issueTokenPair(user.ID)
 }
 
-// Refresh validates a refresh token and issues a brand-new token pair. The
-// old refresh token is not revoked and remains valid until its natural
-// expiry -- refresh tokens are stateless by design (see SPEC.md); no
-// revocation list exists.
+// Refresh validates a refresh token, confirms the user it was issued for
+// still exists, and issues a brand-new token pair. The old refresh token is
+// not revoked and remains valid until its natural expiry -- refresh tokens
+// are stateless by design (see SPEC.md); no revocation list exists. The
+// user-existence check is a separate concern from revocation: it's the same
+// invariant Me enforces, so a deleted user's refresh token can't keep
+// minting valid access tokens.
 func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (*TokenPair, error) {
 	claims, err := pkgauth.ValidateToken(s.jwtSecret, req.RefreshToken)
 	if err != nil {
@@ -97,16 +102,25 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (*TokenP
 		return nil, ErrTokenInvalid
 	}
 
+	if _, err := s.users.GetUserByID(ctx, userID); err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, ErrTokenInvalid
+		}
+		return nil, err
+	}
+
 	return s.issueTokenPair(userID)
 }
 
 // Me returns the profile for an already-authenticated user. The caller
 // (pkg/auth's middleware, via the handler) is the sole JWT gatekeeper for
-// this path -- Me does no token parsing, just a store lookup.
+// this path -- Me does no token parsing, just a store lookup. A store error
+// other than "no such user" propagates as-is rather than being folded into
+// ErrUserNotFound, so it surfaces as a 500 rather than a misleading 401.
 func (s *Service) Me(ctx context.Context, userID uuid.UUID) (*MeResponse, error) {
 	user, err := s.users.GetUserByID(ctx, userID)
 	if err != nil {
-		return nil, ErrUserNotFound
+		return nil, err
 	}
 	return &MeResponse{
 		ID:        user.ID,

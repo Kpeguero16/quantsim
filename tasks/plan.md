@@ -188,6 +188,16 @@ curl -i localhost:8081/auth/me -H "Authorization: Bearer garbage"          # 401
 - One structural fix to §4: `pkg/auth` owns JWT primitives, not `services/auth/internal/service` — required for `pkg/auth` to be importable at all given Go's `internal/` visibility rules.
 - SPEC.md's objective, stateless-refresh-token decision, code style, testing bar, and ask-first boundaries are unchanged.
 
+## Post-implementation amendment (2026-07-29, pre-push review)
+
+A code review before pushing surfaced three correctness gaps not caught by the checkpoint plan above:
+
+1. **`Register` wasn't atomic.** `CreateUser` and `CreateAccount` were two independent store calls; a failure between them could leave a user with no funded account, with no recovery path (email already taken). Fixed by merging them into `UserStore.CreateUserWithAccount`, a single Postgres transaction. `AccountStore`/`PostgresAccountStore` (§4's file layout above) no longer exist — `services/auth/internal/store/account_store.go` was deleted, its logic absorbed into `user_store.go`.
+2. **`Login`/`Me` folded every store error into an auth failure.** A DB outage during `GetUserByEmail`/`GetUserByID` would surface as "invalid credentials" / "invalid token" instead of a 500, masking real infra failures as user-facing auth errors. Fixed by having the store return the sentinel `service.ErrUserNotFound` only for an actual missing row (mapped from `pgx.ErrNoRows`); any other error now propagates to a 500 as it already did in `Register`.
+3. **`Refresh` never checked the user still exists.** Unlike `Me`, a deleted user's refresh token could keep minting valid access tokens until natural (7-day) expiry. Fixed by adding the same existence check `Me` already had.
+
+All four tasks' tests were updated (`mock.UserStore` gained `CreateAccountErr`/`GetByEmailErr`/`GetByIDErr` injection points) and four new regression tests added; all verified against real Postgres via curl, including deleting a user mid-session and confirming their refresh token is rejected.
+
 ## Status
 
 Approved 2026-07-29. See `tasks/todo.md` for live checkpoint status.

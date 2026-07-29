@@ -16,7 +16,11 @@ var ErrInvalidCredentials = errors.New("invalid email or password")
 // map this to 401.
 var ErrTokenInvalid = errors.New("invalid or expired token")
 
-// ErrUserNotFound is returned by Me when the token is valid but the user row
-// is gone (e.g. deleted after the token was issued). Handlers map this to
-// 401, not 404 -- same failure vocabulary as every other /auth/me rejection.
+// ErrUserNotFound is the canonical "no such user" outcome from a store
+// lookup by email or ID -- distinct from any other store error (a DB
+// connection failure, a timeout) so callers can tell "doesn't exist" apart
+// from "the store is broken" and only the former gets folded into an
+// auth-failure response. Used by Login (-> ErrInvalidCredentials), Refresh
+// (-> ErrTokenInvalid), and Me, which returns it directly (401, not 404 --
+// same failure vocabulary as every other /auth/me rejection).
 var ErrUserNotFound = errors.New("user not found")
