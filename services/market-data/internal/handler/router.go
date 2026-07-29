@@ -6,7 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func NewRouter() *chi.Mux {
+func NewRouter(h *MarketDataHandler) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -16,6 +16,7 @@ func NewRouter() *chi.Mux {
 
 	r.Route("/market-data", func(r chi.Router) {
 		r.Get("/symbols", SymbolsHandler)
+		r.Post("/ingest", h.Ingest)
 	})
 
 	return r

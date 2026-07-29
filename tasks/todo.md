@@ -7,5 +7,5 @@ Prior Auth Service (Step 4) checklist archived at `docs/archive/phase1-step4-aut
 - [x] **Module wiring** — add `./services/market-data` to root `go.work`
 - [x] **Task 1** — Skeleton + `GET /market-data/symbols`
 - [x] **Task 2** — Alpaca client (`internal/alpaca`)
-- [ ] **Task 3** — `POST /market-data/ingest` end-to-end
+- [x] **Task 3** — `POST /market-data/ingest` end-to-end
 - [ ] **Task 4** — `GET /market-data/history/:symbol`
