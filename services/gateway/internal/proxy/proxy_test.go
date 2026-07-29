@@ -93,6 +93,38 @@ func TestForwardsQueryString(t *testing.T) {
 	}
 }
 
+// TestForwardingHeadersAreNotClientControlled: a client must not be able to
+// author the headers that describe it. ReverseProxy's older Director path
+// appends to an inbound X-Forwarded-For, leaving the attacker's value first --
+// and reading the first entry as "the client IP" is the common pattern, so a
+// future rate limiter or audit log keyed on it would be trivially defeated.
+func TestForwardingHeadersAreNotClientControlled(t *testing.T) {
+	var gotXFF, gotRealIP string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXFF = r.Header.Get("X-Forwarded-For")
+		gotRealIP = r.Header.Get("X-Real-IP")
+	}))
+	defer backend.Close()
+
+	p := proxy.New(mustURL(t, backend.URL), proxy.NewTransport(), "auth")
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	req.RemoteAddr = "203.0.113.9:54321"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-IP", "1.2.3.4")
+	p.ServeHTTP(httptest.NewRecorder(), req)
+
+	if strings.Contains(gotXFF, "1.2.3.4") {
+		t.Errorf("backend saw X-Forwarded-For %q; the client-supplied value must be discarded, not appended to", gotXFF)
+	}
+	if gotXFF != "203.0.113.9" {
+		t.Errorf("backend saw X-Forwarded-For %q, want the real connection IP %q", gotXFF, "203.0.113.9")
+	}
+	if gotRealIP != "" {
+		t.Errorf("backend saw X-Real-IP %q, want it stripped", gotRealIP)
+	}
+}
+
 // TestUnreachableBackendReturnsJSON502 covers SPEC.md 2.8. ReverseProxy's
 // default ErrorHandler writes an empty body; the gateway must not, or the
 // frontend has nothing to show and the JSON error contract is broken.

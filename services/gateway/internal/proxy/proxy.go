@@ -40,8 +40,30 @@ func NewTransport() *http.Transport {
 // serviceName appears only in the 502 body and the error log, never in a
 // forwarded header.
 func New(target *url.URL, transport http.RoundTripper, serviceName string) *httputil.ReverseProxy {
-	p := httputil.NewSingleHostReverseProxy(target)
-	p.Transport = transport
+	p := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(r *httputil.ProxyRequest) {
+			// Forwarding headers describe the client, so a client must not be
+			// able to author them. X-Real-IP has no stdlib handling, so drop
+			// it outright; SetXForwarded below replaces the X-Forwarded-*
+			// family with values derived from the real connection.
+			//
+			// This matters for the same reason X-User-ID is stripped at the
+			// edge: ReverseProxy's older Director path *appends* to an
+			// inbound X-Forwarded-For, leaving an attacker-chosen value in
+			// front -- and the usual way to read that header is to take the
+			// first entry as the client IP.
+			r.Out.Header.Del("X-Real-IP")
+
+			r.SetURL(target)  // scheme + host; path is joined, not rewritten
+			r.SetXForwarded() // X-Forwarded-For/-Host/-Proto from the connection
+
+			// SetURL leaves Out.Host as the client sent it, which is what the
+			// backends already saw before this package existed. Kept explicit
+			// so a future change to it is a decision rather than a surprise.
+			r.Out.Host = r.In.Host
+		},
+	}
 
 	// ReverseProxy's default ErrorHandler writes a bare 502 with an empty
 	// body, which breaks the JSON error contract every other QuantSim
