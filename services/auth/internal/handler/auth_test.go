@@ -93,6 +93,57 @@ func TestRegisterHandler_MalformedJSON(t *testing.T) {
 	}
 }
 
+func registerUser(t *testing.T, r http.Handler, email, username, password string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{
+		"email": email, "username": username, "password": password,
+	})
+	if rec := doRequest(t, r, http.MethodPost, "/auth/register", body); rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected register to succeed with 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLoginHandler_Success(t *testing.T) {
+	r := newTestRouter()
+	registerUser(t, r, "a@b.com", "alice", "pw12345678")
+
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "pw12345678"})
+	rec := doRequest(t, r, http.MethodPost, "/auth/login", body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var tokens service.TokenPair
+	if err := json.Unmarshal(rec.Body.Bytes(), &tokens); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
+		t.Fatal("expected non-empty tokens in response")
+	}
+}
+
+func TestLoginHandler_WrongPasswordAndUnknownEmail_IdenticalResponse(t *testing.T) {
+	r := newTestRouter()
+	registerUser(t, r, "a@b.com", "alice", "pw12345678")
+
+	wrongPwBody, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "wrong-password"})
+	wrongPwRec := doRequest(t, r, http.MethodPost, "/auth/login", wrongPwBody)
+
+	unknownEmailBody, _ := json.Marshal(map[string]string{"email": "nouser@x.com", "password": "whatever123"})
+	unknownEmailRec := doRequest(t, r, http.MethodPost, "/auth/login", unknownEmailBody)
+
+	if wrongPwRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong password, got %d: %s", wrongPwRec.Code, wrongPwRec.Body.String())
+	}
+	if unknownEmailRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unknown email, got %d: %s", unknownEmailRec.Code, unknownEmailRec.Body.String())
+	}
+	if wrongPwRec.Body.String() != unknownEmailRec.Body.String() {
+		t.Fatalf("expected identical bodies (no enumeration), got %q vs %q",
+			wrongPwRec.Body.String(), unknownEmailRec.Body.String())
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	r := newTestRouter()
 	rec := doRequest(t, r, http.MethodGet, "/healthz", nil)

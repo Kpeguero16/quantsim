@@ -40,12 +40,14 @@ func (s *PostgresUserStore) CreateUser(ctx context.Context, email, username stri
 
 func (s *PostgresUserStore) GetUserByEmail(ctx context.Context, email string) (*service.User, error) {
 	query := `
-	SELECT id, email, username, created_at, updated_at FROM users WHERE email = $1
+	SELECT id, email, username, password_hash, created_at, updated_at FROM users WHERE email = $1
 	`
 	var u service.User
-	err := s.pool.QueryRow(ctx, query, email).Scan(&u.ID, &u.Email, &u.Username, &u.CreatedAt, &u.UpdatedAt)
+	var hash string
+	err := s.pool.QueryRow(ctx, query, email).Scan(&u.ID, &u.Email, &u.Username, &hash, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	u.PasswordHash = []byte(hash)
 	return &u, nil
 }

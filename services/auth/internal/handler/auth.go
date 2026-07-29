@@ -39,3 +39,27 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusCreated, tokens)
 }
+
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req service.LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	if req.Email == "" || req.Password == "" {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "email and password are required")
+		return
+	}
+
+	tokens, err := h.service.Login(r.Context(), req)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidCredentials) {
+			WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "internal_error", "something went wrong")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, tokens)
+}

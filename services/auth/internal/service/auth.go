@@ -50,6 +50,35 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*TokenPair
 	return s.issueTokenPair(userID)
 }
 
+// dummyHash lets Login run a bcrypt comparison even when the email doesn't
+// exist, so response timing doesn't reveal whether an email is registered.
+var dummyHash = mustHash("not-a-real-password-used-only-for-constant-time-compare")
+
+func mustHash(password string) []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}
+
+// Login verifies credentials and returns a fresh token pair. Unknown email
+// and wrong password return the identical error so the API doesn't leak
+// whether an email is registered.
+func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenPair, error) {
+	user, err := s.users.GetUserByEmail(ctx, req.Email)
+	if err != nil {
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(req.Password))
+		return nil, ErrInvalidCredentials
+	}
+
+	if err := bcrypt.CompareHashAndPassword(user.PasswordHash, []byte(req.Password)); err != nil {
+		return nil, ErrInvalidCredentials
+	}
+
+	return s.issueTokenPair(user.ID)
+}
+
 func (s *Service) issueTokenPair(userID uuid.UUID) (*TokenPair, error) {
 	access, err := pkgauth.GenerateToken(s.jwtSecret, userID.String(), pkgauth.TokenTypeAccess, AccessTokenTTL)
 	if err != nil {

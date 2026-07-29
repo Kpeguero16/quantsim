@@ -42,11 +42,10 @@ func TestRegister_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected user to exist: %v", err)
 	}
-	hash := users.PasswordHash(stored.ID)
-	if string(hash) == req.Password {
+	if string(stored.PasswordHash) == req.Password {
 		t.Fatal("password was stored in plaintext")
 	}
-	if err := bcrypt.CompareHashAndPassword(hash, []byte(req.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword(stored.PasswordHash, []byte(req.Password)); err != nil {
 		t.Fatalf("stored hash does not match password: %v", err)
 	}
 }
@@ -68,5 +67,53 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 	}
 	if len(accounts.Created) != 1 {
 		t.Fatalf("expected no account created on duplicate register, still have %d", len(accounts.Created))
+	}
+}
+
+func TestLogin_Success(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	ctx := context.Background()
+	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}
+	if _, err := svc.Register(ctx, registerReq); err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	tokens, err := svc.Login(ctx, service.LoginRequest{Email: "a@b.com", Password: "pw12345678"})
+	if err != nil {
+		t.Fatalf("unexpected error on login: %v", err)
+	}
+	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
+		t.Fatal("expected non-empty access and refresh tokens")
+	}
+}
+
+func TestLogin_WrongPassword(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	ctx := context.Background()
+	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}
+	if _, err := svc.Register(ctx, registerReq); err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	_, err := svc.Login(ctx, service.LoginRequest{Email: "a@b.com", Password: "wrong-password"})
+	if !errors.Is(err, service.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+func TestLogin_UnknownEmail(t *testing.T) {
+	users := mock.NewUserStore()
+	accounts := &mock.AccountStore{}
+	svc := service.NewService(users, accounts, testSecret)
+
+	_, err := svc.Login(context.Background(), service.LoginRequest{Email: "nouser@x.com", Password: "whatever123"})
+	if !errors.Is(err, service.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
 }

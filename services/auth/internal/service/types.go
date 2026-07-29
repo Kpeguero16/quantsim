@@ -9,6 +9,9 @@ type User struct {
 	Username string `json:"username"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// PasswordHash is only populated by store lookups used for credential
+	// verification (e.g. GetUserByEmail during login). Never serialized.
+	PasswordHash []byte `json:"-"`
 }
 
 type RegisterRequest struct {
