@@ -15,6 +15,12 @@ import (
 type AlpacaClient struct {
 	Bars map[string][]alpaca.Bar
 	Errs map[string]error
+
+	// LastStart/LastEnd record the date range passed to the most recent
+	// GetBars call, so tests can verify the service resolved/parsed a
+	// requested date range correctly before reaching the client.
+	LastStart time.Time
+	LastEnd   time.Time
 }
 
 func NewAlpacaClient() *AlpacaClient {
@@ -25,6 +31,8 @@ func NewAlpacaClient() *AlpacaClient {
 }
 
 func (m *AlpacaClient) GetBars(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]alpaca.Bar, error) {
+	m.LastStart = start
+	m.LastEnd = end
 	if err, ok := m.Errs[symbol]; ok {
 		return nil, err
 	}

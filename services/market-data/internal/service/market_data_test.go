@@ -201,3 +201,54 @@ func TestHistory_LimitClampedToMax(t *testing.T) {
 		t.Errorf("expected limit clamped to %d, got %d", service.MaxHistoryLimit, storeMock.LastLimit)
 	}
 }
+
+func TestIngest_StoreFailure(t *testing.T) {
+	alpacaMock := mock.NewAlpacaClient()
+	alpacaMock.Bars["AAPL"] = []alpaca.Bar{{Timestamp: time.Now(), Close: 1}}
+	storeMock := mock.NewHistoricalPriceStore()
+	storeMock.UpsertErr = errors.New("connection reset")
+	svc := service.NewService(alpacaMock, storeMock)
+
+	results, err := svc.Ingest(context.Background(), service.IngestRequest{Symbols: []string{"AAPL"}})
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	if len(results) != 1 || results[0].Error == "" || results[0].BarsIngested != 0 {
+		t.Fatalf("expected a per-symbol store-failure error, got %+v", results)
+	}
+}
+
+func TestHistory_StoreError(t *testing.T) {
+	storeMock := mock.NewHistoricalPriceStore()
+	storeMock.GetHistoryErr = errors.New("connection reset")
+	svc := service.NewService(mock.NewAlpacaClient(), storeMock)
+
+	_, err := svc.History(context.Background(), "AAPL", 0)
+	if !errors.Is(err, storeMock.GetHistoryErr) {
+		t.Fatalf("expected store error to propagate, got %v", err)
+	}
+}
+
+func TestIngest_ValidYYYYMMDDDateHonored(t *testing.T) {
+	alpacaMock := mock.NewAlpacaClient()
+	storeMock := mock.NewHistoricalPriceStore()
+	svc := service.NewService(alpacaMock, storeMock)
+
+	_, err := svc.Ingest(context.Background(), service.IngestRequest{
+		Symbols: []string{"AAPL"},
+		Start:   "2020-01-01",
+		End:     "2020-06-01",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantStart := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantEnd := time.Date(2020, 6, 1, 0, 0, 0, 0, time.UTC)
+	if !alpacaMock.LastStart.Equal(wantStart) {
+		t.Errorf("start = %v, want %v", alpacaMock.LastStart, wantStart)
+	}
+	if !alpacaMock.LastEnd.Equal(wantEnd) {
+		t.Errorf("end = %v, want %v", alpacaMock.LastEnd, wantEnd)
+	}
+}
