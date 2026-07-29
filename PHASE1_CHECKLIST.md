@@ -22,7 +22,7 @@ If you're new to these, here's what they are and how QuantSim uses them.
 ### Markdown (`.md` files)
 
 - **What it is:** A simple format for documents: headings (`#`, `##`), lists (`-` or `1.`), **bold**, *italic*, and code (backticks or fenced blocks). This checklist is a Markdown file.
-- **How QuantSim uses it:** `README.md` (project overview), `PHASE1_CHECKLIST.md` (this file), and `docs/` for design notes. You can edit `.md` in any text editor or in Cursor; preview with the Markdown preview (e.g. Ctrl+Shift+V).
+- **How QuantSim uses it:** `README.md` (project overview), `PHASE1_CHECKLIST.md` (this file), and `docs/` for design notes. You can edit `.md` in any text editor or in Claude Code.
 - **No special runtime:** Markdown is for humans and docs; the app doesn’t “run” it.
 
 ### Docker and Docker Compose
@@ -83,7 +83,7 @@ The repo is structured so you can add unit tests later without big refactors. Wh
     - `docker-down` — run `docker compose down` to stop them.
     - `migrate-up` — run the migrate CLI to apply migrations (use `DATABASE_URL` from env; e.g. `migrate -path infra/migrations -database "$$DATABASE_URL" up`; in Makefiles use `$$` to pass a `$` to the shell).
     - `migrate-down` — run migrate down to roll back one migration.
-    - `run-auth`, `run-market-data`, `run-gateway` — start each Go service (e.g. `go run ./cmd/...` or `go run .` from the service directory; ensure they load `.env` or that you export vars first).
+    - `run-auth`, `run-market-data`, `run-gateway` — start each Go service (e.g. `go run ./cmd/server` or `go run .` from the service directory; ensure they load `.env` or that you export vars first). **Note:** Each target expects a runnable `main`; update the Makefile recipe to match the real entrypoint (e.g. `cd services/auth && go run ./cmd/server` once `cmd/server/main.go` exists).
   - **Tip:** On Windows you may need `make` installed (e.g. via Chocolatey, or use WSL). Alternatively you can run the same commands manually from the repo root.
 
 ---
@@ -132,11 +132,11 @@ The repo is structured so you can add unit tests later without big refactors. Wh
 
 Working directory: `services/auth/`
 
-- [ ] Add Go dependencies:
-  - `go-chi/chi/v5` (router)
-  - `jackc/pgx/v5` (Postgres driver)
-  - `golang-jwt/jwt/v5` (JWT)
-  - `golang.org/x/crypto` (bcrypt)
+- [x] Core DB dependencies and data layer:
+  - [x] `jackc/pgx/v5` (Postgres), `google/uuid` — direct `require`s in `go.mod`
+  - [x] `PostgresUserStore` / `PostgresAccountStore` in `internal/store/` (create user, get by email, create account)
+  - [x] `UserStore` / `AccountStore` interfaces and request/response types in `internal/service/` (`RegisterRequest`, `LoginRequest`, `TokenPair`, `MeResponse`, etc.)
+- [ ] Add **direct** dependencies and wire them in HTTP code: `go-chi/chi/v5`, `golang-jwt/jwt/v5`, `golang.org/x/crypto` (bcrypt); run `go mod tidy` after adding imports.
 - [ ] Implement endpoints:
   - [ ] `POST /auth/register` — hash password, insert user, create account with $100k balance, return JWT
   - [ ] `POST /auth/login` — validate credentials, return access token + refresh token
@@ -153,6 +153,8 @@ Working directory: `services/auth/`
 ## Step 5: Market Data Service — Alpaca Client + Historical Ingestion
 
 Working directory: `services/market-data/`
+
+*(Steps 5–8 are not started until Step 4 exposes a working HTTP auth API.)*
 
 - [ ] Add Go dependencies: `go-chi/chi/v5`, `jackc/pgx/v5`
 - [ ] Build Alpaca REST client (plain HTTP, no SDK):

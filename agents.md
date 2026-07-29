@@ -6,6 +6,18 @@ Any AI agent referencing this document should treat it as the single source of t
 
 ---
 
+# Working Agreement (Architect / Implementer)
+
+As of 2026-07-29, QuantSim resumed development under a different workflow than Phase 1 started with. See `docs/intent/quantsim-resume.md` for the full rationale.
+
+- **Khalil is the architect.** He sets direction, writes/edits specs and PRDs, makes architecture decisions, and reviews at checkpoints.
+- **Claude (via Claude Code) is the implementer.** For any non-trivial unit of work, write a PRD/spec first and get it reviewed before building. Then implement freely and stop at checkpoints.
+- **Checkpoints are scoped to one logical piece of implementation at a time** (e.g. "AccountStore done," "JWT helpers done") — not per-service or per-phase. Keep diffs small enough to review meaningfully.
+- **Claude Code only.** Cursor is no longer used; do not reference `.cursor/` or Cursor-specific tooling in new guidance.
+- **Time budget is 3-5 hrs/week** (revised down from the original 5-10 hrs/week estimate below — school takes priority).
+
+---
+
 # Project Identity
 
 **Project Name:** QuantSim  
@@ -214,11 +226,11 @@ Phase 2:
 ## Infrastructure
 - Docker
 - Docker Compose
-- Cloud deployment (AWS/GCP/Azure)
+- Cloud deployment: **AWS free tier** (Phase 4 target — EC2 + docker-compose for the service stack; RDS optional in place of self-hosted Postgres; Redis stays self-hosted in a container since ElastiCache has no free tier)
 
 ### Optional Enhancements
+- Terraform (IaC, stretch goal alongside Phase 4 deployment)
 - Kubernetes
-- Terraform
 - CI/CD pipelines
 
 ---
@@ -325,10 +337,10 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 # Engineering Constraints
 
 Time availability:
-- 5–10 hours/week
+- 3–5 hours/week (revised 2026-07-29; original estimate was 5–10 hours/week)
 
 Project timeline:
-- ~3–4 months
+- ~3–4 months (original estimate; paused 2026-04 to 2026-07 for school — treat as directional, not a hard deadline)
 
 Priority order:
 1. Resume impact
@@ -357,6 +369,8 @@ This project must demonstrate:
 
 When assisting on this project:
 
+- **Write a PRD/spec before implementing any non-trivial unit of work.** Get it reviewed by Khalil (architect) before building. This is a workflow requirement, not a suggestion — see Working Agreement above.
+- **Implement in checkpoint-sized slices** — one logical piece at a time (e.g. one store, one service method group, one handler set), then stop for review rather than building an entire service end-to-end unprompted.
 - Default to microservices architecture
 - Prioritize Go for backend services
 - Use Postgres for relational data
@@ -389,12 +403,14 @@ Always optimize for:
 
 # Author Context
 
-Computer science student building a flagship fintech system as a portfolio piece.
+Computer science student building a flagship fintech system as a portfolio piece, alongside coursework — roughly 3-5 hrs/week of available time.
 
-Prefers:
-- Go backend development
+Role on this project: **architect**, not implementer. Directs scope, reviews specs and checkpoints, makes architecture calls. Prefers to spend limited hours on system design and decision-making rather than hand-writing implementation — see `docs/intent/quantsim-resume.md` for how this was decided.
+
+Still cares about:
 - Finance-related systems
 - Distributed architecture work
+- Go as the backend language (implemented by Claude, reviewed by Khalil)
 
 ---
 
