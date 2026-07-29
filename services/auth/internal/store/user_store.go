@@ -12,10 +12,6 @@ import (
 	"github.com/kpeguero/quantsim/services/auth/internal/service"
 )
 
-// ErrDuplicateUser is returned when CreateUser fails due to unique constraint
-// (duplicate email or username). The service layer should map this to 409 Conflict.
-var ErrDuplicateUser = errors.New("duplicate user: email or username already exists")
-
 type PostgresUserStore struct {
 	pool *pgxpool.Pool
 }
@@ -35,7 +31,7 @@ func (s *PostgresUserStore) CreateUser(ctx context.Context, email, username stri
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return uuid.Nil, fmt.Errorf("%w", ErrDuplicateUser)
+			return uuid.Nil, fmt.Errorf("%w", service.ErrDuplicateUser)
 		}
 		return uuid.Nil, err
 	}
