@@ -5,5 +5,5 @@ Full detail (acceptance criteria, verification commands, dependency graph) in `t
 Prior Market Data (Step 5, historical ingestion) checklist archived at `docs/archive/phase1-step5-market-data/todo.md` — complete. Auth Service (Step 4) archived at `docs/archive/phase1-step4-auth/todo.md` — complete.
 
 - [x] **Task 1** — Redis price cache + `GET /market-data/prices/:symbol` (read path)
-- [ ] **Task 2** — Alpaca snapshot client (`internal/alpaca`)
+- [x] **Task 2** — Alpaca snapshot client (`internal/alpaca`)
 - [ ] **Task 3** — Poller: background tick loop, end-to-end

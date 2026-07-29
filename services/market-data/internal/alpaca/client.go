@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -124,4 +125,52 @@ func (c *Client) fetchBarsPage(ctx context.Context, symbol, timeframe string, st
 		next = *parsed.NextPageToken
 	}
 	return bars, next, nil
+}
+
+// GetSnapshots fetches the latest snapshot for every symbol in one batched
+// request (SPEC.md §2.2 -- one call per tick, not one per symbol).
+func (c *Client) GetSnapshots(ctx context.Context, symbols []string) (map[string]Snapshot, error) {
+	reqURL := c.baseURL + "/stocks/snapshots"
+
+	q := url.Values{}
+	q.Set("symbols", strings.Join(symbols, ","))
+	q.Set("feed", feed)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL+"?"+q.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("alpaca: build request: %w", err)
+	}
+	req.Header.Set("APCA-API-KEY-ID", c.apiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", c.apiSecret)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("alpaca: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, &StatusError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	var parsed snapshotsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("alpaca: decode response: %w", err)
+	}
+
+	snapshots := make(map[string]Snapshot, len(parsed))
+	for symbol, dto := range parsed {
+		snap := Snapshot{}
+		if dto.LatestTrade != nil {
+			ts, err := time.Parse(time.RFC3339Nano, dto.LatestTrade.Timestamp)
+			if err != nil {
+				return nil, fmt.Errorf("alpaca: parse latestTrade timestamp %q: %w", dto.LatestTrade.Timestamp, err)
+			}
+			snap.LatestTrade = &Trade{Price: dto.LatestTrade.Price, Timestamp: ts}
+		}
+		snapshots[symbol] = snap
+	}
+
+	return snapshots, nil
 }

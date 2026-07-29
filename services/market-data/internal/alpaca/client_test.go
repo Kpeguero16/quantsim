@@ -160,6 +160,136 @@ func TestGetBars_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestGetSnapshots_Success(t *testing.T) {
+	var gotHeaders http.Header
+	var gotQuery url.Values
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"AAPL": {"latestTrade": {"p": 123.45, "t": "2024-01-02T14:30:00Z"}},
+			"MSFT": {"latestTrade": {"p": 321.10, "t": "2024-01-02T14:30:05Z"}}
+		}`))
+	}))
+	defer srv.Close()
+
+	c := testClient(t, srv)
+	snapshots, err := c.GetSnapshots(context.Background(), []string{"AAPL", "MSFT"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(snapshots))
+	}
+
+	aapl := snapshots["AAPL"]
+	if aapl.LatestTrade == nil {
+		t.Fatal("expected AAPL to have a LatestTrade")
+	}
+	if aapl.LatestTrade.Price != 123.45 {
+		t.Errorf("AAPL price = %v, want 123.45", aapl.LatestTrade.Price)
+	}
+	wantTS := time.Date(2024, 1, 2, 14, 30, 0, 0, time.UTC)
+	if !aapl.LatestTrade.Timestamp.Equal(wantTS) {
+		t.Errorf("AAPL timestamp = %v, want %v", aapl.LatestTrade.Timestamp, wantTS)
+	}
+
+	if gotHeaders.Get("APCA-API-KEY-ID") != "test-key" {
+		t.Errorf("APCA-API-KEY-ID = %q, want test-key", gotHeaders.Get("APCA-API-KEY-ID"))
+	}
+	if gotHeaders.Get("APCA-API-SECRET-KEY") != "test-secret" {
+		t.Errorf("APCA-API-SECRET-KEY = %q, want test-secret", gotHeaders.Get("APCA-API-SECRET-KEY"))
+	}
+	if gotQuery.Get("feed") != "iex" {
+		t.Errorf("feed = %q, want iex", gotQuery.Get("feed"))
+	}
+	if gotQuery.Get("symbols") != "AAPL,MSFT" {
+		t.Errorf("symbols = %q, want AAPL,MSFT (one batched request)", gotQuery.Get("symbols"))
+	}
+}
+
+func TestGetSnapshots_MissingLatestTrade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"AAPL": {"latestTrade": {"p": 123.45, "t": "2024-01-02T14:30:00Z"}},
+			"NEWCO": {}
+		}`))
+	}))
+	defer srv.Close()
+
+	c := testClient(t, srv)
+	snapshots, err := c.GetSnapshots(context.Background(), []string{"AAPL", "NEWCO"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if snapshots["AAPL"].LatestTrade == nil {
+		t.Error("expected AAPL to have a LatestTrade")
+	}
+	if snapshots["NEWCO"].LatestTrade != nil {
+		t.Errorf("expected NEWCO's LatestTrade to be nil (no trade yet), got %+v", snapshots["NEWCO"].LatestTrade)
+	}
+}
+
+func TestGetSnapshots_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"internal error"}`))
+	}))
+	defer srv.Close()
+
+	c := testClient(t, srv)
+	snapshots, err := c.GetSnapshots(context.Background(), []string{"AAPL"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if snapshots != nil {
+		t.Errorf("expected nil snapshots on error, got %+v", snapshots)
+	}
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if statusErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("StatusCode = %d, want %d", statusErr.StatusCode, http.StatusInternalServerError)
+	}
+}
+
+func TestGetSnapshots_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`not json`))
+	}))
+	defer srv.Close()
+
+	c := testClient(t, srv)
+	_, err := c.GetSnapshots(context.Background(), []string{"AAPL"})
+	if err == nil {
+		t.Fatal("expected error for malformed JSON, got nil")
+	}
+}
+
+func TestGetSnapshots_NetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	badURL := srv.URL
+	srv.Close()
+
+	c := &Client{
+		baseURL:    badURL,
+		apiKey:     "k",
+		apiSecret:  "s",
+		httpClient: http.DefaultClient,
+	}
+
+	_, err := c.GetSnapshots(context.Background(), []string{"AAPL"})
+	if err == nil {
+		t.Fatal("expected network error, got nil")
+	}
+}
+
 func TestGetBars_NetworkError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	badURL := srv.URL
