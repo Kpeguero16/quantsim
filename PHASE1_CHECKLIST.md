@@ -187,14 +187,21 @@ Working directory: `services/market-data/`
 
 Working directory: `services/gateway/`
 
-- [ ] Add dependency: `go-chi/chi/v5`
-- [ ] Build reverse proxy that:
-  - [ ] Routes `/auth/*` → auth service
-  - [ ] Routes `/market-data/*` → market data service
-  - [ ] Routes `/trading/*` → trading engine (placeholder for Phase 2)
-- [ ] Apply shared JWT middleware (from `pkg/auth/`) on protected routes: protect `/market-data/*` and `/trading/*`; leave `/auth/*` public
-- [ ] Configure CORS for `localhost:5173` (Vite dev server)
-- [ ] Verify: all backend requests work through the single gateway port
+- [x] Add dependency: `go-chi/chi/v5`
+- [x] Build reverse proxy that:
+  - [x] Routes `/auth/*` → auth service
+  - [x] Routes `/market-data/*` → market data service
+  - [x] Routes `/trading/*` → trading engine (placeholder for Phase 2 — answers `501`, see spec §2.6)
+- [x] Apply shared JWT middleware (from `pkg/auth/`) on protected routes: protect `/market-data/*` and `/trading/*`; leave `/auth/*` public
+- [x] Configure CORS for `localhost:5173` (Vite dev server)
+- [x] Verify: all backend requests work through the single gateway port
+
+Added beyond the original checklist, from deciding the spec's open questions with a security lens:
+
+- [x] Strip any client-supplied `X-User-ID` at the edge on every route; inject the validated user ID from JWT claims on authenticated routes (for Phase 2's trading engine)
+- [x] Bind all three services to `127.0.0.1` by default (`BIND_ADDR` overrides) — a bare `:port` binds every interface, which had been leaving auth and market-data open on the local network
+- [x] Reject a `JWT_SECRET` shorter than 32 bytes at startup, in auth and gateway
+- [x] `ReadHeaderTimeout` on the gateway; dial and response-header timeouts on the proxy transport
 
 ---
 
