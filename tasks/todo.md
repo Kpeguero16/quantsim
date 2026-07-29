@@ -6,4 +6,4 @@ Full detail (acceptance criteria, verification commands, dependency graph) in `t
 - [x] **Task 1** — Skeleton + `POST /auth/register` end-to-end
 - [x] **Task 2** — `POST /auth/login`
 - [x] **Task 3** — `POST /auth/refresh`
-- [ ] **Task 4** — `GET /auth/me` (protected) + `pkg/auth` middleware
+- [x] **Task 4** — `GET /auth/me` (protected) + `pkg/auth` middleware
