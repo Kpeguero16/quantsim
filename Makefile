@@ -37,7 +37,7 @@ run-auth:
 	cd services/auth && go run ./cmd/server
 
 run-market-data:
-	cd services/market-data && go run .
+	cd services/market-data && go run ./cmd/server
 
 run-gateway:
 	cd services/gateway && go run .
