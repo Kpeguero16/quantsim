@@ -1,16 +1,21 @@
 # QuantSim Minimal Frontend — Task Checklist (Phase 1, Step 8)
 
-> **Resumed 2026-07-30.** Task 4 (dashboard + polled prices) finished and
-> verified live (`ca3ebf9`) — see that commit message for what was checked
-> (two full polling ticks captured, then confirmed zero requests fire for
-> 18+s after sign-out; symbol selection; keyboard activation via Enter).
-> One thing deliberately **not** exercised: the `404 price_not_cached` → `—`
-> render path, since forcing it means stopping the live market-data poller
-> and the classification logic was already unit-verified in Task 2. Worth a
-> quick manual check if there's a natural moment (e.g. after-hours).
+> **Phase 3 (Market data) complete as of 2026-07-30** (`4ac47bb`) — register
+> → login → prices → chart all verified working end to end against the live
+> stack. See that commit for what was checked, including a stress-test
+> false alarm (an apparent stale-chart race turned out to be two of my own
+> overlapping test scripts colliding, not a bug — traced and re-verified
+> with a clean single-script test before moving on).
 >
-> **Next up: Task 5** — the Lightweight Charts candlestick panel. Nothing
-> else is blocking it.
+> **Two things deliberately not exercised**, both logged rather than
+> silently skipped: (1) the `404 price_not_cached` → `—` render path in
+> Task 4 — forcing it means stopping the live poller, and the
+> classification logic was already unit-verified in Task 2; (2) nothing
+> outstanding for Task 5.
+>
+> **Next up: Task 6** — the full §3 E2E (including forcing the 15-minute
+> refresh path, not just assuming it), the Phase 1 handoff criteria, and
+> checking off Step 8.
 >
 > Full detail (acceptance criteria, verification steps, dependency graph, risks) in `tasks/plan.md`.
 
@@ -33,9 +38,9 @@ Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **
 
 ### Phase 3: Market data
 - [x] **Task 4** — Dashboard: `/market-data/symbols` + 15s price poll; `404 price_not_cached` → `—`; interval cleanup on logout (`c5b884f` hook, `ca3ebf9` components + wiring + live verification)
-- [ ] **Task 5** — Lightweight Charts v5 candlestick panel from `/market-data/history/{symbol}`
+- [x] **Task 5** — Lightweight Charts v5 candlestick panel from `/market-data/history/{symbol}` (`4ac47bb`)
 
-- [ ] ✅ **Checkpoint: Market data** — register → login → prices → chart works in a browser; chart matches raw API values
+- [x] ✅ **Checkpoint: Market data** — register → login → prices → chart works in a browser; chart matches raw API values (exact match spot-checked, see `4ac47bb`)
 
 ### Phase 4: Close out
 - [ ] **Task 6** — Full §3 E2E incl. the refresh path, Phase 1 handoff criteria, check off Step 8
