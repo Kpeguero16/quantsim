@@ -207,13 +207,13 @@ Added beyond the original checklist, from deciding the spec's open questions wit
 
 ## Step 8: Minimal Frontend
 
-- [ ] Scaffold project: `npm create vite@latest frontend -- --template react-ts`
-- [ ] Add Tailwind CSS
-- [ ] Build pages:
-  - [ ] **Login / Register page** — form calling `/auth/register` and `/auth/login`, stores JWT in memory or localStorage/sessionStorage
-  - [ ] **Dashboard shell** — after login, display symbol list with latest prices from `/market-data/prices/:symbol`
-  - [ ] **Simple price chart** — fetch `/market-data/history/:symbol` for one symbol, render OHLC candles with Lightweight Charts or Recharts
-- [ ] Verify: can register, log in, see prices, and view a chart end-to-end
+- [x] Scaffold project: `npm create vite@latest frontend -- --template react-ts`
+- [x] Add Tailwind CSS (v4, via the `@tailwindcss/vite` plugin — no `tailwind.config.js`)
+- [x] Build pages:
+  - [x] **Login / Register page** — form calling `/auth/register` and `/auth/login`, stores JWT **in memory only** (SPEC.md §2.5 — a page refresh logs you out, deliberately)
+  - [x] **Dashboard shell** — after login, display symbol list with latest prices from `/market-data/prices/:symbol`, polled every 15s
+  - [x] **Simple price chart** — fetch `/market-data/history/:symbol`, render OHLC candles with Lightweight Charts v5
+- [x] Verify: can register, log in, see prices, and view a chart end-to-end
 
 ---
 
@@ -226,11 +226,23 @@ When all boxes above are checked, you have a working foundation:
 - A minimal UI proving it all works
 
 **Handoff criteria (before starting Phase 2):**
-- Migrations run clean; all tables present
-- `.env.example` is complete and documented
-- Gateway routes `/auth/*`, `/market-data/*`, and `/trading/*` (placeholder)
-- E2E: register → login → dashboard with prices → chart for one symbol works
-- Auth-hardening step below is complete
+- [x] **Migrations run clean; all tables present** — verified 2026-07-30 by replaying all three migrations up *and* back down against a throwaway database (`quantsim_migrate_test`, since dropped), not just by inspecting the existing one. Up produced exactly the 7 expected tables; `down -all` removed them cleanly. Working DB is at version 3, not dirty.
+- [x] **`.env.example` is complete and documented** — verified by diffing its keys against `.env`. Found and fixed a gap: `docker-compose.yml` reads `PGADMIN_EMAIL`/`PGADMIN_PASSWORD`, which were documented nowhere; they are now in `.env.example`. See the note below about the related dead keys in `.env`.
+- [x] **Gateway routes `/auth/*`, `/market-data/*`, and `/trading/*` (placeholder)** — verified by curl against a cold-started stack: `/healthz` 200; `/auth/*` public; `/market-data/*` 401 without a token, 200 with; `/trading/*` 401 without a token and `501 not_implemented` with one; unknown paths return the standard `{code, message}` 404 shape.
+- [x] **E2E: register → login → dashboard with prices → chart for one symbol works** — all eight steps of `SPEC.md` §3 run clean from a cold start (see Step 8 notes below).
+- [ ] Auth-hardening step below is complete
+
+**Known issue for Khalil (local `.env`, not tracked):** `.env` defines `ADMIN_EMAIL` and `ADMIN_PASSWORD`, but nothing reads those names — `docker-compose.yml` expects `PGADMIN_EMAIL`/`PGADMIN_PASSWORD`. Any custom pgAdmin credentials set there have silently never applied; pgAdmin has been falling back to its defaults (`admin@quantsim.local` / `admin`). Low impact — pgAdmin only starts under the `tools` profile and is bound to loopback — but worth renaming the two keys in your `.env`.
+
+### Step 8 verification notes (2026-07-30)
+
+Run from a genuine cold start: all services stopped, `docker compose down`/`up` (containers recreated), then every service restarted.
+
+- **Token refresh actually exercised, not assumed.** `AccessTokenTTL` was temporarily lowered to 10s and the auth service restarted, then reverted. The network log captured the exact contract from `SPEC.md` §2.6: a poll tick produced **seven concurrent 401s → exactly one `POST /auth/refresh` (200) → all seven requests retried and succeeded**, with the session surviving. This is the real expiry path, not a corrupted-token stand-in.
+- **`404 price_not_cached` → `—` confirmed live.** Previously deferred; forced here by clearing the Redis price keys (which leaves a ~8s window before the poller refills) and logging in within it. All seven rows rendered the em-dash with screen-reader text "no price cached yet" and **no error banner** — the intended markets-closed degradation. The chart stayed fully functional throughout, since history comes from Postgres rather than Redis. Prices self-healed on the next tick with no reload.
+- **Single origin holds.** Across the whole session, every request went to `localhost:8080`; zero requests to `:8081` or `:8082`. The gated routes returning 200 is itself proof the `Authorization` header is being sent, since the gateway 401s without it.
+- **No console errors and no CORS failures** at any point — the browser-side proof of the gateway's hand-written CORS middleware that Step 7 deferred to this step.
+- Backend unaffected: all 9 Go test suites pass uncached (`go test -count=1 ./...` across `pkg`, `services/auth`, `services/market-data`, `services/gateway`). Frontend `npm run build` and `npm run lint` both clean.
 
 ---
 

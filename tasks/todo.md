@@ -1,21 +1,26 @@
 # QuantSim Minimal Frontend — Task Checklist (Phase 1, Step 8)
 
-> **Phase 3 (Market data) complete as of 2026-07-30** (`4ac47bb`) — register
-> → login → prices → chart all verified working end to end against the live
-> stack. See that commit for what was checked, including a stress-test
-> false alarm (an apparent stale-chart race turned out to be two of my own
-> overlapping test scripts colliding, not a bug — traced and re-verified
-> with a clean single-script test before moving on).
+> # ✅ STEP 8 COMPLETE — PHASE 1 DONE (2026-07-30)
 >
-> **Two things deliberately not exercised**, both logged rather than
-> silently skipped: (1) the `404 price_not_cached` → `—` render path in
-> Task 4 — forcing it means stopping the live poller, and the
-> classification logic was already unit-verified in Task 2; (2) nothing
-> outstanding for Task 5.
+> All six tasks landed and verified. Full verification record is in
+> `PHASE1_CHECKLIST.md` under "Step 8 verification notes"; the short version:
+> every handoff criterion confirmed from a genuine cold start, the token
+> refresh path forced and observed rather than assumed (7 concurrent 401s →
+> exactly 1 refresh → 7 successful retries), and the `price_not_cached` → `—`
+> path — carried as an open gap since Task 4 — finally forced and confirmed.
 >
-> **Next up: Task 6** — the full §3 E2E (including forcing the 15-minute
-> refresh path, not just assuming it), the Phase 1 handoff criteria, and
-> checking off Step 8.
+> **Nothing outstanding from Step 8.** One unrelated finding surfaced during
+> close-out and is recorded in `PHASE1_CHECKLIST.md`: `.env` has dead
+> `ADMIN_EMAIL`/`ADMIN_PASSWORD` keys that should be `PGADMIN_EMAIL`/
+> `PGADMIN_PASSWORD`. Khalil's local file, low impact, not a blocker.
+>
+> **Next: Step 9, the auth-hardening step** (`SPEC.md` §2.12 →
+> `PHASE1_CHECKLIST.md` Step 9) — password min/max length and email format
+> validation in the auth service, with its own spec first. Then Phase 2.
+>
+> These Step 8 docs (`SPEC.md`, `tasks/plan.md`, `tasks/todo.md`) move to
+> `docs/archive/phase1-step8-frontend/` when the next spec is drafted, per
+> the Steps 4→5, 5→6, 6→7 convention.
 >
 > Full detail (acceptance criteria, verification steps, dependency graph, risks) in `tasks/plan.md`.
 
@@ -43,9 +48,9 @@ Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **
 - [x] ✅ **Checkpoint: Market data** — register → login → prices → chart works in a browser; chart matches raw API values (exact match spot-checked, see `4ac47bb`)
 
 ### Phase 4: Close out
-- [ ] **Task 6** — Full §3 E2E incl. the refresh path, Phase 1 handoff criteria, check off Step 8
+- [x] **Task 6** — Full §3 E2E incl. the refresh path, Phase 1 handoff criteria, check off Step 8
 
-- [ ] ✅ **Checkpoint: Complete** — Phase 1 done; then the auth-hardening step, then Phase 2
+- [x] ✅ **Checkpoint: Complete** — **Phase 1 is done.** Next: the auth-hardening step (Step 9), then Phase 2
 
 ---
 
