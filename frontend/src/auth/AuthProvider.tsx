@@ -21,7 +21,7 @@ import {
   type ReactNode,
 } from 'react'
 
-import { api, connectAuth } from '../api/client'
+import { ApiError, api, connectAuth } from '../api/client'
 import type { LoginRequest, MeResponse, RegisterRequest, TokenPair } from '../api/types'
 import { AuthContext, type AuthContextValue } from './context'
 
@@ -61,8 +61,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         setUser(await api.me())
       } catch (error) {
-        // Tokens that cannot fetch a profile are not a usable session.
-        clearSession()
+        // Only discard the pair when the server actually rejected it. A
+        // transport failure or a 5xx says nothing about whether these
+        // tokens are good, and throwing away a pair that was valid a
+        // moment ago turns one flaky request into a forced second
+        // sign-in. Either way the caller still sees the error and the
+        // user stays on the login screen, since `user` was never set.
+        if (
+          error instanceof ApiError &&
+          (error.status === 401 || error.status === 403)
+        ) {
+          clearSession()
+        }
         throw error
       }
     },

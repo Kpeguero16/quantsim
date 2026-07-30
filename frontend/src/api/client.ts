@@ -24,6 +24,7 @@
  * remove it as an unnecessary optimisation.
  */
 import type {
+  ApiErrorBody,
   HistoryResponse,
   LoginRequest,
   MeResponse,
@@ -36,6 +37,17 @@ import type {
 const BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
 ).replace(/\/+$/, '')
+
+/**
+ * Upper bound on any single request. Without this a hung gateway leaves a
+ * promise pending forever: the dashboard's per-symbol requests would pile
+ * up tick after tick with nothing ever settling, and the UI would sit on a
+ * loading state with no way out.
+ *
+ * Kept below the 15s poll interval so a stalled request is abandoned before
+ * the next tick fires rather than overlapping with it.
+ */
+const REQUEST_TIMEOUT_MS = 10_000
 
 /** A failed request, carrying the backend's {code, message} body. */
 export class ApiError extends Error {
@@ -82,6 +94,26 @@ export function connectAuth(next: AuthBridge | null): void {
   bridge = next
 }
 
+/**
+ * Turns a thrown fetch rejection into an ApiError. Status 0 marks "never
+ * reached the server", so callers can tell a transport failure apart from
+ * anything the backend actually said.
+ */
+function toTransportError(error: unknown): ApiError {
+  if (error instanceof DOMException && error.name === 'TimeoutError') {
+    return new ApiError(
+      0,
+      'timeout',
+      'The server took too long to respond. Please try again.',
+    )
+  }
+  return new ApiError(
+    0,
+    'network_error',
+    'Could not reach the server. Check that the gateway is running.',
+  )
+}
+
 let inFlightRefresh: Promise<string | null> | null = null
 
 /** Shared-promise wrapper: concurrent callers await one refresh. */
@@ -107,9 +139,10 @@ async function performRefresh(): Promise<string | null> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   } catch {
-    // The gateway is unreachable. Transient, and not evidence the token is
+    // Unreachable or timed out. Transient, and not evidence the token is
     // bad, so the session is left intact for the next attempt.
     return null
   }
@@ -119,7 +152,17 @@ async function performRefresh(): Promise<string | null> {
     return null
   }
 
-  const pair = (await response.json()) as TokenPair
+  let pair: TokenPair
+  try {
+    // The timeout covers body streaming too, so this read can still abort
+    // even though the response headers arrived.
+    pair = (await response.json()) as TokenPair
+  } catch {
+    // Same reasoning as the fetch failure above: transient, and no
+    // evidence the refresh token itself is bad.
+    return null
+  }
+
   bridge?.onRefreshed(pair)
   return pair.access_token
 }
@@ -131,7 +174,10 @@ async function toApiError(response: Response): Promise<ApiError> {
   try {
     const body: unknown = await response.json()
     if (body && typeof body === 'object') {
-      const parsed = body as Partial<{ code: unknown; message: unknown }>
+      // Validated field by field rather than cast outright: this is data
+      // off the wire, so the declared shape is a claim to check, not a
+      // guarantee to trust.
+      const parsed = body as Partial<Record<keyof ApiErrorBody, unknown>>
       if (typeof parsed.code === 'string') code = parsed.code
       if (typeof parsed.message === 'string') message = parsed.message
     }
@@ -166,13 +212,12 @@ async function request<T>(
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
+        // A fresh signal per attempt: the retry below must not inherit an
+        // already-fired timeout from the first attempt.
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
-    } catch {
-      throw new ApiError(
-        0,
-        'network_error',
-        'Could not reach the server. Check that the gateway is running.',
-      )
+    } catch (error) {
+      throw toTransportError(error)
     }
   }
 
@@ -188,7 +233,19 @@ async function request<T>(
 
   if (!response.ok) throw await toApiError(response)
 
-  return (await response.json()) as T
+  try {
+    return (await response.json()) as T
+  } catch (error) {
+    // The timeout covers body streaming, so a slow response can abort here
+    // rather than at the fetch above. Anything else at this point is a
+    // malformed body, which is a different failure and says so.
+    if (error instanceof DOMException) throw toTransportError(error)
+    throw new ApiError(
+      0,
+      'invalid_response',
+      'The server returned a malformed response.',
+    )
+  }
 }
 
 export const api = {

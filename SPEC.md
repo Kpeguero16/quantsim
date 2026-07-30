@@ -253,7 +253,7 @@ The reasoning: `agents.md` states *"Phase 1: manual/curl verification is suffici
 
 **What does get verified, at every checkpoint:**
 - `npm run build` passes — TypeScript compiles with no errors. This is the type-level regression net and is non-negotiable.
-- `npm run lint` passes on the scaffolded ESLint config.
+- `npm run lint` passes on the scaffolded oxlint config (`frontend/.oxlintrc.json`). Note: current Vite `react-ts` scaffolds ship **oxlint**, not ESLint — an earlier draft of this line said ESLint.
 - The §3 manual E2E sequence runs clean against the live stack.
 - Browser DevTools shows no CORS errors and no failed requests — the real proof of Step 7's CORS middleware (§1).
 

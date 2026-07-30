@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react'
 
+import BrandMark from '../BrandMark'
 import { useAuth } from '../auth/context'
 import CandlestickChart from './CandlestickChart'
 import PriceList from './PriceList'
@@ -37,7 +38,7 @@ export default function Dashboard() {
     <div className="min-h-dvh">
       <header className="flex items-center justify-between border-b border-line px-4 py-3 sm:px-6">
         <div className="flex items-center gap-2.5">
-          <BrandMark />
+          <BrandMark className="h-6 w-6" />
           <span className="text-base font-semibold tracking-tight text-ink">
             QuantSim
           </span>
@@ -108,28 +109,5 @@ export default function Dashboard() {
         </section>
       </main>
     </div>
-  )
-}
-
-function BrandMark() {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      className="h-6 w-6"
-      role="img"
-      aria-label="QuantSim"
-    >
-      <rect width="32" height="32" rx="6" className="fill-elevated" />
-      <path
-        d="M5 22.5 L12 15 L17 19 L27 8"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="text-up"
-      />
-      <circle cx="27" cy="8" r="2.75" className="fill-up" />
-    </svg>
   )
 }

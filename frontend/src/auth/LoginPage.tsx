@@ -9,6 +9,7 @@
 import { useId, useState, type FormEvent } from 'react'
 
 import { ApiError } from '../api/client'
+import BrandMark from '../BrandMark'
 import { useAuth } from './context'
 
 type Mode = 'login' | 'register'
@@ -56,7 +57,7 @@ export default function LoginPage() {
     <main className="min-h-dvh grid place-items-center px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-2.5">
-          <BrandMark />
+          <BrandMark className="h-7 w-7" />
           <span className="text-lg font-semibold tracking-tight text-ink">
             QuantSim
           </span>
@@ -100,7 +101,15 @@ export default function LoginPage() {
             onChange={setPassword}
             autoComplete={isRegister ? 'new-password' : 'current-password'}
             describedBy={error ? errorId : undefined}
-            hint={isRegister ? 'At least 8 characters.' : undefined}
+            // Advice, not a stated rule: the server currently accepts any
+            // non-empty password, so wording this as a requirement would
+            // promise an enforcement that does not exist. Tighten once the
+            // Step 9 auth-hardening lands (SPEC.md 2.12).
+            hint={
+              isRegister
+                ? 'Use 8 or more characters for a stronger password.'
+                : undefined
+            }
           />
 
           {error && (
@@ -204,25 +213,3 @@ function Field({
   )
 }
 
-function BrandMark() {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      className="h-7 w-7"
-      role="img"
-      aria-label="QuantSim"
-    >
-      <rect width="32" height="32" rx="6" className="fill-elevated" />
-      <path
-        d="M5 22.5 L12 15 L17 19 L27 8"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="text-up"
-      />
-      <circle cx="27" cy="8" r="2.75" className="fill-up" />
-    </svg>
-  )
-}
