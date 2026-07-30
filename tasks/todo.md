@@ -1,42 +1,45 @@
 # QuantSim Auth Input Validation — Task Checklist (Phase 1, Step 9)
 
-> **BLOCKED — `SPEC.md` §9 is awaiting review.** Twelve proposed decisions plus one
-> explicit non-goal. Nothing starts until they are accepted or reversed.
+> **`SPEC.md` is APPROVED** — decisions delegated 2026-07-30 with the instruction
+> to decide against cybersecurity standards, and resolved in §9. **Implementation
+> is unblocked.**
 >
-> The two most worth your attention: **§2.7** (username validation goes beyond
-> what the checklist asks for — cut it if you want this step kept tight) and
-> **§2.6** (the migration will deliberately fail until a case-collision already
-> sitting in the dev database is cleared by hand).
+> Checking NIST SP 800-63B §3.1.1.2 directly **reversed three of the draft's own
+> decisions**, which widened scope from the original draft:
+> password minimum is **15, not 8** (`SHALL` for single-factor auth; the 8-char
+> figure applies only alongside MFA); a **blocklist check** is required and was
+> missing entirely; **case-insensitive usernames** move from non-goal to in
+> scope. A **64 KiB body cap** was added since length checks run after decoding.
 
 Full detail (acceptance criteria, verification steps, dependency graph, risks) in `tasks/plan.md`.
 
-Prior steps archived: Auth Service (Step 4) at `docs/archive/phase1-step4-auth/`; Market Data historical ingestion (Step 5) at `docs/archive/phase1-step5-market-data/`; Market Data live polling (Step 6) at `docs/archive/phase1-step6-market-data-live/`; API Gateway (Step 7) at `docs/archive/phase1-step7-gateway/`; Minimal Frontend (Step 8) at `docs/archive/phase1-step8-frontend/` — all complete.
+Prior steps archived: Auth Service (Step 4) at `docs/archive/phase1-step4-auth/`; Market Data ingestion (Step 5) and live polling (Step 6); API Gateway (Step 7); Minimal Frontend (Step 8) at `docs/archive/phase1-step8-frontend/` — all complete.
 
 Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **stop**.
 
 ### Phase 1: The rules
-- [ ] **Task 1** — `validate.go` + `validate_test.go`: `NormalizeEmail`, `ValidateRegistration`, `ErrInvalidInput`. Pure functions, no DB or HTTP
+- [ ] **Task 1** — `validate.go`, `blocklist.go` + embedded list, `ErrInvalidInput`, and their tests. Pure functions, no DB or HTTP
 
 ### Phase 2: Wiring
-- [ ] **Task 2** — Enforce in `Register`/`Login`, map `ErrInvalidInput` → `400` in the handler, remove the handler's duplicate non-empty checks
+- [ ] **Task 2** — Enforce in `Register`/`Login`, 64 KiB body cap, map `ErrInvalidInput` → `400`, remove the handler's duplicate checks, **update all existing 10–14 char test fixtures**
 
-- [ ] ✅ **Checkpoint: Rules enforced** — short/long password, bad email, long username all `400`; valid registration still `201`. Case-duplicates *not* fixed yet — that is Task 3
+- [ ] ✅ **Checkpoint: Rules enforced** — all rejections return `400`; valid registration still `201`; **an existing short-password account still logs in**. Case-duplicates not fixed yet — that is Task 3
 
 ### Phase 3: The database
-- [ ] **Task 3** — Migration `004`: lowercase existing emails, then unique index on `lower(email)`. Highest-risk task; dry-run up **and** down on a throwaway DB first
+- [ ] **Task 3** — Migration `004`: lowercase emails, then unique indexes on `lower(email)` and `lower(username)`. Highest-risk task; dry-run up **and** down on a throwaway DB first
 
 - [ ] ✅ **Checkpoint: Database aligned** — no duplicate accounts, no case lockout, **every pre-existing user can still log in**
 
 ### Phase 4: Close out
-- [ ] **Task 4** — Frontend hint back to "At least 8 characters."; check off Step 9
+- [ ] **Task 4** — Frontend hint to "At least 15 characters."; check off Step 9
 
-- [ ] ✅ **Checkpoint: Complete** — Phase 1 fully closed; next is Phase 2 (Trading Engine)
+- [ ] ✅ **Checkpoint: Complete** — Phase 1 fully closed; next is rate limiting, then Phase 2
 
 ---
 
 ## Why this step exists
 
-Every row below was reproduced against the running stack on 2026-07-30, not inferred from reading code:
+Every row reproduced against the running stack on 2026-07-30, not inferred from reading code:
 
 | Request | Today |
 |---|---|
@@ -47,10 +50,20 @@ Every row below was reproduced against the running stack on 2026-07-30, not infe
 | Same email, different case | **two separate accounts** |
 | Login with different case | **401 lockout** |
 
-The last two are the real motivation. They are live in the dev database right now.
+The last two are the real motivation, and are live in the dev database right now.
 
 ---
 
-Every checkpoint runs `go test -count=1 ./...` in `services/auth` and `pkg`. Unlike Step 8, **this step ships tests** — it is exactly the logic-with-invariants that Steps 4–7 tested (`SPEC.md` §6).
+## The risk to watch
 
-Step 9 docs (`SPEC.md`, `tasks/plan.md`, `tasks/todo.md`) stay at the repo root until Phase 2's spec is drafted, then move to `docs/archive/phase1-step9-auth-validation/` — matching how Steps 4→5 through 8→9 were archived.
+Raising the minimum to 15 makes **every existing password in the database non-compliant**, including the `pw12345678` account used throughout Step 8's verification. Nobody is locked out because **`Login` is deliberately not tightened** (`SPEC.md` §2.12) — registration enforces policy, login authenticates whoever already exists.
+
+That property is load-bearing, so it is asserted, not assumed: Task 2 carries an explicit regression test that a 10-character stored password still authenticates.
+
+---
+
+Every checkpoint runs `go test -count=1 ./...` in `services/auth` and `pkg`. Unlike Step 8, **this step ships tests** — it is exactly the logic-with-invariants that Steps 4–7 covered (`SPEC.md` §6).
+
+**Flagged forward, not scheduled:** rate limiting on `/auth/login` is the largest remaining gap in the auth surface (`SPEC.md` §7). Nothing throttles credential stuffing today. It belongs at the gateway, where Step 7 deferred it, and is worth doing ahead of Phase 2 features.
+
+Step 9 docs move to `docs/archive/phase1-step9-auth-validation/` when the next spec is drafted, per convention.
