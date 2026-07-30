@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 
 import { useAuth } from '../auth/context'
+import CandlestickChart from './CandlestickChart'
 import PriceList from './PriceList'
 import { usePrices } from './use-prices'
 import { useSymbols } from './use-symbols'
@@ -95,13 +96,10 @@ export default function Dashboard() {
 
         <section
           aria-label={selected ? `${selected} chart` : 'Chart'}
-          className="rounded-lg border border-line bg-surface p-4"
+          className="h-96 rounded-lg border border-line bg-surface p-4"
         >
           {selected ? (
-            <p className="text-sm text-ink-muted">
-              Chart for <span className="font-medium text-ink">{selected}</span> —
-              coming in Task 5.
-            </p>
+            <CandlestickChart symbol={selected} />
           ) : (
             <p className="text-sm text-ink-muted">
               Select a symbol to see its chart.
