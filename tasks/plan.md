@@ -1,280 +1,180 @@
-# Implementation Plan — QuantSim Minimal Frontend (Phase 1, Step 8)
+# Implementation Plan — QuantSim Auth Input Validation (Phase 1, Step 9)
 
 ## Overview
 
-Build `frontend/` — the minimal React UI that proves Phase 1 works end to end. Two screens (login/register, dashboard), talking to the gateway's single origin on `localhost:8080`, with polled prices and one candlestick chart. Completing it satisfies the `PHASE1_CHECKLIST.md` handoff criteria and unblocks Phase 2.
+Close the auth-service input-validation gap found while drafting the Step 8 frontend spec: today a one-character password, the literal string `x` as an email, and a 500-character username all register successfully, an 80-byte password returns `500` instead of `400`, and — the two that actually matter — the same email address in different capitalisation creates **two separate accounts**, while a user who registered as `Khalil@x.test` cannot log in as `khalil@x.test`.
 
-`SPEC.md` is **approved as of 2026-07-29** — all nine proposed decisions accepted, no reversals. This plan slices that spec into six checkpoints.
+`SPEC.md` is **draft, awaiting review**. Nothing here starts until §9 is signed off.
 
-**Two levels of review gate this work, and they are different things:**
-
-- **Per-task stops** — required by `agents.md`: *"Checkpoints are scoped to one logical piece of implementation at a time... small enough for Khalil to meaningfully review."* Implement one task, verify it, **stop**. Do not start the next task before review.
-- **Phase checkpoints** — integration gates after every 2–3 tasks, where the whole app is exercised end to end rather than just the new slice. These catch the problems that only appear once pieces meet.
+Four tasks, ordered so the risky, hard-to-reverse piece (the migration) lands only after the code that depends on it is proven.
 
 ## Architecture decisions
 
-Restated from `SPEC.md` §2 for quick reference while implementing. All are settled; reversing one is a spec edit, not an in-flight call.
+Restated from `SPEC.md` §2 for reference while implementing:
 
-- **Scope:** login/register + dashboard + one chart. Nothing else — §2.1.
-- **Prices:** poll `GET /market-data/prices/:symbol` every **15s** — §2.2.
-- **Base URL:** `VITE_API_BASE_URL`, default `http://localhost:8080`, in `frontend/.env.example` only — §2.3.
-- **Port:** 5173 with `strictPort: true` — the gateway's CORS origin is a hardcoded constant — §2.4.
-- **Tokens:** access + refresh in memory only, never persisted — §2.5.
-- **401 handling:** refresh → retry **once**; shared in-flight promise; `/auth/refresh` never recurses — §2.6.
-- **`404 price_not_cached`:** renders `—`, is not an error — §2.7.
-- **Chart:** `lightweight-charts` v5, `chart.addSeries(CandlestickSeries, …)`, business-day `YYYY-MM-DD` times, sorted + de-duplicated — §2.8.
-- **No router**, conditional render on auth state — §2.9.
-- **Deps:** react, react-dom, lightweight-charts, tailwindcss + @tailwindcss/vite. Nothing else — §2.10.
-- **Tailwind v4:** Vite plugin + `@import "tailwindcss"`. No `tailwind.config.js`, no PostCSS — §2.11.
-- **Client-side validation is UX only** — the backend validates non-empty and nothing more — §2.12.
-- **Types:** wire-format `snake_case`, mirroring the Go json tags — §5.
-- **Verification:** `npm run build` + `npm run lint` + manual E2E. No test framework — §6.
+- **Validation lives in `internal/service`**, not the handler; handler maps the typed error to HTTP — §2.1.
+- **`ErrInvalidInput` → `400 invalid_request`**; no new error code, no per-field body — §2.2.
+- **Password: min 8 runes, max 72 bytes.** The asymmetry is deliberate — bcrypt's limit is on bytes — §2.3.
+- **Email: `net/mail.ParseAddress`**, reject display-name forms, cap 254 bytes, no dot-in-domain requirement — §2.4.
+- **Email lowercased + trimmed** for storage and lookup — §2.5. *This is the actual bug fix.*
+- **Unique index on `lower(email)`**, which fails loudly on existing collisions — §2.6.
+- **Username 3–30, `[A-Za-z0-9_-]`** — §2.7, beyond the checklist, cut if rejected.
+- **Login is not tightened** — non-empty plus normalisation only, so no existing user is locked out — §2.8.
+- **Tests ship with this step**, unlike Step 8 — §6.
 
 ## Dependency graph
 
 ```
-Task 1 (scaffold + Tailwind)
+Task 1 (validate.go + tests)        ← pure functions, no DB, no HTTP
     │
-    └── Task 2 (api/types.ts, api/client.ts)
+    └── Task 2 (wire into service + handler)
             │
-            └── Task 3 (AuthContext + LoginPage + App)   ← CORS proven here
+            └── Task 3 (migration 004 + the manual cleanup it forces)
                     │
-                    └── Task 4 (Dashboard + PriceList)
-                            │
-                            └── Task 5 (CandlestickChart)
-                                    │
-                                    └── Task 6 (E2E + close out Phase 1)
+                    └── Task 4 (frontend hint + close out)
 ```
 
-Strictly linear, unlike Step 7's. Each slice renders something the next one needs, and no independent pair is worth parallelizing — the frontend is a single dependency chain from transport up to view. **Nothing here can be parallelized across sessions.**
-
-### On vertical slicing
-
-The usual guidance is to slice vertically — one complete user-visible path per task. Tasks 3, 4, and 5 do exactly that ("user can log in," "user sees prices," "user sees a chart").
-
-Tasks 1 and 2 are deliberately horizontal, and it is worth being explicit about why rather than pretending otherwise. Task 2 (`client.ts`) holds the only genuinely subtle logic in this step — 401 → refresh → retry-once with a shared in-flight promise — and it ships **without unit tests** (§6). Burying it inside Task 3's auth diff would mean the trickiest code in the step arrives inside the largest diff, reviewed last. Isolating it puts the highest-risk work early where it fails fast, and gives it verification criteria of its own. This is the same reasoning that gave the gateway's middleware its own checkpoint in Step 7.
+Task 1 is deliberately first and standalone: the rules are pure functions, so they can be fully proven before anything mutable is touched. Task 3 is deliberately last of the backend work — it is the only irreversible piece (§7), and by then the code that depends on normalisation is already tested.
 
 ---
 
-# Phase 1: Foundation
+# Phase 1: The rules
 
-## Task 1: Scaffold Vite + Tailwind and pin the dev-server contract
+## Task 1: `validate.go` and its tests
 
-**Description:** Stand up the React/TypeScript project with Tailwind v4 and lock the dev server to port 5173, so that every later task has a working build and a browser origin the gateway will actually accept.
+**Description:** The rules as pure functions, with no HTTP, database, or context involved. Nothing is wired up yet — this task is provably correct on its own before anything calls it.
 
 **Acceptance criteria:**
-- [ ] `npm run dev` serves on **5173** — confirm the number printed in the terminal, not the assumption
-- [ ] A Tailwind utility class visibly applies in the browser
-- [ ] **No `tailwind.config.js` and no PostCSS config exist** — if either does, a v3 guide was followed and §2.11 was not
+- [ ] `NormalizeEmail(string) string` trims and lowercases; idempotent
+- [ ] `ValidateRegistration(email, username, password string) error` returns `ErrInvalidInput`-wrapped errors with user-readable messages
+- [ ] Password minimum counted in **runes**, maximum in **bytes** (§2.3)
 
 **Verification:**
-- [ ] Build succeeds: `cd frontend && npm run build`
-- [ ] Lint passes: `cd frontend && npm run lint`
-- [ ] Manual check: `make run-frontend` opens a styled page at `http://localhost:5173`
-- [ ] Manual check: occupy 5173 first (`nc -l 5173`), confirm Vite **fails loudly** rather than sliding to 5174
+- [ ] `cd services/auth && go test -count=1 ./internal/service/...`
+- [ ] Boundary cases both sides: password 7/8 runes and 72/73 bytes; **a multi-byte password that is 8 runes but more than 8 bytes** — this is the case that proves the rune/byte split is real and not incidental
+- [ ] `NormalizeEmail` idempotence asserted, not assumed
 
 **Dependencies:** None
 
 **Files likely touched:**
-- `frontend/` (Vite `react-ts` scaffold)
-- `frontend/vite.config.ts`
-- `frontend/src/index.css`
-- `frontend/.env.example`
-- `Makefile`
+- `services/auth/internal/service/validate.go`
+- `services/auth/internal/service/validate_test.go`
+- `services/auth/internal/service/errors.go`
 
-**Estimated scope:** Medium
-
-**Notes:** `frontend/` already contains `.gitkeep`, so the scaffolder will warn the directory is not empty — choose the option that keeps existing files, then delete `.gitkeep`. Strip the Vite demo styles and `App.css`. `frontend/.env.example` is committable despite `.gitignore`'s `.env.*` rule — the `!.env.example` negation applies at any depth (verified).
+**Estimated scope:** Small
 
 ---
 
-## Task 2: API types and fetch client
+# Phase 2: Wiring
 
-**Description:** Build the transport layer every other task sits on: typed wire models, a `fetch` wrapper that injects the bearer token and parses the backend's `{code, message}` error shape, and the 401 → refresh → retry-once path. This is the highest-risk task in the step and it ships without unit tests.
+## Task 2: Enforce in `Register`/`Login`, map in the handler
+
+**Description:** Call the validator, normalise the email, and surface rejections as `400`. Remove the handler's now-duplicate non-empty checks so the rules live in exactly one place.
 
 **Acceptance criteria:**
-- [ ] Types mirror the Go json tags exactly, in wire-format `snake_case` — transcribed from `services/auth/internal/service/types.go` and `services/market-data/internal/service/types.go`
-- [ ] A non-2xx response throws a typed `ApiError { status, code, message }` built from the body
-- [ ] On 401: refresh, then retry the original request **exactly once**; `/auth/refresh` bypasses the interceptor so it can never recurse; concurrent 401s share **one** in-flight refresh promise
+- [ ] `Register` validates and normalises **before** hashing or any store call
+- [ ] `Login` normalises the email before lookup but applies **no** other rules (§2.8)
+- [ ] Handler maps `ErrInvalidInput` → `400 invalid_request`; its non-empty checks are gone
+- [ ] `bcrypt.ErrPasswordTooLong` also maps to `400`, not `500` (§2.9)
 
 **Verification:**
-- [ ] Build succeeds: `cd frontend && npm run build`
-- [ ] Lint passes: `cd frontend && npm run lint`
-- [ ] Manual check — **corrupt the access token in memory, then make a call.** DevTools Network shows exactly one `POST /auth/refresh`, followed by the original request succeeding
-- [ ] Manual check — **fire seven concurrent calls with an expired token.** Network shows **one** refresh, not seven
-- [ ] Manual check — **expire the refresh token too.** Auth state clears; no infinite refresh loop
+- [ ] `cd services/auth && go test -count=1 ./...`
+- [ ] Service test asserts the **mock store recorded no write** on a rejected registration — proves validation runs first rather than the database happening to reject it
+- [ ] Handler tests cover each new `400` and confirm the happy path still returns `201`
+- [ ] Manual: the first four `SPEC.md` §3 curls now return `400` (including the 80-byte password that returns `500` today)
 
 **Dependencies:** Task 1
 
 **Files likely touched:**
-- `frontend/src/api/types.ts`
-- `frontend/src/api/client.ts`
+- `services/auth/internal/service/auth.go`
+- `services/auth/internal/service/auth_test.go`
+- `services/auth/internal/handler/auth.go`
+- `services/auth/internal/handler/auth_test.go`
 
-**Estimated scope:** Small (2 files, but the densest logic in the step)
-
-**Notes:** The client takes a token getter injected by the auth layer rather than importing `AuthContext` — importing it would create a cycle, since the context calls the client. Verified while drafting: the backend's refresh is stateless with no rotation, so a duplicate refresh is wasteful but harmless *today*. The shared promise is therefore efficiency now and correctness later — do not remove it as "unnecessary."
-
----
-
-## ✅ Checkpoint: Foundation (after Tasks 1–2)
-
-- [ ] `npm run build` and `npm run lint` both clean
-- [ ] The refresh-retry path has been exercised against the **live stack**, not reasoned about
-- [ ] No token appears in any `console.log` output
-- [ ] **Stop for architect review before Phase 2**
+**Estimated scope:** Medium
 
 ---
 
-# Phase 2: Authentication
+## ✅ Checkpoint: Rules enforced (after Tasks 1–2)
 
-## Task 3: Auth context and the login/register screen
+- [ ] `go test -count=1 ./...` passes in `services/auth` and `pkg`
+- [ ] Short password, malformed email, over-long password, and over-long username all rejected with `400`
+- [ ] A valid registration still succeeds with `201`
+- [ ] **Not yet fixed at this point:** case-duplicate accounts. New registrations normalise, but the database still permits a collision until Task 3 — expected, not a regression
+- [ ] **Stop for architect review before the migration**
 
-**Description:** Hold credentials in memory, render the login/register screen, and switch the app between logged-out and logged-in. This is the first task that runs a browser against the gateway, so it is where Step 7's CORS middleware gets its first real proof.
+---
+
+# Phase 3: The database
+
+## Task 3: Migration 004 — lowercase existing emails, add the unique index
+
+**Description:** Make the database enforce what the code now assumes. The only irreversible step in this plan, and the one that needs a manual decision first.
 
 **Acceptance criteria:**
-- [ ] `AuthContext` holds `accessToken`, `refreshToken`, and `user` in React state — **nothing written to `localStorage`, `sessionStorage`, or a cookie**
-- [ ] One screen toggles between login and register; register posts `{email, username, password}`, login posts `{email, password}`
-- [ ] On rejection the **backend's** `message` is displayed verbatim — not a client-invented string
-- [ ] `App.tsx` renders `user ? <Dashboard/> : <LoginPage/>`
+- [ ] `004_email_case_insensitive.up.sql` lowercases existing emails, **then** creates `UNIQUE INDEX users_email_lower_key ON users (lower(email))`
+- [ ] `004_..._down.sql` drops the index, with a comment stating that original capitalisation is **not** restorable (§7)
+- [ ] Pre-existing case-collisions are cleared **by hand** using the §3 query — the migration must not delete user rows
 
 **Verification:**
-- [ ] Build succeeds: `cd frontend && npm run build`
-- [ ] Lint passes: `cd frontend && npm run lint`
-- [ ] Manual check: register a brand-new user → lands logged in; log out → back to login; log in again → works
-- [ ] Manual check: a duplicate email shows the backend's `duplicate_user` message; a wrong password shows `invalid_credentials`
-- [ ] Manual check: reload the page → back to the login screen (**expected**, §2.5 — not a bug)
-- [ ] Manual check: **DevTools Console and Network show zero CORS errors** — the real proof of Step 7 §6
+- [ ] Dry-run `up` **and** `down` against a throwaway database first (same approach used to verify Phase 1's handoff), before touching the working one
+- [ ] Confirm the collision query returns no rows, then `make migrate-up` on the real database
+- [ ] Registering the same address in two capitalisations now returns `409`, not two accounts
+- [ ] Logging in with different capitalisation than registration returns `200`
+- [ ] Every pre-existing user can still log in — **the check that matters most here**
 
 **Dependencies:** Task 2
 
 **Files likely touched:**
-- `frontend/src/auth/AuthContext.tsx`
-- `frontend/src/auth/LoginPage.tsx`
-- `frontend/src/App.tsx`
-- `frontend/src/main.tsx`
+- `infra/migrations/004_email_case_insensitive.up.sql`
+- `infra/migrations/004_email_case_insensitive.down.sql`
 
-**Estimated scope:** Medium
+**Estimated scope:** Small (but the highest-risk task in the step)
 
-**Notes:** `GET /auth/me` needs the bearer header — the gateway passes `/auth/*` through publicly, and the auth service enforces its own middleware on that route. Client-side validation is UX only (§2.12): the backend checks non-empty and nothing else, so the form must not present its checks as guarantees.
+**Notes:** The current dev database contains a live collision created while investigating for the spec, so the index **will** fail until it is cleared. That is the designed behaviour, not a defect. `migrate` is installed at `~/go/bin/migrate` but is not on the non-interactive shell PATH — invoke it by full path or run `make migrate-up` from an interactive shell.
 
 ---
 
-## ✅ Checkpoint: Authentication (after Task 3)
+## ✅ Checkpoint: Database aligned (after Task 3)
 
-- [ ] Full register → login → logout cycle works through the gateway
-- [ ] **CORS confirmed working in a real browser.** If it is not, the fix goes in the gateway and needs its own spec — do **not** work around it in the frontend, and specifically do not reach for Vite's `server.proxy` (§7)
-- [ ] Nothing persisted: DevTools → Application → Storage is empty of tokens
-- [ ] **Stop for architect review before Phase 3**
-
----
-
-# Phase 3: Market data
-
-## Task 4: Dashboard with polled prices
-
-**Description:** List the watchlist symbols and keep their latest prices current on a 15-second poll, degrading gracefully when the cache is empty.
-
-**Acceptance criteria:**
-- [ ] `GET /market-data/symbols` renders all seven watchlist symbols
-- [ ] Each symbol's price comes from `GET /market-data/prices/{symbol}`, refreshed every 15s
-- [ ] **`404 price_not_cached` renders `—` and the row stays healthy**; only a non-404 failure shows an error state
-- [ ] Selecting a row sets the symbol Task 5's chart consumes
-
-**Verification:**
-- [ ] Build succeeds: `cd frontend && npm run build`
-- [ ] Lint passes: `cd frontend && npm run lint`
-- [ ] Manual check: prices populate and visibly tick on the 15s interval (watch the Network tab)
-- [ ] Manual check: **stop the market-data poller** → cells degrade to `—`, no error banner
-- [ ] Manual check: **log out → the Network tab goes quiet.** This is the interval-cleanup test; a leaked interval would keep firing requests with a cleared token
-
-**Dependencies:** Task 3
-
-**Files likely touched:**
-- `frontend/src/market/Dashboard.tsx`
-- `frontend/src/market/PriceList.tsx`
-
-**Estimated scope:** Small
-
-**Notes:** The poll lives in a `useEffect` whose cleanup clears the interval (§5). Seven symbols → seven requests per tick, which is fine against a local gateway. If every cell shows `—`, confirm with `redis-cli GET price:AAPL` before assuming the code is wrong — markets being closed produces exactly this.
-
----
-
-## Task 5: Candlestick chart
-
-**Description:** Render OHLC candles for the selected symbol from the historical bars endpoint, using the Lightweight Charts v5 API.
-
-**Acceptance criteria:**
-- [ ] Candles render for the selected symbol from `GET /market-data/history/{symbol}`
-- [ ] Bars map to `CandlestickData` with `time` as the timestamp's **`YYYY-MM-DD` business-day prefix** — not a UTC timestamp, which would drift on a daily series
-- [ ] Data is **sorted ascending and de-duplicated** before `setData`, or the library throws
-- [ ] Selecting a different symbol re-renders with that symbol's data
-
-**Verification:**
-- [ ] Build succeeds: `cd frontend && npm run build`
-- [ ] Lint passes: `cd frontend && npm run lint`
-- [ ] Manual check — **spot-check the most recent candle's OHLC against the raw JSON from `curl`.** This is the manual substitute for the unit test §6 declines to write; do it deliberately, do not eyeball the shape and move on
-- [ ] Manual check: no console errors about unsorted or duplicate data
-- [ ] Manual check: switch symbols ten times → no chart instances leak (the `useEffect` cleanup disposes)
-
-**Dependencies:** Task 4
-
-**Files likely touched:**
-- `frontend/src/market/CandlestickChart.tsx`
-- `frontend/src/market/Dashboard.tsx` (wiring only)
-
-**Estimated scope:** Small
-
-**Notes:** v5 API — `chart.addSeries(CandlestickSeries, {...})`. The v4 `chart.addCandlestickSeries()` method is **gone**; most examples online still show it. Call `chart.timeScale().fitContent()` after `setData`. If the chart is blank, run the ingest curl in `SPEC.md` §3 before concluding the code is broken — `historical_prices` may simply be empty.
-
----
-
-## ✅ Checkpoint: Market data (after Tasks 4–5)
-
-- [ ] The full Phase 1 story runs in a browser: register → login → prices → chart
-- [ ] Prices tick; the chart matches the API's raw values
-- [ ] No leaked intervals, no leaked chart instances
-- [ ] **Stop for architect review before Phase 4**
+- [ ] Both §1 bugs demonstrably fixed: no duplicate account, no case lockout
+- [ ] All pre-existing users can still log in
+- [ ] `go test -count=1 ./...` still green
+- [ ] **Stop for architect review**
 
 ---
 
 # Phase 4: Close out
 
-## Task 6: Full E2E and Phase 1 handoff
+## Task 4: Frontend hint and step close-out
 
-**Description:** Run the complete verification sequence including the slow path, confirm every Phase 1 handoff criterion, and mark the phase done.
+**Description:** Restore the honest wording now that the server enforces the rule, and mark the step done.
 
 **Acceptance criteria:**
-- [ ] The `SPEC.md` §3 manual E2E sequence runs clean, all eight steps
-- [ ] **The 15-minute refresh path is actually exercised**, not assumed — force it by restarting auth with a different `JWT_SECRET`, or by temporarily lowering `AccessTokenTTL`. Record the observed result
-- [ ] Every `PHASE1_CHECKLIST.md` handoff criterion is confirmed: migrations clean, `.env.example` complete, gateway routes all three prefixes, E2E works
-- [ ] Step 8 checked off in `PHASE1_CHECKLIST.md`
+- [ ] `LoginPage.tsx` hint reads "At least 8 characters." again (§2.10); no client-side enforcement added
+- [ ] A 4-character password in the real form shows the **server's** message
+- [ ] Step 9 checked off in `PHASE1_CHECKLIST.md`, including its handoff-criteria line
 
 **Verification:**
-- [ ] Build succeeds: `cd frontend && npm run build`
-- [ ] Lint passes: `cd frontend && npm run lint`
-- [ ] Backend unaffected: `go test ./...` still passes in `pkg`, `services/auth`, `services/market-data`, `services/gateway`
-- [ ] Manual check: the full §3 sequence from a cold start (`make docker-up` onward)
+- [ ] `cd frontend && npm run build && npm run lint`
+- [ ] Manual: register with a short password in the browser and confirm the backend message renders in the error region
+- [ ] Manual: register a valid new user end to end and reach the dashboard
 
-**Dependencies:** Task 5
+**Dependencies:** Task 3
 
 **Files likely touched:**
+- `frontend/src/auth/LoginPage.tsx`
 - `PHASE1_CHECKLIST.md`
-- `docs/archive/phase1-step8-frontend/` (deferred — see notes)
 
 **Estimated scope:** Extra small
-
-**Notes:** Archiving `SPEC.md` / `tasks/` to `docs/archive/phase1-step8-frontend/` happens when the **next spec is drafted**, not here — matching how Steps 4→5, 5→6, and 6→7 were handled. The docs stay at the repo root until then.
-
-**Hand off, do not drop:** the auth-hardening step (`SPEC.md` §2.12) comes next, **before** Phase 2 — password minimum and email format validation in the auth service, with its own spec. Decided 2026-07-29. Task 6 is where that handoff gets stated out loud, so it does not evaporate between phases.
 
 ---
 
 ## ✅ Checkpoint: Complete
 
-- [ ] All acceptance criteria across Tasks 1–6 met
-- [ ] Phase 1 handoff criteria satisfied
-- [ ] **Phase 1 is done**
-- [ ] Next: auth-hardening step (`SPEC.md` §2.12) — then Phase 2, Trading Engine
+- [ ] All acceptance criteria met across Tasks 1–4
+- [ ] Phase 1 fully closed, auth hardening included
+- [ ] Next: **Phase 2 — Trading Engine**
 
 ---
 
@@ -282,15 +182,15 @@ Tasks 1 and 2 are deliberately horizontal, and it is worth being explicit about 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| **CORS fails in a real browser** — first genuine test of Step 7's hand-written middleware (§1, §7) | High — blocks Task 3 and everything after | Fix in the **gateway**, with its own small spec. Never work around it in the frontend; Vite's `server.proxy` is explicitly forbidden because it would make the browser same-origin and leave the middleware unproven |
-| **`client.ts` refresh logic is wrong and has no unit tests** (§6) | High — silent auth failures, or an infinite refresh loop | Task 2's three explicit manual checks. If it proves fiddly during the build, **stop and propose adding Vitest for that module alone** rather than shipping it unverified — §6 pre-authorizes raising this |
-| **Empty data reads as broken code** — no ingested history, or markets closed | Medium — wasted debugging on working code | Confirm with `redis-cli GET price:AAPL` and the ingest curl (`SPEC.md` §3) **before** debugging the frontend. `—` everywhere is correct behavior after hours |
-| **Stale v3/v4 guides** — Tailwind and Lightweight Charts both changed setup/API | Medium — confusing build errors | §2.8 and §2.11 record the verified current form. A `tailwind.config.js` or an `addCandlestickSeries()` call means a stale guide was followed |
-| **Port 5173 occupied** → Vite falls back to 5174 → every request fails CORS | Medium — misleading failure that points at the wrong layer | `strictPort: true` (§2.4) turns it into a loud startup failure |
-| **Scope creep into backend work** — a missing endpoint invites "just add it" | Medium — Step 8 balloons past "minimal," changes land without a spec | §8's "Ask first" list. Any gateway/backend change needs its own spec, full stop |
+| **Migration locks out real users.** Lowercasing emails changes the value users authenticate against | High — the worst outcome in this step | `Login` normalises its input (Task 2) *before* the migration runs (Task 3), so both sides agree from the moment the data changes. Explicitly re-verified as a Task 3 acceptance criterion |
+| **Index creation fails on existing collisions** | Medium — blocks the migration | Intended (§2.6). Cleanup query is in `SPEC.md` §3; clear by hand before migrating |
+| **`down` cannot restore original capitalisation** | Low, accepted | Documented in §7 and in the migration file itself, rather than discovered later |
+| Validation applied to `Login` by reflex, locking out short-password accounts | High if it happened | Called out in §2.8 and in the "Never do" list; a test asserts login still works for an existing short-password user |
+| Scope creep into password reset, lockout, or rate limiting | Medium | §1 out-of-scope list and §8 "Ask first" |
 
 ## Open questions
 
-**None.** `SPEC.md` §9 is fully resolved as of 2026-07-29.
+Everything in `SPEC.md` §9 is unresolved pending review. The two most worth a decision:
 
-The one item that was outstanding — the auth-service validation gap (`SPEC.md` §2.12) — has been **scheduled as a small auth-hardening step after Step 8 closes and before Phase 2 begins**, with its own spec. It is out of scope for every task in this plan. Task 6 carries the reminder so it is handed off rather than forgotten.
+- **§2.7** — is username validation in scope, or should this step stay strictly to password and email as the checklist words it?
+- **§2.4** — should `user@localhost` remain valid, or should the domain be required to contain a dot?
