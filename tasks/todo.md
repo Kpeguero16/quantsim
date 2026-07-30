@@ -1,39 +1,16 @@
 # QuantSim Minimal Frontend — Task Checklist (Phase 1, Step 8)
 
-> **PAUSED HERE 2026-07-29, resuming 2026-07-30 — read this before continuing.**
-> Session paused mid-Task-4 to save credits. Auto mode was active (user said
-> "auto mode from now on" — proceed through checkpoints without stopping to
-> ask, per-task review still expected but not gated on explicit go-ahead).
+> **Resumed 2026-07-30.** Task 4 (dashboard + polled prices) finished and
+> verified live (`ca3ebf9`) — see that commit message for what was checked
+> (two full polling ticks captured, then confirmed zero requests fire for
+> 18+s after sign-out; symbol selection; keyboard activation via Enter).
+> One thing deliberately **not** exercised: the `404 price_not_cached` → `—`
+> render path, since forcing it means stopping the live market-data poller
+> and the classification logic was already unit-verified in Task 2. Worth a
+> quick manual check if there's a natural moment (e.g. after-hours).
 >
-> **Done and committed**, in order: `0cd2b86` Task 1 (scaffold+Tailwind),
-> `3197769` Task 2 (API client, verified live incl. concurrent-refresh),
-> `62b2501` Task 3 (AuthContext + login screen, verified live incl.
-> accessibility tree + storage-empty check), `c5b884f` **WIP, not a
-> complete task**: `frontend/src/market/use-prices.ts` — the polling hook
-> only, typechecked but **not yet wired into any component and not
-> exercised against the live stack**.
->
-> **Next concrete step:** build `frontend/src/market/Dashboard.tsx` and
-> `PriceList.tsx` per `tasks/plan.md` Task 4, consuming `usePrices()`
-> (already written) and `api.symbols()` (already in `api/client.ts`).
-> Render `not-cached` state as `—`, `error` state distinctly, `ok` state
-> with the tabular-nums utility from `index.css`. Then verify per Task 4's
-> acceptance criteria in `tasks/plan.md` — including the interval-cleanup
-> check on logout — before moving to Task 5 (chart).
->
-> **One loose end**: `use-prices.ts` has an unresolved oxlint
-> `react-hooks/exhaustive-deps` warning (non-blocking, `npm run lint` still
-> exits 0) — see the comment left in that file before spending time on it
-> again; a disable-comment did not suppress it at any line tried.
->
-> **Environment left running** (loopback only, harmless, but may be stale
-> by the time you resume): Postgres + Redis via `docker compose`, and `go
-> run ./cmd/server` for auth/market-data/gateway, and the Vite dev server —
-> all started manually during Task 2/3 verification, not via a durable
-> process manager. Check `docker compose ps` and `lsof -nP -iTCP:8080-8082,5173`
-> before assuming any of them are still up; restart with `make docker-up`
-> then `make run-auth`, `make run-market-data`, `make run-gateway`,
-> `make run-frontend` if not.
+> **Next up: Task 5** — the Lightweight Charts candlestick panel. Nothing
+> else is blocking it.
 >
 > Full detail (acceptance criteria, verification steps, dependency graph, risks) in `tasks/plan.md`.
 
@@ -55,8 +32,7 @@ Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **
 - [x] ✅ **Checkpoint: Authentication** — full register/login/logout cycle; **CORS confirmed in a real browser**; storage empty of tokens
 
 ### Phase 3: Market data
-- [ ] **Task 4 — IN PROGRESS** — Dashboard: `/market-data/symbols` + 15s price poll; `404 price_not_cached` → `—`; interval cleanup on logout.
-      Polling hook done (`c5b884f`, `use-prices.ts`, typechecked but unwired and unverified). **Still needed:** `Dashboard.tsx`, `PriceList.tsx`, wiring into `App.tsx`'s logged-in branch, and the full live-stack verification pass.
+- [x] **Task 4** — Dashboard: `/market-data/symbols` + 15s price poll; `404 price_not_cached` → `—`; interval cleanup on logout (`c5b884f` hook, `ca3ebf9` components + wiring + live verification)
 - [ ] **Task 5** — Lightweight Charts v5 candlestick panel from `/market-data/history/{symbol}`
 
 - [ ] ✅ **Checkpoint: Market data** — register → login → prices → chart works in a browser; chart matches raw API values
