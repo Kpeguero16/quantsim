@@ -280,11 +280,13 @@ Unlike Step 8, this step **ships tests** — it is exactly the logic-with-invari
 
 ## 7. Deferred with reasoning, not omitted
 
-Three items a security review would reasonably raise, each deliberately out of this step:
+Four items a security review would reasonably raise, each deliberately out of this step:
 
 1. **bcrypt → Argon2id.** OWASP's Password Storage guidance prefers Argon2id for new systems, and it would remove the 72-byte cap that forces the §2.4 deviation. Out of scope because it changes the stored hash format and needs a rehash-on-login migration path for existing users — a separate spec, not a rider on input validation. bcrypt at cost 10 meets OWASP's stated minimum in the meantime.
 2. **Online breach-corpus lookup (HIBP k-anonymity).** Strictly stronger than the embedded list in §2.5 and the right eventual answer. Deferred because it adds a third-party network call to registration, with its own latency, failure mode, and a fail-open/fail-closed decision that deserves deciding on purpose.
 3. **Rate limiting and account lockout.** The single largest remaining gap in the auth surface: nothing throttles credential stuffing against `/auth/login` today. Genuinely out of scope here — it belongs at the gateway, where Step 7 explicitly deferred it — but it is the item I would put next after this step, ahead of Phase 2 features.
+
+4. **Unicode normalisation (NFC/NFKC) of passwords.** Added during the Task 1 review, having been missed in the original §9 pass. SP 800-63B §3.1.1.2 — the same section this spec cites throughout — says verifiers *SHOULD* apply NFKC or NFC normalisation before hashing. We do not. Verified rather than assumed: the same visually identical passphrase entered precomposed vs decomposed is **22 vs 25 bytes**, and both are accepted today, so they hash differently and the user is locked out of their own account depending on how they typed it. Out of scope here because it changes what gets hashed, which is §7's item 1 territory. **Worth doing early for a specific reason:** it is free while no non-ASCII password exists, and becomes a lockout event once one does — normalising later changes the hash of every password already stored in a non-normalised form.
 
 Also accepted: `004.down.sql` drops both indexes but **cannot** restore the original capitalisation of emails the `up` lowercased. That information is gone. A backup column to preserve it is real complexity to protect data whose only distinguishing feature is capitalisation nobody wants. Noted in the migration file itself so the next reader is not surprised.
 

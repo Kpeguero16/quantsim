@@ -215,6 +215,40 @@ a hard prerequisite for any public deployment.
 
 ---
 
+## 8. Passwords are not Unicode-normalised before hashing
+
+**Where:** `services/auth/internal/service/validate.go` — the password is length-
+checked and blocklist-checked, then passed to bcrypt exactly as received.
+
+**Now:** NIST SP 800-63B §3.1.1.2 says verifiers *SHOULD* apply NFKC or NFC
+normalisation to the password before hashing. We do not. Verified rather than
+assumed: the same visually identical passphrase entered precomposed (NFC) vs
+decomposed (NFD) is **22 vs 25 bytes**, and registration accepts both. They
+therefore produce different bcrypt hashes.
+
+**Why it matters:** a user whose password contains an accented or non-Latin
+character can be locked out of their own account by typing it on a different
+keyboard, OS, or input method than the one they registered with — the string
+looks identical on screen and compares unequal in bytes. It is a correctness
+bug that presents to the user as "my password stopped working."
+
+**Shape when done:** apply `golang.org/x/text/unicode/norm` (NFC) to the
+password in the service layer before hashing and before comparing, and to the
+username while you are there. Note that `golang.org/x/text` is already an
+indirect dependency of the auth module.
+
+**Why it is worth doing early, despite affecting nobody today:** the asymmetry
+is the whole argument. Right now no non-ASCII password exists, so normalising
+is free and invisible. Once one exists, adding normalisation *changes* the hash
+that user authenticates against and locks them out — the same class of problem
+as item 3's rehash-on-login, needing the same machinery to fix. Cheap now,
+expensive exactly when it stops being theoretical.
+
+**Effort:** extra small. **Do in:** Phase 2, ideally alongside item 3 since both
+touch the hashing path — but it is worth doing on its own even if Argon2id slips.
+
+---
+
 ## Suggested order
 
 | # | Item | Phase | Effort |
@@ -222,10 +256,11 @@ a hard prerequisite for any public deployment.
 | 1 | Rate limiting on auth routes | **2** | S–M |
 | 2 | Refresh-token revocation + real logout | **2** | M |
 | 4 | Gateway-wide body size cap | **2** (with `/trading/*`) | S |
+| 8 | Unicode-normalise passwords before hashing | **2** (cheap now, lockout later) | XS |
 | 3 | Argon2id migration | 2–3 | M |
 | 5 | HIBP breach lookup | 4 | S + a decision |
 | 6 | Service-to-service auth | 4 | M–L |
 | 7 | TLS + configurable CORS origin | 4 | S code, infra-heavy |
 
-Items 1, 2, and 4 are the Phase 2 set. Doing them alongside the trading engine
+Items 1, 2, 4, and 8 are the Phase 2 set. Doing them alongside the trading engine
 costs little and closes the gaps that Phase 2 itself makes consequential.
