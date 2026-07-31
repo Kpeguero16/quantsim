@@ -26,9 +26,9 @@ Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **
   **On query plans:** at 15 rows Postgres chooses a sequential scan for this lookup — and did so for the old exact-match query too (cost 1.23 vs 1.19), so nothing regressed. Forced with `enable_seqscan=off`, `idx_users_email_lower` is used at the same 8.15 cost as before. The index earns its place as a *constraint*; the planner will start choosing it for reads once the table is worth indexing
 
 ### Phase 3: Close out
-- [ ] **Task 3** — `InvalidInputMessage` table test; `CONCURRENTLY` trade recorded in `docs/deferred-tuning.md`; Step 10 noted in `PHASE1_CHECKLIST.md`
+- [x] **Task 3** — `InvalidInputMessage` table test (4 cases, both mutations caught); index-lock and `CONCURRENTLY` trade recorded as `docs/deferred-tuning.md` §3; Step 10 written up in `PHASE1_CHECKLIST.md`
 
-- [ ] ✅ **Checkpoint: Complete** — Step 9's findings all closed; **Steps 9 and 10 merge together**; next is rate limiting
+- [x] ✅ **Checkpoint: Complete** — all four Step 9 review findings closed. `go test -count=1 ./...` green in `services/auth` and `pkg`. **Steps 9 and 10 are ready to merge together;** next is rate limiting, then the store integration harness, then Phase 2
 
 ---
 

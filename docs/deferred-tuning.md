@@ -54,6 +54,40 @@ and the ratio of new connections to reused ones.
 
 ---
 
+## 3. Index migrations lock the table they build on
+
+**Where:** `infra/migrations/004_case_insensitive_identity.up.sql` (creates two
+unique indexes) and `005_drop_redundant_unique_constraints.down.sql` (re-adds
+two unique constraints, which builds indexes to back them).
+
+**Now:** `CREATE UNIQUE INDEX` and `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE`
+both take an `ACCESS EXCLUSIVE` lock for the duration of the build, blocking
+reads and writes to `users`. On 15 rows this completes in milliseconds and is
+genuinely irrelevant. Against a real dataset it is a write outage for as long
+as the build takes.
+
+**Why it is not already fixed — the trade is real, not an oversight.** The
+production answer is `CREATE INDEX CONCURRENTLY`, which **cannot run inside a
+transaction block**. Under golang-migrate that means the `-- no-transaction`
+directive, and that forfeits the all-or-nothing rollback these migrations
+currently rely on: `004`'s dry run specifically verified that a failure at the
+index leaves the preceding `UPDATE` rolled back rather than half-applied. A
+concurrent build also fails *asynchronously*, leaving an `INVALID` index behind
+that has to be dropped and rebuilt by hand.
+
+Trading a clean rollback for a non-blocking build is the right call once there
+is data worth protecting, and the wrong one while the whole table fits on a
+screen.
+
+**What to measure first:** row count in `users`, and whether any deploy window
+tolerates a brief write pause. Below roughly 10k rows this is noise.
+
+**When it changes:** the first migration that adds an index to a table with
+meaningful volume — realistically Phase 2's orders or trade-history tables, not
+`users`.
+
+---
+
 ## Related decisions recorded elsewhere
 
 - **Graceful shutdown** — none of the three services drain on SIGTERM

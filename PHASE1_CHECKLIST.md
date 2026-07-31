@@ -278,6 +278,25 @@ Verified in the browser end to end: the hint reads "At least 15 characters.", a 
 
 ---
 
+## Step 10: Identity Lookup Consistency (Step 9's review findings)
+
+Not on the original Phase 1 plan. It exists because Step 9's pre-merge review found four things, and the sequencing decision was to close them **before** merging rather than land a known gap on `main` and follow up later.
+
+- [x] `GetUserByEmail` matches `lower(email)` rather than the stored form (Finding 1)
+- [x] Migration `005` drops `users_email_key` and `users_username_key`, redundant since `004` (Finding 2)
+- [x] Index-build locking and the `CONCURRENTLY` trade recorded in `docs/deferred-tuning.md` §3 (Finding 3)
+- [x] `InvalidInputMessage` covered by a direct table test (Finding 4)
+
+**Completed 2026-07-31.** Spec at `SPEC.md`, checkpoints in `tasks/plan.md` / `tasks/todo.md`.
+
+Only Finding 1 had a plausible failure behind it, and it was **not** a live bug: `Login` lowercased the email and the store then matched exactly, which worked because every stored email happened to be lowercase. Migration `004` constrained uniqueness under `lower(email)` but never made canonical storage structural — the index stops a *second* row colliding with `Foo@x.test`, not `Foo@x.test` existing. Such a user could never have logged in, and the failure would have been a silent `401`.
+
+It was reproduced before being fixed, against a row seeded with a real bcrypt hash: login returned `401` with the correct password, then `200` after the change, while a wrong password still returned `401`.
+
+**The honest caveat, recorded because it does not go away:** this change lives in `internal/store/`, the one layer with no automated tests — both suites run against a Go map and would stay green with a completely wrong query. The verification was manual, which proves the fix today and protects nothing tomorrow. A store integration harness is scheduled ahead of Phase 2, behind rate limiting.
+
+---
+
 ## Phase 1: complete
 
-All nine steps done. Next up: **Phase 2 — Trading Engine** (order execution, trade history, P/L tracking), which should open with **rate limiting** (`docs/security-backlog.md` items 1, 2, 4, 8) — Phase 2 is what makes account takeover consequential, since `/trading/*` moves a $100k simulated balance.
+All nine steps done, plus Step 10 closing Step 9's review findings. Next up: **Phase 2 — Trading Engine** (order execution, trade history, P/L tracking), which should open with **rate limiting** (`docs/security-backlog.md` items 1, 2, 4, 8) — Phase 2 is what makes account takeover consequential, since `/trading/*` moves a $100k simulated balance — followed by the store integration harness, before the trading engine adds far more SQL than auth ever had.
