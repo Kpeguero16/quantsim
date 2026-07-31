@@ -32,9 +32,10 @@ Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **
   **On "every pre-existing user can still log in":** `khalil-ui-check@quantsim.test` was verified directly with its 10-character password, in both original and upper case. The other 14 could not be — their passwords aren't known to anyone but their owners. The checkable property was verified instead: a pre/post snapshot of all rows shows the deleted row as the **only** difference, so no surviving user's `email`, `username`, or `password_hash` was touched by the migration
 
 ### Phase 4: Close out
-- [ ] **Task 4** — Frontend hint to "At least 15 characters."; check off Step 9
+- [x] **Task 4** — Frontend hint now reads "At least 15 characters."; no client-side enforcement added. Step 9 checked off in `PHASE1_CHECKLIST.md` with its handoff note. `npm run build` and `npm run lint` clean (the one lint warning is pre-existing, in `use-prices.ts`)
 
-- [ ] ✅ **Checkpoint: Complete** — Phase 1 fully closed; next is rate limiting, then Phase 2
+- [x] ✅ **Checkpoint: Complete** — verified in the browser against the full stack: the hint renders, a 10-character password shows the **server's** message ("password must be at least 15 characters", no sentinel prefix), and a valid registration reaches the dashboard. Phase 1 fully closed
+  **Note:** the auth service on :8081 was running a stale binary throughout Steps 1–3 (it still accepted a 1-character password). Restarted with the current build so the dev stack matches the code — it now runs from a compiled binary rather than `make run-auth`
 
 ---
 

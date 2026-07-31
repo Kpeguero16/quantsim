@@ -252,13 +252,32 @@ Found while drafting the Step 8 frontend spec (see that spec's §2.12): the auth
 
 Scheduled 2026-07-29 to land **after Step 8 and before Phase 2**: finishing Phase 1 first keeps the end-to-end momentum, and the fix lands while the auth service is still fresh rather than buried inside the trading-engine spec.
 
-- [ ] Write a short spec for the change (validation rules, error codes, where the check lives)
-- [ ] Enforce a password minimum length and a maximum (bcrypt errors above 72 bytes, which currently surfaces as a `500` rather than a `400`)
-- [ ] Validate email format
-- [ ] Return the standard `{code, message}` JSON shape for each rejection, consistent with the existing `invalid_request`
-- [ ] Table-driven tests covering each rule, matching the Step 4 test conventions
-- [ ] Verify the Step 8 register form still surfaces the backend's messages correctly
+- [x] Write a short spec for the change (validation rules, error codes, where the check lives)
+- [x] Enforce a password minimum length and a maximum (bcrypt errors above 72 bytes, which currently surfaces as a `500` rather than a `400`)
+- [x] Validate email format
+- [x] Return the standard `{code, message}` JSON shape for each rejection, consistent with the existing `invalid_request`
+- [x] Table-driven tests covering each rule, matching the Step 4 test conventions
+- [x] Verify the Step 8 register form still surfaces the backend's messages correctly
+
+**Completed 2026-07-31.** Spec at `SPEC.md`, checkpoints in `tasks/plan.md` / `tasks/todo.md`.
+
+The step grew past this list, because checking the draft's claims against the current text of **NIST SP 800-63B §3.1.1.2** reversed three of its own decisions:
+
+- Password minimum is **15**, not 8 — 8 is the floor only when the password is one factor of several, and QuantSim has no MFA
+- A **blocklist** check is a `SHALL` and the draft omitted it entirely — now 157 embedded entries plus context terms and trivial patterns
+- **Case-insensitive usernames** moved from explicit non-goal to in scope, being the same impersonation class the username charset rule already guarded against
+- Added: a **64 KiB request body cap**, since length validation runs after decoding and so cannot bound memory
+
+Two bugs beyond the original list were found by reproducing against the running stack and are now fixed: the same address in two capitalisations created **two separate accounts**, and a user who registered as `Khalil@x.test` could not log in as `khalil@x.test`. Migration `004` adds unique indexes on `lower(email)` and `lower(username)`.
+
+The property that made this safe to ship: **`Login` is deliberately not tightened** (`SPEC.md` §2.12), so raising the minimum locks nobody out. Asserted rather than assumed — by a unit test, and directly against the dev database, where an existing 10-character-password account still authenticates.
+
+Verified in the browser end to end: the hint reads "At least 15 characters.", a short password renders the server's own message in the error region, and a valid registration reaches the dashboard.
+
+**Deferred with reasoning, not omitted** (`SPEC.md` §7, tracked in `docs/security-backlog.md`): Argon2id, HIBP breach lookup, Unicode password normalisation, and — the largest remaining gap in the auth surface — **rate limiting on `/auth/login`**, which nothing throttles today.
 
 ---
 
-Next up: **Phase 2 — Trading Engine** (order execution, trade history, P/L tracking).
+## Phase 1: complete
+
+All nine steps done. Next up: **Phase 2 — Trading Engine** (order execution, trade history, P/L tracking), which should open with **rate limiting** (`docs/security-backlog.md` items 1, 2, 4, 8) — Phase 2 is what makes account takeover consequential, since `/trading/*` moves a $100k simulated balance.

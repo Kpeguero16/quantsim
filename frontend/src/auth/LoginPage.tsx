@@ -101,15 +101,16 @@ export default function LoginPage() {
             onChange={setPassword}
             autoComplete={isRegister ? 'new-password' : 'current-password'}
             describedBy={error ? errorId : undefined}
-            // Advice, not a stated rule: the server currently accepts any
-            // non-empty password, so wording this as a requirement would
-            // promise an enforcement that does not exist. Tighten once the
-            // Step 9 auth-hardening lands (SPEC.md 2.12).
-            hint={
-              isRegister
-                ? 'Use 8 or more characters for a stronger password.'
-                : undefined
-            }
+            // Now a stated rule rather than advice: since Step 9 the server
+            // actually enforces a 15-character minimum, so the hint can
+            // promise it without overstating what happens.
+            //
+            // Still deliberately no client-side check. The server owns the
+            // rules -- length, blocklist, and format -- and returns a precise
+            // {code, message} the error region below renders verbatim.
+            // Duplicating any of that here would be a second place to drift
+            // out of sync, and the client is a hint, never the boundary.
+            hint={isRegister ? 'At least 15 characters.' : undefined}
           />
 
           {error && (
