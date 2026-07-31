@@ -15,9 +15,9 @@ Prior steps archived under `docs/archive/` — Auth Service (Step 4) through Aut
 Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **stop**.
 
 ### Phase 1: The fix
-- [ ] **Task 1** — `GetUserByEmail` matches `WHERE lower(email) = $1`. One line; the verification is larger than the change
+- [x] **Task 1** — `GetUserByEmail` matches `WHERE lower(email) = $1`. One line; the verification is larger than the change
 
-- [ ] ✅ **Checkpoint: Lookup no longer depends on stored form** — a deliberately non-canonical row can be authenticated against; every existing user still logs in
+- [x] ✅ **Checkpoint: Lookup no longer depends on stored form** — verified 2026-07-31 with a real bcrypt hash: before the change the row was unfindable and login returned 401; after, it returns 200 in both capitalisations, while a wrong password still returns 401. — a deliberately non-canonical row can be authenticated against; every existing user still logs in
 
 ### Phase 2: The schema
 - [ ] **Task 2** — Migration `005`: drop `users_email_key` and `users_username_key`, both implied by `004`'s `lower()` indexes. Dry-run up **and** down first

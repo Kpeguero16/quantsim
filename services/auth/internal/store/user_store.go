@@ -59,9 +59,23 @@ func (s *PostgresUserStore) CreateUserWithAccount(ctx context.Context, email, us
 	return id, nil
 }
 
+// GetUserByEmail looks a user up case-insensitively, matching the unique
+// index on lower(email) added in migration 004 rather than the stored form
+// of the address.
+//
+// An exact match would work today -- every stored email is lowercase,
+// because 004 rewrote the existing rows and service.Register normalises
+// every new one. But that is a convention, not a constraint: the index stops
+// a second row colliding with Foo@x.test, it does not stop Foo@x.test
+// existing. Were one ever to appear, an exact match would never find it and
+// the user would get a 401 indistinguishable from a wrong password.
+//
+// The caller still normalises the address before calling. That is not a
+// duplicate of this rule but the other half of it: lower(email) = $1 only
+// means anything if the parameter is lowercase too.
 func (s *PostgresUserStore) GetUserByEmail(ctx context.Context, email string) (*service.User, error) {
 	query := `
-	SELECT id, email, username, password_hash, created_at, updated_at FROM users WHERE email = $1
+	SELECT id, email, username, password_hash, created_at, updated_at FROM users WHERE lower(email) = $1
 	`
 	var u service.User
 	var hash string
