@@ -17,12 +17,13 @@ Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **
 ### Phase 1: The fix
 - [x] **Task 1** — `GetUserByEmail` matches `WHERE lower(email) = $1`. One line; the verification is larger than the change
 
-- [x] ✅ **Checkpoint: Lookup no longer depends on stored form** — verified 2026-07-31 with a real bcrypt hash: before the change the row was unfindable and login returned 401; after, it returns 200 in both capitalisations, while a wrong password still returns 401. — a deliberately non-canonical row can be authenticated against; every existing user still logs in
+- [x] ✅ **Checkpoint: Lookup no longer depends on stored form** — verified 2026-07-31 against a deliberately non-canonical row seeded with a real bcrypt hash. Before the change it was unfindable and login returned `401`; after, `200` in both capitalisations, while a wrong password still returns `401`. Every existing user still logs in
 
 ### Phase 2: The schema
-- [ ] **Task 2** — Migration `005`: drop `users_email_key` and `users_username_key`, both implied by `004`'s `lower()` indexes. Dry-run up **and** down first
+- [x] **Task 2** — Migration `005`: drop `users_email_key` and `users_username_key`, both implied by `004`'s `lower()` indexes. Dry-run up **and** down completed on a throwaway DB, including `down` against a mixed-case username. Applied to the dev DB 2026-07-31 at version 5, not dirty
 
-- [ ] ✅ **Checkpoint: Schema carries only what it needs** — three indexes remain; duplicate registration still rejected in both exact and case-differing forms
+- [x] ✅ **Checkpoint: Schema carries only what it needs** — three indexes remain (`users_pkey`, `idx_users_email_lower`, `idx_users_username_lower`). Duplicate registration still returns `409` in both exact and case-differing forms; all logins unaffected; 15 users unchanged.
+  **On query plans:** at 15 rows Postgres chooses a sequential scan for this lookup — and did so for the old exact-match query too (cost 1.23 vs 1.19), so nothing regressed. Forced with `enable_seqscan=off`, `idx_users_email_lower` is used at the same 8.15 cost as before. The index earns its place as a *constraint*; the planner will start choosing it for reads once the table is worth indexing
 
 ### Phase 3: Close out
 - [ ] **Task 3** — `InvalidInputMessage` table test; `CONCURRENTLY` trade recorded in `docs/deferred-tuning.md`; Step 10 noted in `PHASE1_CHECKLIST.md`
