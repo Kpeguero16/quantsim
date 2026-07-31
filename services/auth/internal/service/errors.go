@@ -11,6 +11,18 @@ var ErrDuplicateUser = errors.New("email or username already exists")
 // leak whether an email is registered. Handlers map this to 401.
 var ErrInvalidCredentials = errors.New("invalid email or password")
 
+// ErrInvalidInput is returned by Register when the submitted email,
+// username, or password fails the registration rules. It's wrapped with a
+// specific, user-facing message per rule (see validate.go) -- callers match
+// with errors.Is while the message stays precise. Handlers map this to 400
+// invalid_request and render the message verbatim.
+//
+// Deliberately NOT returned by Login: applying the registration rules there
+// would lock out every account that predates them, and a policy-specific
+// message would be distinguishable from the uniform ErrInvalidCredentials,
+// turning login into a user-enumeration oracle. See SPEC.md 2.12.
+var ErrInvalidInput = errors.New("invalid input")
+
 // ErrTokenInvalid is returned by Refresh for any token problem: expired,
 // malformed, wrong signature, or the wrong token type presented. Handlers
 // map this to 401.

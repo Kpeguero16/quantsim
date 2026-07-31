@@ -1,0 +1,187 @@
+# QuantSim password blocklist
+#
+# What this is: a hand-curated list of weak password shapes that survive a
+# 15-character minimum -- padded common words, keyboard walks, repeated
+# fragments, and well-known phrases. Every entry is 15+ characters, enforced
+# by a test; shorter entries are dead weight because the length rule already
+# rejects them.
+#
+# What this is NOT: a verified breach corpus. It is a floor, not a survey.
+# The stronger control is an online lookup against Have I Been Pwned's
+# k-anonymity API, deferred with reasoning in SPEC.md 7. Extend this file
+# freely -- entries are compared case-insensitively, one per line, and lines
+# starting with # are ignored.
+#
+# Passwords containing the username, the email local part, or the service
+# name are handled in code (blocklist.go), not here.
+
+# --- password, padded ---
+passwordpassword
+password12345678
+password1234567
+passwordisstrong
+thisismypassword
+mypasswordis1234
+p@ssw0rdp@ssw0rd
+passw0rdpassw0rd
+newpassword12345
+changemepassword
+defaultpassword1
+adminpassword123
+rootpassword1234
+userpassword1234
+secretpassword12
+mysecretpassword
+securepassword12
+strongpassword12
+privatepassword1
+forgotmypassword
+whatisthepassword
+ineedanewpassword
+testpassword1234
+demopassword1234
+samplepassword12
+examplepassword1
+temppassword1234
+temporarypasswrd
+verystrongpassw1
+unbreakablepass1
+hackproofpass123
+ihatepasswords12
+
+# --- keyboard walks ---
+qwertyuiopasdfgh
+qwertyuiopqwerty
+qwertyuiop123456
+qwertyuiop098765
+qwerty1234567890
+asdfghjklqwertyu
+asdfasdfasdfasdf
+zxcvbnmasdfghjkl
+mnbvcxzlkjhgfdsa
+poiuytrewqlkjhgf
+1qaz2wsx3edc4rfv
+1q2w3e4r5t6y7u8i
+zaq12wsxcde34rfv
+qazwsxedcrfvtgby
+
+# --- numeric padding ---
+1234567890123456
+1234567890qwerty
+123456789012345
+12345678910111213
+1234512345123451
+000000000000000
+111111111111111
+987654321098765
+147258369147258
+
+# --- phrases and pop culture ---
+correcthorsebatterystaple
+correcthorsebattery
+iloveyouforever1
+iloveyousomuch12
+ilovemyfamily123
+ilovemymom123456
+letmeinletmein12
+letmeinrightnow1
+letmeinplease123
+pleaseletmein123
+trustno1trustno1
+trustmeimengineer
+welcometothejungle
+welcomehome12345
+happybirthday123
+merrychristmas12
+maythefourthbewithyou
+livelongandprosper
+winteriscoming123
+gameofthrones1234
+strangerthings123
+breakingbad123456
+tobeornottobe123
+thequickbrownfox
+jumpedoverthelazy
+opensesame123456
+abracadabra12345
+nothingtoseehere
+whateveryouwant1
+whatever12345678
+nobodyknowsthis1
+youwillneverguess
+guessthispassword
+cantguessthisone
+idontknowmypassword
+imnotgoingtotell
+donotforgetthis1
+rememberme123456
+keepitsecret1234
+supersecret12345
+topsecret1234567
+confidential1234
+iamthebestever12
+mynameisnobody12
+thisisapassword1
+thisisnotapassword
+freedom123456789
+jesuschrist12345
+godisgood1234567
+
+# --- names, teams, franchises ---
+superman12345678
+batman1234567890
+princess12345678
+sunshine12345678
+football12345678
+baseball12345678
+basketball123456
+liverpoolfc12345
+manchesterunited
+realmadrid123456
+barcelona1234567
+pokemon123456789
+starwars12345678
+harrypotter12345
+newyork123456789
+california123456
+
+# --- tech and default-credential shapes ---
+administrator123
+administrator1234
+systemadmin12345
+supervisor123456
+developer1234567
+webmaster1234567
+databaseadmin123
+postgresql123456
+mysqlpassword123
+redispassword123
+dockerdocker1234
+kubernetes123456
+localhost1234567
+127001localhost
+computer12345678
+internet12345678
+microsoft1234567
+appleiphone12345
+samsunggalaxy123
+changeme12345678
+changemenow12345
+guestguestguest1
+testtesttesttest
+helloworld123456
+helloworldhello1
+foobarbazqux1234
+lorem1psumdolor1
+iamadeveloper123
+codingislife1234
+abcd1234abcd1234
+
+# --- trading and market terms (beyond the code-level service terms) ---
+stockmarket12345
+buylowsellhigh12
+tothemoon1234567
+diamondhands1234
+wallstreetbets12
+bullmarket123456
+bearmarket123456
