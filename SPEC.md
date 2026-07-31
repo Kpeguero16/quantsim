@@ -1,6 +1,6 @@
 # SPEC — QuantSim Identity Lookup Consistency (Step 10)
 
-Status: **Draft, awaiting review.** Open decisions in §9.
+Status: **Approved 2026-07-31.** Khalil resolved the open decisions as recommended, and reordered the work: Step 10 lands **before** Step 9 is merged, since it fixes Step 9's own review findings. §9 records the resolutions.
 Scope: one query in `services/auth/internal/store`, one migration, one unit test, one documentation note. Small — deliberately so. Not a whole-project spec; see `agents.md` and `docs/intent/quantsim-resume.md`.
 
 Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase1-step9-auth-validation/` — all complete. **Phase 1 is closed.**
@@ -232,10 +232,16 @@ A store-layer integration test is the real answer and is deferred with reasoning
 
 ---
 
-## 9. Open questions
+## 9. Resolutions
 
-1. **Is §2.2 worth doing at all?** Dropping two constraints is a real, if small, operation whose entire benefit on a 15-row table is theoretical. The case for: the redundancy is genuine, and it is cheapest to remove now while the schema is small and the reasoning is fresh. The case against: `005` exists *only* for this, and "four indexes where two suffice" is a blemish, not a bug. **My recommendation: do it**, because the coupling in §2.2 is exactly the kind of thing that becomes hazardous once forgotten — but it is the one item here I would drop without argument.
+Resolved 2026-07-31. All three taken as recommended.
 
-2. **Should §2.5 grow into a wider errors test?** `InvalidInputMessage` is the only exported function in `errors.go`. Testing just it is proportionate; sweeping in the four sentinels would be testing `errors.New`.
+- [x] **§2.2 is in scope — migration `005` ships.** The redundancy is genuine and cheapest to remove now, while the schema is small and the reasoning is fresh. The deciding argument is not the wasted index maintenance, which on 15 rows is nothing: it is that the §2.2 coupling — never drop `users_email_key` while an exact-match query is live — is exactly the kind of constraint that becomes hazardous once nobody remembers it. Removing the redundancy removes the trap along with it.
+- [x] **§2.5 stays narrow.** A table test for `InvalidInputMessage` only. It is the sole exported function in `errors.go`; sweeping in the four sentinels would be testing `errors.New`.
+- [x] **§7 item 1 (store integration tests) is scheduled ahead of Phase 2, behind rate limiting.** Both belong before the trading engine. Rate limiting goes first because it has an attacker behind it, while this has a class of bug behind it. Neither is in this step.
 
-3. **Does §7 item 1 belong ahead of Phase 2 rather than inside it?** Stated as a recommendation above, not a decision. It competes directly with rate limiting for the same slot, and rate limiting has an attacker behind it while this has a class of bug behind it.
+### Sequencing decision
+
+**Step 10 lands before Step 9 is merged.** Step 9's branch is review-clean but carries the findings this step exists to close; merging first would put a known latent gap on `main` and leave the fix as a follow-up that has to re-establish its own context. Both steps merge together, findings already closed.
+
+The practical consequence: Step 10's tasks are committed onto `step9-task1-auth-validation` rather than a fresh branch.
