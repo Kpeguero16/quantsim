@@ -1,219 +1,157 @@
-# SPEC — QuantSim Auth Input Validation (Phase 1, Step 9)
+# SPEC — QuantSim Identity Lookup Consistency (Step 10)
 
-Status: **Approved 2026-07-30** — open decisions delegated to the implementer with the instruction to decide against cybersecurity standards. §9 records the resolutions, including **three reversals of my own draft** after checking the draft's claims against the current text of NIST SP 800-63B rather than recalling it.
-Scope: `services/auth/` input validation, one migration, and a small frontend follow-up. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md`. Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase1-step8-frontend/` — all complete.
+Status: **Draft, awaiting review.** Open decisions in §9.
+Scope: one query in `services/auth/internal/store`, one migration, one unit test, one documentation note. Small — deliberately so. Not a whole-project spec; see `agents.md` and `docs/intent/quantsim-resume.md`.
+
+Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase1-step9-auth-validation/` — all complete. **Phase 1 is closed.**
 
 ---
 
 ## 1. Objective
 
-Per `PHASE1_CHECKLIST.md` Step 9, close the input-validation gap in the auth service. Found while drafting the Step 8 frontend spec (§2.12 there) and scheduled to land after Phase 1's UI, before Phase 2.
+Close the findings from the pre-merge review of Step 9 (2026-07-31). Step 9 made identity case-insensitive in the service layer and added unique indexes on `lower(email)` and `lower(username)`. The review found that the **lookup** was never brought along: it still matches exactly.
 
-**Every row below was reproduced against the running stack on 2026-07-30, not inferred from reading code.** Registration validates only that `email`, `username`, and `password` are non-empty (`services/auth/internal/handler/auth.go:28`):
+Four findings, in the review's own severity order:
 
-| Request | Today | Should be |
+| # | Finding | Severity |
 |---|---|---|
-| `password: "a"` | **201 Created** | 400 |
-| `email: "x"` | **201 Created** | 400 |
-| `username` of 500 chars | **201 Created** | 400 |
-| 80-byte password | **500 internal_error** | 400 |
-| Register `a@x.test`, then `A@X.TEST` | **two separate accounts** | 409 duplicate |
-| Register `a@x.test`, log in as `A@x.test` | **401 invalid_credentials** | 200 |
+| 1 | `GetUserByEmail` matches `email = $1`, depending on an invariant the database does not enforce | Important |
+| 2 | Four unique indexes on `users` where two suffice | Suggestion |
+| 3 | `CREATE UNIQUE INDEX` takes an `ACCESS EXCLUSIVE` lock; irrelevant now, not later | Suggestion |
+| 4 | `InvalidInputMessage` has no direct test | Suggestion |
 
-The last two are the real motivation. They are not hypotheses — the dev database holds a live case-collision pair created during this investigation.
+**Finding 1 is the only one with a plausible failure behind it**, and it is worth stating precisely, because it is *not* currently a live bug:
 
-**Out of scope:** rate limiting and account lockout, password reset / email verification, MFA, changes to token issuance or lifetimes, and anything in Phase 2. Two security items are deliberately deferred with reasoning recorded in §7 rather than silently omitted: migrating off bcrypt to Argon2id, and querying an online breach corpus.
+`Login` normalises the submitted email to lowercase, then the store matches it exactly. That works only because every stored email happens to be lowercase — migration `004` lowercased the existing rows and `service.Register` normalises every new one. **Verified: `service.Register` is the only write path** (no seed scripts, no other `INSERT INTO users`).
+
+What migration `004` did *not* do is make that true structurally. A unique index on `lower(email)` prevents a *second* row colliding with `Foo@x.test`; it does not prevent `Foo@x.test` existing. Should one ever appear — a manual fix-up, a future import, a bug in a new write path — that user could never log in, and the failure would be a silent `401` indistinguishable from a wrong password.
+
+This is the argument `004` itself makes, applied to only half the problem. From Step 9 §2.10:
+
+> App-level normalisation alone is one forgotten `strings.ToLower` from breaking.
+
+That reasoning justified constraining *uniqueness*. It applies just as well to *lookup*.
+
+**Out of scope:** everything in `docs/security-backlog.md` — rate limiting above all, which remains the largest gap in the auth surface and is the right way to open Phase 2. This step is the tail of Step 9, not a substitute for that.
 
 ---
 
 ## 2. Decisions
 
-### 2.1 Validation moves into the service layer; the handler keeps only transport concerns
+### 2.1 Look users up by `lower(email)`
 
-Today the non-empty checks sit in `handler.Register`/`handler.Login`. "Is this a well-formed email" and "is this password acceptable" are **domain rules**, not HTTP concerns — a future gRPC entry point, CLI, or seed script must not be able to bypass them by not going through the chi handler.
+`services/auth/internal/store/user_store.go:63`:
 
-`service.Register` validates and returns a typed error; the handler maps it to `400` exactly as it already maps `ErrDuplicateUser` to `409`. The handler's non-empty checks are **removed**, not kept alongside — two places enforcing one rule is how they drift out of sync.
+```sql
+-- from
+SELECT ... FROM users WHERE email = $1
+-- to
+SELECT ... FROM users WHERE lower(email) = $1
+```
 
-Security framing: the goal is a single authoritative choke point that cannot be routed around, not validation sprinkled at every layer.
+The lookup then matches the constraint that actually exists, and stops depending on the stored form being canonical.
 
-### 2.2 One new error type, mapped to `400 invalid_request`
+**Verified, not assumed** — `EXPLAIN` against the dev database:
 
-`service.ErrInvalidInput` (new, alongside the existing four sentinels), wrapped with a specific message per rule.
+```
+Index Scan using idx_users_email_lower on users  (cost=0.14..8.15 rows=1 width=16)
+  Index Cond: (lower(email) = '...'::text)
+```
 
-**No new error code.** The API keeps returning `{"code": "invalid_request", ...}` with a precise `message`, which the frontend already renders verbatim. A structured per-field body is the better shape for a form with inline per-field errors, but the Step 8 form renders a single error region — it would be built and immediately discarded.
+Identical cost to the current plan (`0.14..8.15` using `users_email_key`). This is free.
 
-Not an information-disclosure concern: these messages describe the caller's *own* submitted input. The place where response detail *would* leak something is login, which §2.8 deliberately leaves uniform.
+`Login` keeps calling `NormalizeEmail` first. That is not redundant: it is what makes the bound parameter canonical, and lowercasing the *needle* is required for `lower(haystack) = needle` to mean anything. Two halves of one rule, not two copies of it.
 
-### 2.3 Password: minimum 15 characters — **reversed from the draft's 8**
+### 2.2 Drop the redundant `UNIQUE` constraints from migration 001
 
-The draft said 8, citing NIST SP 800-63B. Checking the actual text rather than recalling it, that was wrong:
+Migration `005` drops `users_email_key` and `users_username_key`.
 
-> "Verifiers and CSPs **SHALL** require passwords that are used as a single-factor authentication mechanism to be a minimum of 15 characters in length." — SP 800-63B §3.1.1.2
+Both are now fully implied: two rows with identical `email` necessarily share `lower(email)`, so `UNIQUE (lower(email))` already rejects them. They are pure write-path overhead — four unique index maintenances per insert where two would do.
 
-The 8-character figure is the floor for passwords used **as part of multi-factor authentication**. QuantSim has no second factor, so its password is a single-factor authenticator and 15 is the `SHALL`, not a nice-to-have.
+**Coupled to §2.1, and the coupling is the risk.** Dropping `users_email_key` while an exact-match query is still running turns that lookup into a sequential scan. Correct, but slower. So §2.1 ships **before or with** §2.2, never after. On 15 rows this is unobservable either way; the ordering discipline is for the habit, not for this database.
 
-- **Minimum: 15, counted in runes** (`utf8.RuneCountInString`). A user typing 15 emoji has typed 15 characters; counting bytes would accept one 15-character password and reject another, which is indefensible in the UI.
-- **No composition rules.** Also a `SHALL NOT`: *"Verifiers and CSPs SHALL NOT impose other composition rules (e.g., requiring mixtures of different character types)"*. No required uppercase, digit, or symbol.
+### 2.3 **No** `CHECK (email = lower(email))` — the stricter option, considered and rejected
 
-**Consequence, stated plainly:** every existing password fixture in the test suite is 10–14 characters and will need updating, and the `pw12345678` account used throughout Step 8's verification can no longer be *registered*. It can still **log in**, because §2.8 deliberately does not apply these rules to login — which is exactly the property that keeps this change from locking anyone out.
+The obvious alternative to §2.1 is to force canonical storage instead of tolerating non-canonical storage. Rejected, for three reasons:
 
-### 2.4 Password maximum: 72 bytes, a documented deviation from the 64-character `SHOULD`
+1. **It stops being load-bearing.** Once lookup is case-insensitive (§2.1), a non-canonical row is found correctly anyway. The `CHECK` would guarantee something nothing depends on.
+2. **It adds an unmapped failure mode.** A check violation is SQLSTATE `23514`. The store maps only `23505` → `ErrDuplicateUser` (`user_store.go:42`), so `23514` would surface as a **500**. That is a worse outcome than the condition it prevents.
+3. **It constrains a decision that is not ours to freeze.** Emails are lowercased today because §2.7 of Step 9 argued they should be. A `CHECK` would make revisiting that a migration rather than a code change.
 
-> "Verifiers and CSPs **SHOULD** permit a maximum password length of at least 64 characters." — §3.1.1.2
+Recorded here so this is a decision rather than an omission.
 
-bcrypt hard-caps at 72 **bytes** — `golang.org/x/crypto v0.49.0` returns `ErrPasswordTooLong` above it (verified in the module source, `bcrypt.go:96`). It does **not** silently truncate, which is the good outcome; silent truncation would mean two different passwords hashing identically.
+### 2.4 Usernames need no lookup change — only the index drop
 
-For ASCII that gives 72 characters, comfortably over the 64 `SHOULD`. For multi-byte scripts it does not: a 64-character password in Cyrillic or CJK exceeds 72 bytes and is rejected. **This is a real, if narrow, deviation and is recorded rather than papered over.** The fix is to stop using bcrypt directly — see §7.
+**Verified: nothing anywhere looks a user up by username.** The store exposes `GetUserByEmail` and `GetUserByID` and nothing else; `grep` for `WHERE username` returns nothing.
 
-Rejecting is the only acceptable behaviour at the boundary. Truncating to fit is explicitly forbidden (§8).
+So §2.1 has no username equivalent, and `idx_users_username_lower` exists purely to prevent `Admin` and `admin` coexisting — which is exactly what Step 9 §2.8 intended. Its plain counterpart `users_username_key` is the redundant one.
 
-### 2.5 A blocklist check — **added; the draft omitted a `SHALL` entirely**
+This also means usernames stay non-canonical on purpose: migration `004` deliberately did not rewrite them, so an existing `Khalil` keeps the capitalisation its owner chose. That remains correct and is not revisited here.
 
-> "Verifiers **SHALL** compare the prospective secret against a blocklist that contains known commonly used, expected, or compromised passwords." — §3.1.1.2
+### 2.5 `InvalidInputMessage` gets a direct test
 
-The draft had no blocklist at all. That is a mandatory requirement, so it is in scope.
+Currently covered only indirectly, by handler tests asserting the rendered message does not contain `"invalid input"`. Its two edge cases are untested:
 
-Implementation, sized for Phase 1:
-- An embedded list (`//go:embed`) of common and breach-corpus passwords **that are 15+ characters** — anything shorter is already excluded by §2.3, so a generic top-10k list would be almost entirely dead weight. A few hundred entries earns its place; a megabyte does not.
-- **Context-specific terms**, which the guidance calls out explicitly: `quantsim`, `trading`, and similar, plus the submitted **username** and the **email local part**. A password containing your own username is exactly the "expected" case the requirement names.
-- **Trivial patterns**: a single repeated character, and simple ascending/descending sequences. These defeat a naive length minimum (`aaaaaaaaaaaaaaaa` is 16 characters).
-- Compared case-insensitively against the normalised password.
+- `nil` in → `""` out
+- an error that does **not** wrap `ErrInvalidInput` → returned in full, because `TrimPrefix` is a no-op
 
-Deliberately **not** an online lookup against Have I Been Pwned. Its k-anonymity API is the stronger control and the right eventual answer, but it puts a third-party network call on the registration path — new latency, a new failure mode, and a decision about whether registration fails open or closed when the service is unreachable. That belongs in its own spec (§7).
+Both are deliberate behaviours (`errors.go:29-42`) and neither is pinned. A table test of three cases.
 
-### 2.6 Email: `net/mail.ParseAddress`, rejecting display-name forms, capped at 254 bytes
+### 2.6 The index-lock tradeoff is documented, not fixed
 
-Hand-rolled email regexes are a known trap — they reject valid addresses (plus-tags, new TLDs, quoted local parts) while still admitting nonsense. The stdlib implements RFC 5322 already.
+`CREATE UNIQUE INDEX` takes an `ACCESS EXCLUSIVE` lock for its duration. On 15 rows that is instant and irrelevant; against a real dataset it blocks writes.
 
-Three checks, in order:
-1. `mail.ParseAddress(input)` must succeed.
-2. The parsed `addr.Address` must equal the trimmed input. `ParseAddress` accepts `Khalil <a@b.test>`; without this, that whole string would be stored as an email.
-3. Length ≤ 254 bytes (RFC 5321's practical maximum).
+The production answer is `CONCURRENTLY`, which **cannot run inside a transaction** — under golang-migrate it needs the `-- no-transaction` directive, and that forfeits the all-or-nothing rollback that `004`'s dry run demonstrated. That is a real trade, not an oversight, and the right moment to make it is when there is a dataset worth protecting.
 
-**Not** requiring a dot in the domain. `user@localhost` is a valid address, and the check is security theatre: `a@b.co` passes it while being equally disposable. Blocking throwaway registrations is rate limiting's job, not format validation's.
+It goes in `docs/deferred-tuning.md`, whose framing is exactly this: performance defaults that trigger when there is real traffic. **Not** `docs/security-backlog.md` — it is not a security gap.
 
-### 2.7 Email is normalised to lowercase — the actual bug fix
+### 2.7 The `down` migration restores what `up` dropped
 
-Trim surrounding whitespace and lowercase the whole address, before both storage and lookup.
-
-The domain part is case-insensitive by RFC. The local part is *technically* case-sensitive, but no mail provider treats `Khalil@` and `khalil@` as different mailboxes, and every product a user has met treats login email as case-insensitive.
-
-The security argument, beyond usability: case-sensitive uniqueness permits **account pre-registration and confusion**. An attacker who sees that `victim@example.com` exists can register `Victim@example.com` — a distinct row for the same real mailbox. Any future email-driven flow (password reset, notifications, support lookup) then has two candidate accounts for one address. Closing it now, before those flows exist, is far cheaper than after.
-
-### 2.8 Case-insensitive uniqueness for **usernames** too — **reversed from the draft's non-goal**
-
-The draft listed this as an explicit non-goal on the grounds that `Khalil` and `khalil` being distinct is "merely unusual, not broken." Under a security lens that reasoning does not hold: it is the **same impersonation class** as §2.9's homograph argument, and dismissing one while fixing the other is inconsistent.
-
-A username is the identity string shown in the dashboard header. If `Admin` and `admin` can coexist, the display is ambiguous about who is who. The cost is one more unique index in the same migration, and **verified: the current database has zero username case-collisions**, so it applies cleanly with no cleanup.
-
-### 2.9 Username: 3–30 characters, `[A-Za-z0-9_-]`
-
-Beyond what the checklist asks for, and kept because the security justification is stronger than the draft credited:
-
-- **Homograph impersonation.** Unrestricted Unicode lets `раypal` (Cyrillic а, р) render indistinguishably from `paypal`. Restricting to ASCII alphanumerics plus `_` and `-` eliminates the entire class rather than trying to detect it.
-- **Unbounded input reaching storage and the UI.** 500 characters registers successfully today. Not XSS — React escapes it — but there is no reason to accept it.
-
-The trade, stated honestly: this excludes users who would legitimately want a non-Latin username. For a paper-trading simulator that is the right side of the trade; for a consumer product serving non-Latin scripts it would not be, and the answer there is Unicode normalisation plus a confusable-detection library, not a wider charset.
-
-### 2.10 A unique index on `lower(email)` and `lower(username)`, failing loudly on collisions
-
-App-level normalisation alone is one forgotten `strings.ToLower` from breaking. Migration `004` adds both indexes.
-
-**Creating the email index will fail on any database containing a case-collision.** That is intended: the database refusing to pretend duplicates are fine. The current dev database *does* contain one, so the migration fails there until it is cleared — by hand, using the query in §3. A migration in this project does not silently delete user rows.
-
-The `up` migration lowercases existing emails *before* creating the index, so data and constraint agree. That update is safe precisely because the index creation immediately after would catch any collision it created.
-
-### 2.11 Request bodies are capped at 64 KiB — **added**
-
-Nothing currently bounds a request body. `json.NewDecoder(r.Body).Decode(...)` on the auth routes will read whatever is sent, so a multi-megabyte body is buffered before any validation runs — the length checks in §2.3 cannot help, because they only run after decoding.
-
-`http.MaxBytesReader(w, r.Body, 64<<10)` at the top of each auth handler. 64 KiB is far above any legitimate credential payload and far below anything that matters for memory.
-
-This is a transport concern and stays in the handler, which is consistent with §2.1 rather than an exception to it: the handler owns request shape, the service owns domain rules. Step 7's spec deferred body limits at the gateway; this decision covers only the auth service's own routes and does not pre-empt that.
-
-### 2.12 Login is deliberately **not** tightened
-
-Login validates non-empty and normalises the email for lookup. It does **not** apply the length, blocklist, or format rules.
-
-Two reasons, both load-bearing:
-
-1. **Availability.** Applying a 15-character minimum to login would lock out every account whose password predates this change — including, in the current dev database, accounts with 1-character passwords. A validation change must never revoke existing access.
-2. **Information disclosure.** A validation error would tell an attacker their submitted password failed a *policy* check, distinguishable from the uniform "invalid email or password" that `Login` is deliberately written to return for both unknown-email and wrong-password (`auth.go:62-66`). That uniformity, plus the existing dummy-hash timing defence (`auth.go:52`), is what keeps login from being a user-enumeration oracle. Do not undermine it.
-
-Registration enforces policy. Login authenticates whoever already exists.
-
-### 2.13 `bcrypt.ErrPasswordTooLong` is mapped explicitly, even though validation should prevent it
-
-`Register` rejects >72 bytes before hashing, so this should be unreachable. It is mapped to `ErrInvalidInput` anyway: if a future path ever reaches `GenerateFromPassword` without validating, the user should see a `400`, not today's `500`. Cheap defence in depth against exactly the class of bug this step fixes.
-
-### 2.14 The frontend hint states the real rule
-
-`LoginPage.tsx` currently reads *"Use 8 or more characters for a stronger password."* — softened in Step 8 precisely because the server enforced nothing. It becomes *"At least 15 characters."*
-
-No client-side enforcement is added; the server's `{code, message}` remains what gets displayed (Step 8 §2.12). The client is a hint, never the boundary.
+`005.down.sql` re-adds both `UNIQUE` constraints. Unlike `004`, this rollback is **complete**: no data is transformed in either direction, and the constraints can be recreated exactly. Worth stating because `004.down.sql` says the opposite about itself, and the contrast is instructive rather than accidental.
 
 ---
 
 ## 3. Commands
 
-**Before migrating**, find case-collisions the new index will reject:
+Confirm the finding is real before fixing it — insert a deliberately non-canonical row and watch login fail:
 
 ```bash
-psql "$DATABASE_URL" -c \
-  "SELECT lower(email) AS normalized, count(*), array_agg(email) FROM users GROUP BY 1 HAVING count(*) > 1;"
+# Seed a row the service layer could never produce
+docker exec quantsim-postgres psql -U quantsim -d postgres -c \
+  "INSERT INTO users (email, username, password_hash) VALUES
+   ('NonCanon@quantsim.test','noncanon','\$2a\$10\$abcdefghijklmnopqrstuv');"
+
+# BEFORE the fix: 401 -- the row exists and cannot be found
+# AFTER  the fix: 401 as well, but for the right reason (that hash matches
+#                 no password). Prove the lookup itself with the query:
+docker exec quantsim-postgres psql -U quantsim -d postgres -c \
+  "SELECT id FROM users WHERE email = 'noncanon@quantsim.test';"        -- 0 rows, today
+docker exec quantsim-postgres psql -U quantsim -d postgres -c \
+  "SELECT id FROM users WHERE lower(email) = 'noncanon@quantsim.test';" -- 1 row
+
+# Clean up
+docker exec quantsim-postgres psql -U quantsim -d postgres -c \
+  "DELETE FROM users WHERE lower(email) = 'noncanon@quantsim.test';"
 ```
 
-If rows come back, decide which to keep and delete the others by `id`. The dev database currently returns one collision, created while investigating; either row may go.
-
-Verification — each currently gives the wrong answer:
+The end-to-end check that matters — a real account, registered normally, still logs in:
 
 ```bash
-# 400, not 201  (14 chars, one under the minimum)
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"a@b.test","username":"alice","password":"fourteen-chars"}'
-
-# 201  (15 chars, exactly at the minimum)
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"ok@b.test","username":"alice2","password":"fifteen-chars-x"}'
-
-# 400 blocklist: contains the username
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"c@b.test","username":"alice","password":"alice-alice-alice"}'
-
-# 400 blocklist: single repeated character
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"d@b.test","username":"bob","password":"aaaaaaaaaaaaaaaa"}'
-
-# 400, not 201  (malformed email)
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"x","username":"carol","password":"a-valid-long-password"}'
-
-# 400, not 500  (80-byte password)
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d "{\"email\":\"e@b.test\",\"username\":\"dave\",\"password\":\"$(python3 -c 'print("a"*80)')\"}"
-
-# 400, not 201  (500-char username)
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d "{\"email\":\"f@b.test\",\"username\":\"$(python3 -c 'print("u"*500)')\",\"password\":\"a-valid-long-password\"}"
-
-# 413/400, not a buffered 10 MB  (body cap, §2.11)
-python3 -c 'print("{\"email\":\"g@b.test\",\"username\":\"x\",\"password\":\"" + "a"*10_000_000 + "\"}")' \
-  | curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' --data-binary @-
-
-# 409, not a second account
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"case@b.test","username":"c1","password":"a-valid-long-password"}'
-curl -i -X POST localhost:8080/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"CASE@B.TEST","username":"c2","password":"a-valid-long-password"}'
-
-# 200, not 401  (different capitalisation than registration)
 curl -i -X POST localhost:8080/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"Case@B.test","password":"a-valid-long-password"}'
+  -d '{"email":"khalil-ui-check@quantsim.test","password":"pw12345678"}'   # 200
 
-# 200 — an EXISTING short-password account still logs in (§2.12). The check
-# that proves this change locks nobody out.
 curl -i -X POST localhost:8080/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"khalil-ui-check@quantsim.test","password":"pw12345678"}'
+  -d '{"email":"KHALIL-UI-CHECK@QUANTSIM.TEST","password":"pw12345678"}'   # 200
+```
+
+Index state, before and after `005`:
+
+```bash
+docker exec quantsim-postgres psql -U quantsim -d postgres -c \
+  "SELECT indexname FROM pg_indexes WHERE tablename='users' ORDER BY indexname;"
+# before: users_pkey, users_email_key, users_username_key,
+#         idx_users_email_lower, idx_users_username_lower
+# after:  users_pkey, idx_users_email_lower, idx_users_username_lower
 ```
 
 ---
@@ -221,124 +159,83 @@ curl -i -X POST localhost:8080/auth/login -H 'Content-Type: application/json' \
 ## 4. Project structure
 
 ```
-services/auth/internal/service/
-  validate.go        # NEW — NormalizeEmail, ValidateRegistration; the only
-                     #   place the rules live (§2.1)
-  validate_test.go   # NEW — table-driven; the bulk of this step's tests
-  blocklist.go       # NEW — embedded list + pattern checks (§2.5)
-  blocklist.txt      # NEW — 15+ char common/breach entries, //go:embed
-  errors.go          # + ErrInvalidInput (§2.2)
-  auth.go            # Register: validate + normalise before hashing.
-                     #   Login: normalise email only (§2.12).
-                     #   Map bcrypt.ErrPasswordTooLong (§2.13)
-  auth_test.go       # + rejection cases; ALL existing password fixtures
-                     #   updated to 15+ chars (§2.3)
+services/auth/internal/store/
+  user_store.go        # GetUserByEmail -> WHERE lower(email) = $1 (§2.1)
 
-services/auth/internal/handler/
-  auth.go            # MaxBytesReader (§2.11); remove non-empty checks;
-                     #   map ErrInvalidInput -> 400
-  auth_test.go       # + status coverage; fixtures updated
+services/auth/internal/service/
+  errors_test.go       # NEW -- InvalidInputMessage table test (§2.5)
 
 infra/migrations/
-  004_case_insensitive_identity.up.sql    # lowercase emails, then unique
-                                          #   indexes on lower(email) and
-                                          #   lower(username) (§2.10)
-  004_case_insensitive_identity.down.sql  # drop both indexes (§7)
+  005_drop_redundant_unique_constraints.up.sql    # drop users_email_key,
+                                                  #   users_username_key (§2.2)
+  005_drop_redundant_unique_constraints.down.sql  # re-add both (§2.7)
 
-frontend/src/auth/
-  LoginPage.tsx      # hint -> "At least 15 characters." (§2.14)
+docs/
+  deferred-tuning.md   # + the CONCURRENTLY / no-transaction trade (§2.6)
 ```
 
-No changes to `pkg/`, the gateway, market-data, or token issuance.
+No changes to the handler, the service layer's logic, the frontend, the gateway, or token issuance.
 
 ---
 
 ## 5. Code style / conventions
 
-- **Layering:** validation is a pure function in `internal/service` — no HTTP, no database, no context. Trivially testable, which is the point of putting it there.
-- **Errors:** `fmt.Errorf("%w: password must be at least 15 characters", ErrInvalidInput)` so the handler matches with `errors.Is` while the message stays specific. Matches how the existing four sentinels are used.
-- **Messages are user-facing** — rendered verbatim by the frontend, so they read as instructions, not diagnostics.
-- **Normalisation happens once**, at the top of `Register` and `Login`, before anything else touches the value. Never scattered into the store.
-- **Never log** a password, its length, a blocklist hit, or any rejected value. A log line saying "password rejected: too short" for a known email is itself a small disclosure.
-- Migrations follow the existing `NNN_name.up.sql` / `.down.sql` pair convention.
+- Migrations keep the `NNN_name.up.sql` / `.down.sql` pair convention, and carry their reasoning in comments the way `004` does.
+- The store stays a thin translation layer: SQL and error-code mapping, no domain rules.
+- `errors_test.go` is an **external** test (`package service_test`), matching `validate_test.go`. `InvalidInputMessage` is exported, so there is no reason to reach inside.
+- Constraint drops name the constraint explicitly (`ALTER TABLE users DROP CONSTRAINT users_email_key`), never a bare index drop — these were created by `CREATE TABLE ... UNIQUE` and are constraints, not free-standing indexes.
 
 ---
 
 ## 6. Testing strategy
 
-Unlike Step 8, this step **ships tests** — it is exactly the logic-with-invariants that Steps 4–7 covered. Table-driven, hand-written fakes, matching `docs/TESTING_STRUCTURE.md`.
+**The honest problem with this step: the change in §2.1 lands in the one layer that has no automated tests.** `services/auth/internal/store/` contains exactly one file and no `_test.go`. The service and handler suites both run against `mock.UserStore`, which is a Go map — it cannot catch a SQL change, and it would keep passing if the query were wrong.
 
-- **`validate_test.go`** — the core. Boundaries on both sides: password at 14/15 runes and 72/73 bytes; **a 15-rune password that exceeds 15 bytes** (proves the rune/byte split of §2.3–2.4 is real, not incidental); emails valid, malformed, display-name form, and over 254 bytes; usernames at 2/3 and 30/31 and containing a disallowed character.
-- **Blocklist** — an exact entry, a password containing the username, one containing the email local part, a single repeated character, and a simple sequence. Plus a **negative** case: a long, ordinary passphrase must pass, so the checks are not so broad they reject good passwords.
-- **`NormalizeEmail`** — mixed case, surrounding whitespace, already-normalised, and idempotence asserted rather than assumed.
-- **Service** — `Register` rejects each invalid input **before touching the store** (assert the mock recorded no write; this is what proves validation runs first rather than the database happening to reject it). `Register` stores the normalised email. `Login` finds a user registered in a different case.
-- **Regression, the most important test in the step:** a user whose stored password is 10 characters — below the new minimum — can still log in (§2.12).
-- **Handler** — each rejection is `400` with `code: "invalid_request"`; the happy path still returns `201`; an oversized body is rejected without being buffered.
-- **Not unit-tested:** the migration. Verified manually per §3 against a throwaway database first, the same approach used for Phase 1's handoff.
+So the safety net here is *not* the unit suite, and pretending otherwise would be the mistake. Instead:
+
+- **Manual verification is mandatory, not optional** — the §3 sequence, run against a deliberately non-canonical row. That is the only thing that actually exercises the changed line.
+- **The full suite still runs** (`go test -count=1 ./...` in `services/auth` and `pkg`) to prove nothing regressed, while acknowledging it cannot prove the fix.
+- **Migration `005` is dry-run** on a throwaway database, up **and** down, the same way `004` was — including confirming that re-adding the constraints succeeds against real data.
+- **§2.5's test** is ordinary and covered by the suite.
+
+A store-layer integration test is the real answer and is deferred with reasoning in §7.
 
 ---
 
 ## 7. Deferred with reasoning, not omitted
 
-Four items a security review would reasonably raise, each deliberately out of this step:
-
-1. **bcrypt → Argon2id.** OWASP's Password Storage guidance prefers Argon2id for new systems, and it would remove the 72-byte cap that forces the §2.4 deviation. Out of scope because it changes the stored hash format and needs a rehash-on-login migration path for existing users — a separate spec, not a rider on input validation. bcrypt at cost 10 meets OWASP's stated minimum in the meantime.
-2. **Online breach-corpus lookup (HIBP k-anonymity).** Strictly stronger than the embedded list in §2.5 and the right eventual answer. Deferred because it adds a third-party network call to registration, with its own latency, failure mode, and a fail-open/fail-closed decision that deserves deciding on purpose.
-3. **Rate limiting and account lockout.** The single largest remaining gap in the auth surface: nothing throttles credential stuffing against `/auth/login` today. Genuinely out of scope here — it belongs at the gateway, where Step 7 explicitly deferred it — but it is the item I would put next after this step, ahead of Phase 2 features.
-
-4. **Unicode normalisation (NFC/NFKC) of passwords.** Added during the Task 1 review, having been missed in the original §9 pass. SP 800-63B §3.1.1.2 — the same section this spec cites throughout — says verifiers *SHOULD* apply NFKC or NFC normalisation before hashing. We do not. Verified rather than assumed: the same visually identical passphrase entered precomposed vs decomposed is **22 vs 25 bytes**, and both are accepted today, so they hash differently and the user is locked out of their own account depending on how they typed it. Out of scope here because it changes what gets hashed, which is §7's item 1 territory. **Worth doing early for a specific reason:** it is free while no non-ASCII password exists, and becomes a lockout event once one does — normalising later changes the hash of every password already stored in a non-normalised form.
-
-Also accepted: `004.down.sql` drops both indexes but **cannot** restore the original capitalisation of emails the `up` lowercased. That information is gone. A backup column to preserve it is real complexity to protect data whose only distinguishing feature is capitalisation nobody wants. Noted in the migration file itself so the next reader is not surprised.
+1. **Store-layer integration tests.** The gap §6 names. `docs/TESTING_STRUCTURE.md` §4 already sketches the shape — `services/auth/integration/`, `-tags=integration`, a real Postgres. Deferred because it needs a harness decision (testcontainers vs. the existing docker-compose, and how CI gets a database) that deserves deciding deliberately rather than as a rider on a two-line query change. **It should come before Phase 2's trading engine**, which will add far more SQL than auth has.
+2. **`DATABASE_URL` points at the `postgres` database while an empty `quantsim` database sits beside it.** Not a bug, but it cost real confusion during Step 9 — a manual `DELETE` appeared to succeed against the wrong target. Renaming means a dump, a restore, and an `.env` change for a purely cosmetic gain, so it is worth doing at a natural break rather than mid-step.
+3. **Everything in `docs/security-backlog.md`**, unchanged by this step: rate limiting (item 1, still the largest gap), refresh-token revocation, gateway-wide body caps, Unicode password normalisation, Argon2id, HIBP.
 
 ---
 
 ## 8. Boundaries
 
 **Always do:**
-- Validate in the service layer, before hashing and before any store call (§2.1)
-- Count the password minimum in runes and the maximum in bytes (§2.3, §2.4)
-- Normalise email before both storage and lookup (§2.7)
-- Keep `Login`'s failure response uniform — never let a validation message distinguish "bad format" from "wrong password" (§2.12)
-- Cap request bodies before decoding (§2.11)
-- Run `go test -count=1 ./...` in `services/auth` and `pkg` before flagging a checkpoint done
+- Ship §2.1 before or with §2.2 — never drop `users_email_key` while an exact-match query is live
+- Run the §3 non-canonical-row check by hand; the unit suite cannot cover this change
+- Dry-run `005` up **and** down on a throwaway database before the real one
+- Confirm `khalil-ui-check@quantsim.test` still logs in, in both capitalisations, after the migration
 
 **Ask first:**
-- Adding password composition rules (§2.3 — forbidden by `SHALL NOT`)
-- Adding a new error `code` or a structured per-field body (§2.2)
-- Any change to token lifetimes, issuance, or the login response shape
-- Anything that would make an existing user unable to log in (§2.12)
-- Deleting user rows in a migration (§2.10 — cleanup is manual and documented)
-- Adding an external network dependency to registration (§2.5, §7)
+- Adding a `CHECK` constraint on `email` (§2.3 decided against it)
+- Rewriting stored usernames to lowercase (§2.4 — `004` deliberately preserved them)
+- Changing what `/auth/me` returns
+- Anything that alters `Login`'s uniform failure response
+- Introducing an integration-test harness as part of this step (§7 — it is its own decision)
 
 **Never do:**
-- Log a password, its length, a blocklist hit, or a rejected value
-- Apply the registration rules to `Login` (§2.12)
-- Hand-roll an email regex in place of `net/mail` (§2.6)
-- **Truncate a password to fit bcrypt's 72 bytes** — reject it (§2.4). Truncation makes distinct passwords hash identically
-- Let validation live in two places at once (§2.1)
+- Reintroduce exact-match email lookup
+- Drop an index without the corresponding query change landing first
+- Let a migration in this project delete a user row
 
 ---
 
-## 9. Resolutions
+## 9. Open questions
 
-Khalil delegated the open decisions on 2026-07-30 with the instruction to decide against cybersecurity standards. Resolved by checking the draft's claims against the current text of **NIST SP 800-63B §3.1.1.2** rather than recalling it — which reversed three of my own draft decisions:
+1. **Is §2.2 worth doing at all?** Dropping two constraints is a real, if small, operation whose entire benefit on a 15-row table is theoretical. The case for: the redundancy is genuine, and it is cheapest to remove now while the schema is small and the reasoning is fresh. The case against: `005` exists *only* for this, and "four indexes where two suffice" is a blemish, not a bug. **My recommendation: do it**, because the coupling in §2.2 is exactly the kind of thing that becomes hazardous once forgotten — but it is the one item here I would drop without argument.
 
-- [x] **Reversed (§2.3):** minimum raised from **8 to 15 characters**. The draft cited 8 as NIST's requirement. The actual text makes 15 a `SHALL` for single-factor authentication; 8 applies only when the password is one factor of *several*. QuantSim has no MFA. Cost: every existing test fixture (10–14 chars) needs updating.
-- [x] **Added (§2.5):** a **blocklist check**, which the draft omitted altogether. *"Verifiers SHALL compare the prospective secret against a blocklist of known commonly used, expected, or compromised passwords."* Embedded list scoped to 15+ char entries, plus context-specific terms and trivial patterns.
-- [x] **Reversed (§2.8):** **case-insensitive usernames** move from explicit non-goal to in scope. The draft dismissed it as cosmetic while simultaneously arguing homograph impersonation to justify §2.9 — inconsistent. Same attack class, and the database has zero username collisions, so it applies cleanly.
-- [x] **Added (§2.11):** **64 KiB request body cap.** Nothing bounded body size; length validation runs *after* decoding, so it cannot help. Multi-megabyte bodies were buffered unconditionally.
-- [x] **Added (§2.4):** the 72-byte bcrypt cap is recorded as a **documented deviation** from the `SHOULD permit at least 64 characters`, since a 64-character multi-byte password exceeds it. Was previously unexamined.
-- [x] §2.1 — validation in the service layer; handler's duplicate checks removed — as drafted
-- [x] §2.2 — reuse `invalid_request` / `400`; no new code, no per-field body — as drafted
-- [x] §2.3 — **no composition rules** (`SHALL NOT`) — as drafted, now with the citation
-- [x] §2.6 — `net/mail.ParseAddress`, reject display-name forms, 254-byte cap; **no** dot-in-domain requirement (security theatre — `a@b.co` passes it and is equally disposable) — as drafted
-- [x] §2.7 — email lowercased and trimmed; the fix for both §1 bugs — as drafted, with the account-confusion argument made explicit
-- [x] §2.9 — username 3–30, `[A-Za-z0-9_-]`; **kept**, on a stronger justification than the draft gave (homograph impersonation, not just tidiness)
-- [x] §2.10 — migration adds both indexes and **fails loudly** until the existing collision is cleared by hand — as drafted
-- [x] §2.12 — login **not** tightened; availability plus the uniform-failure property — as drafted, now with the enumeration-oracle reasoning spelled out
-- [x] §2.13 — map `bcrypt.ErrPasswordTooLong` to `400` — as drafted
-- [x] §2.14 — frontend hint states the real rule, now 15 — as drafted
-- [x] §6 — this step ships tests, including a **regression test that an existing short-password account can still log in**
-- [x] §7 — three items deferred *with reasoning on the record*: Argon2id, online breach lookup, and rate limiting. **Rate limiting is the largest remaining gap in the auth surface** and is what I would do next, ahead of Phase 2 features.
+2. **Should §2.5 grow into a wider errors test?** `InvalidInputMessage` is the only exported function in `errors.go`. Testing just it is proportionate; sweeping in the four sentinels would be testing `errors.New`.
 
-Checkpoint slicing lives in `tasks/plan.md`.
+3. **Does §7 item 1 belong ahead of Phase 2 rather than inside it?** Stated as a recommendation above, not a decision. It competes directly with rate limiting for the same slot, and rate limiting has an attacker behind it while this has a class of bug behind it.
