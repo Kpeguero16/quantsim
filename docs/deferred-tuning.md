@@ -60,10 +60,10 @@ and the ratio of new connections to reused ones.
   (market-data's poller included). Recorded in
   `docs/archive/phase1-step6-market-data-live/SPEC.md` §2.9. Becomes real when
   deploys start rolling rather than restarting.
-- **Service-to-service auth** — backends trust anything that reaches them; the
-  Phase 1 control is loopback binding (`BIND_ADDR`, and the `127.0.0.1` port
-  bindings in `docker-compose.yml`). Recorded in the Step 7 spec §2.4. Needs a
-  real answer once the services do not share a host.
-- **Rate limiting** — deliberately out of scope for the gateway in Phase 1
-  (Step 7 spec §8). The gateway is the natural place for it. Note that
-  `X-Forwarded-For` is now trustworthy, which is what a per-IP limiter needs.
+- **Security gaps — moved to `docs/security-backlog.md`.** Rate limiting and
+  service-to-service auth used to be listed here. They now live in their own
+  register, along with refresh-token revocation, the bcrypt 72-byte ceiling,
+  body-size limits beyond the auth routes, and TLS. They were a poor fit for
+  this file: its own framing is *"None are bugs"*, and its trigger is Phase 4
+  traffic — whereas several of those **are** gaps, and the first ones are due
+  in Phase 2. Tracking them in one place beats maintaining two partial lists.

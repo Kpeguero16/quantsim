@@ -320,6 +320,17 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 - Order execution
 - Trade storage
 - P/L tracking
+- **Security items scheduled for this phase** — see **docs/security-backlog.md**
+  (items 1, 2, and 4). Phase 2 is where they belong because Phase 2 is what
+  makes them matter: today account takeover buys a read-only view of public
+  market data, but once `/trading/*` executes orders against a $100k balance
+  the same weakness lets someone trade as another user. The auth surface does
+  not get weaker in Phase 2 — the consequences of its existing gaps get worse.
+  - Rate limiting on the auth routes (nothing throttles credential stuffing today)
+  - Refresh-token revocation and a real server-side logout (tokens live 7 days
+    with no kill switch; "sign out" is client-side only)
+  - A gateway-wide request body cap, naturally done when `/trading/*` stops
+    returning `501`
 
 ## Phase 3 — Backtesting Engine
 - Historical ingestion
