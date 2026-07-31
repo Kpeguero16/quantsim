@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kpeguero/quantsim/services/auth/internal/handler"
@@ -34,7 +35,7 @@ func TestRegisterHandler_Success(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
 		"email":    "a@b.com",
 		"username": "alice",
-		"password": "pw12345678",
+		"password": testPassword,
 	})
 
 	rec := doRequest(t, r, http.MethodPost, "/auth/register", body)
@@ -56,7 +57,7 @@ func TestRegisterHandler_DuplicateEmail(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
 		"email":    "a@b.com",
 		"username": "alice",
-		"password": "pw12345678",
+		"password": testPassword,
 	})
 
 	if rec := doRequest(t, r, http.MethodPost, "/auth/register", body); rec.Code != http.StatusCreated {
@@ -104,9 +105,9 @@ func registerUser(t *testing.T, r http.Handler, email, username, password string
 
 func TestLoginHandler_Success(t *testing.T) {
 	r := newTestRouter()
-	registerUser(t, r, "a@b.com", "alice", "pw12345678")
+	registerUser(t, r, "a@b.com", "alice", testPassword)
 
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "pw12345678"})
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": testPassword})
 	rec := doRequest(t, r, http.MethodPost, "/auth/login", body)
 
 	if rec.Code != http.StatusOK {
@@ -123,7 +124,7 @@ func TestLoginHandler_Success(t *testing.T) {
 
 func TestLoginHandler_WrongPasswordAndUnknownEmail_IdenticalResponse(t *testing.T) {
 	r := newTestRouter()
-	registerUser(t, r, "a@b.com", "alice", "pw12345678")
+	registerUser(t, r, "a@b.com", "alice", testPassword)
 
 	wrongPwBody, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "wrong-password"})
 	wrongPwRec := doRequest(t, r, http.MethodPost, "/auth/login", wrongPwBody)
@@ -146,7 +147,7 @@ func TestLoginHandler_WrongPasswordAndUnknownEmail_IdenticalResponse(t *testing.
 func TestRefreshHandler_Success(t *testing.T) {
 	r := newTestRouter()
 	registerBody, _ := json.Marshal(map[string]string{
-		"email": "a@b.com", "username": "alice", "password": "pw12345678",
+		"email": "a@b.com", "username": "alice", "password": testPassword,
 	})
 	registerRec := doRequest(t, r, http.MethodPost, "/auth/register", registerBody)
 	var registerTokens service.TokenPair
@@ -172,7 +173,7 @@ func TestRefreshHandler_Success(t *testing.T) {
 func TestRefreshHandler_AccessTokenRejected(t *testing.T) {
 	r := newTestRouter()
 	registerBody, _ := json.Marshal(map[string]string{
-		"email": "a@b.com", "username": "alice", "password": "pw12345678",
+		"email": "a@b.com", "username": "alice", "password": testPassword,
 	})
 	registerRec := doRequest(t, r, http.MethodPost, "/auth/register", registerBody)
 	var registerTokens service.TokenPair
@@ -227,7 +228,7 @@ func doMeRequest(t *testing.T, r http.Handler, authHeader string) *httptest.Resp
 
 func TestMeHandler_Success(t *testing.T) {
 	r := newTestRouter()
-	tokens := registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+	tokens := registerAndDecode(t, r, "a@b.com", "alice", testPassword)
 
 	rec := doMeRequest(t, r, "Bearer "+tokens.AccessToken)
 
@@ -245,7 +246,7 @@ func TestMeHandler_Success(t *testing.T) {
 
 func TestMeHandler_NoHeader(t *testing.T) {
 	r := newTestRouter()
-	registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+	registerAndDecode(t, r, "a@b.com", "alice", testPassword)
 
 	rec := doMeRequest(t, r, "")
 	if rec.Code != http.StatusUnauthorized {
@@ -255,7 +256,7 @@ func TestMeHandler_NoHeader(t *testing.T) {
 
 func TestMeHandler_MalformedHeader(t *testing.T) {
 	r := newTestRouter()
-	registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+	registerAndDecode(t, r, "a@b.com", "alice", testPassword)
 
 	rec := doMeRequest(t, r, "Basic sometoken")
 	if rec.Code != http.StatusUnauthorized {
@@ -265,7 +266,7 @@ func TestMeHandler_MalformedHeader(t *testing.T) {
 
 func TestMeHandler_RefreshTokenRejected(t *testing.T) {
 	r := newTestRouter()
-	tokens := registerAndDecode(t, r, "a@b.com", "alice", "pw12345678")
+	tokens := registerAndDecode(t, r, "a@b.com", "alice", testPassword)
 
 	rec := doMeRequest(t, r, "Bearer "+tokens.RefreshToken)
 	if rec.Code != http.StatusUnauthorized {
@@ -286,5 +287,134 @@ func TestHealthz(t *testing.T) {
 	rec := doRequest(t, r, http.MethodGet, "/healthz", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// --- Step 9: validation surfaces as 400, bodies are capped (SPEC.md 2.2, 2.11) ---
+
+// testPassword satisfies the registration rules: 15+ runes, under 72 bytes,
+// not on the blocklist, and containing neither "alice" nor a service term.
+const testPassword = "quiet-harbor-lantern-9"
+
+func TestRegisterHandler_ValidationFailuresAre400(t *testing.T) {
+	cases := []struct {
+		name, email, username, password string
+	}{
+		{"password one under the minimum", "a@b.com", "alice", "fourteen-chars"},
+		{"password over 72 bytes", "a@b.com", "alice", strings.Repeat("z", 80)},
+		{"password on the blocklist", "a@b.com", "alice", "aaaaaaaaaaaaaaaa"},
+		{"malformed email", "x", "alice", testPassword},
+		{"username of 500 characters", "a@b.com", strings.Repeat("u", 500), testPassword},
+		{"empty password", "a@b.com", "alice", ""},
+		{"empty email", "", "alice", testPassword},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRouter()
+			body, _ := json.Marshal(map[string]string{
+				"email": tc.email, "username": tc.username, "password": tc.password,
+			})
+
+			rec := doRequest(t, r, http.MethodPost, "/auth/register", body)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+
+			var errResp handler.ErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+				t.Fatalf("failed to decode error response: %v", err)
+			}
+			if errResp.Code != "invalid_request" {
+				t.Fatalf("expected code invalid_request, got %q", errResp.Code)
+			}
+			if errResp.Message == "" {
+				t.Fatal("expected a non-empty message -- the frontend renders it verbatim")
+			}
+			// The message is shown to the user as-is, so the internal
+			// sentinel text must not be part of it.
+			if strings.Contains(errResp.Message, "invalid input") {
+				t.Fatalf("sentinel text leaked into the user-facing message: %q", errResp.Message)
+			}
+		})
+	}
+}
+
+// TestRegisterHandler_OversizedBodyRejected covers SPEC.md 2.11: length
+// validation runs after decoding, so only a cap on the reader can stop a
+// multi-megabyte body from being buffered in the first place.
+func TestRegisterHandler_OversizedBodyRejected(t *testing.T) {
+	r := newTestRouter()
+	body, _ := json.Marshal(map[string]string{
+		"email": "a@b.com", "username": "alice", "password": strings.Repeat("a", 128<<10),
+	})
+	if len(body) <= 64<<10 {
+		t.Fatalf("test body is %d bytes, which does not exceed the 64 KiB cap", len(body))
+	}
+
+	rec := doRequest(t, r, http.MethodPost, "/auth/register", body)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegisterHandler_ValidBodyUnderTheCapStillSucceeds(t *testing.T) {
+	r := newTestRouter()
+	registerUser(t, r, "a@b.com", "alice", testPassword)
+}
+
+func TestLoginHandler_DifferentCapitalizationSucceeds(t *testing.T) {
+	r := newTestRouter()
+	registerUser(t, r, "case@b.test", "casey", testPassword)
+
+	body, _ := json.Marshal(map[string]string{"email": "CASE@B.TEST", "password": testPassword})
+	rec := doRequest(t, r, http.MethodPost, "/auth/login", body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 logging in with different capitalization, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestLoginHandler_MissingFieldsAreUniform401 pins a deliberate behaviour
+// change in Step 9. The handler used to answer 400 "email and password are
+// required" for missing fields; now they take the same path as any other
+// failed login and come back 401.
+//
+// This is the point of SPEC.md 2.12: absent, malformed, and simply wrong
+// credentials must be indistinguishable. A 400 here tells an attacker which
+// half of the pair the server objected to, which is the same class of leak
+// the uniform ErrInvalidCredentials and the dummy-hash timing defence exist
+// to close.
+func TestLoginHandler_MissingFieldsAreUniform401(t *testing.T) {
+	registered := func() http.Handler {
+		r := newTestRouter()
+		registerUser(t, r, "a@b.com", "alice", testPassword)
+		return r
+	}
+
+	bodies := map[string]string{
+		"empty object":     `{}`,
+		"missing password": `{"email":"a@b.com"}`,
+		"missing email":    `{"password":"` + testPassword + `"}`,
+		"both empty":       `{"email":"","password":""}`,
+		"wrong password":   `{"email":"a@b.com","password":"definitely-wrong-pw"}`,
+	}
+
+	var seen []string
+	for name, body := range bodies {
+		rec := doRequest(t, registered(), http.MethodPost, "/auth/login", []byte(body))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: expected 401, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+		seen = append(seen, rec.Body.String())
+	}
+
+	// Identical bodies, not merely identical statuses.
+	for i, body := range seen {
+		if body != seen[0] {
+			t.Fatalf("login responses differ, which distinguishes failure modes: %q vs %q", seen[i], seen[0])
+		}
 	}
 }

@@ -18,12 +18,12 @@ Prior steps archived: Auth Service (Step 4) at `docs/archive/phase1-step4-auth/`
 Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **stop**.
 
 ### Phase 1: The rules
-- [ ] **Task 1** — `validate.go`, `blocklist.go` + embedded list, `ErrInvalidInput`, and their tests. Pure functions, no DB or HTTP
+- [x] **Task 1** — `validate.go`, `blocklist.go` + embedded list, `ErrInvalidInput`, and their tests. Pure functions, no DB or HTTP
 
 ### Phase 2: Wiring
-- [ ] **Task 2** — Enforce in `Register`/`Login`, 64 KiB body cap, map `ErrInvalidInput` → `400`, remove the handler's duplicate checks, **update all existing 10–14 char test fixtures**
+- [x] **Task 2** — Enforce in `Register`/`Login`, 64 KiB body cap, map `ErrInvalidInput` → `400`, remove the handler's duplicate checks, **update all existing 10–14 char test fixtures**
 
-- [ ] ✅ **Checkpoint: Rules enforced** — all rejections return `400`; valid registration still `201`; **an existing short-password account still logs in**. Case-duplicates not fixed yet — that is Task 3
+- [x] ✅ **Checkpoint: Rules enforced** — verified 2026-07-31 against the running stack on a second instance (port 8099, dev DB), then the test rows removed. All §3 rejections return `400`; the 80-byte password returns `400` instead of `500`; a 10 MB body returns `413`; valid registration still `201`; **`khalil-ui-check@quantsim.test` still logs in with its 10-character password**. Case-duplicates not fixed yet — that is Task 3
 
 ### Phase 3: The database
 - [ ] **Task 3** — Migration `004`: lowercase emails, then unique indexes on `lower(email)` and `lower(username)`. Highest-risk task; dry-run up **and** down on a throwaway DB first

@@ -11,6 +11,17 @@ import (
 	"github.com/kpeguero/quantsim/services/auth/internal/service"
 )
 
+// maxBodyBytes caps every request body the auth service decodes. Nothing
+// bounded body size before: json.Decode reads whatever is sent, so a
+// multi-megabyte body was buffered in full before any validation ran -- the
+// length rules in the service layer can't help, because they only see the
+// decoded value. 64 KiB is far above any legitimate credential payload and
+// far below anything that matters for memory.
+//
+// This is a transport concern, so it lives in the handler. That's consistent
+// with keeping domain rules in the service, not an exception to it.
+const maxBodyBytes = 64 << 10
+
 type AuthHandler struct {
 	service *service.Service
 }
@@ -19,19 +30,41 @@ func NewAuthHandler(svc *service.Service) *AuthHandler {
 	return &AuthHandler{service: svc}
 }
 
+// decodeJSON caps the body, decodes it, and writes the appropriate error
+// response itself, reporting whether the caller should continue. Every route
+// that reads a body goes through here so the cap can't be forgotten on one
+// of them.
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			WriteError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body is too large")
+			return false
+		}
+		WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return false
+	}
+
+	return true
+}
+
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req service.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
-		return
-	}
-	if req.Email == "" || req.Username == "" || req.Password == "" {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "email, username, and password are required")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
+	// No non-empty checks here: every rule, including "is this present at
+	// all", lives in service.ValidateRegistration. Two layers enforcing one
+	// rule is how they drift apart.
 	tokens, err := h.service.Register(r.Context(), req)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			WriteError(w, http.StatusBadRequest, "invalid_request", service.InvalidInputMessage(err))
+			return
+		}
 		if errors.Is(err, service.ErrDuplicateUser) {
 			WriteError(w, http.StatusConflict, "duplicate_user", "email or username already exists")
 			return
@@ -45,15 +78,15 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req service.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
-		return
-	}
-	if req.Email == "" || req.Password == "" {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "email and password are required")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
+	// Deliberately no checks here, and no ErrInvalidInput mapping below:
+	// every login failure -- absent, malformed, or simply wrong credentials
+	// -- returns the same 401. Missing fields are just credentials that
+	// don't match, and answering them differently would tell an attacker
+	// which half of the pair was the problem.
 	tokens, err := h.service.Login(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
@@ -97,10 +130,11 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var req service.RefreshTokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// This check stays: it isn't duplicating a service rule, and a missing
+	// refresh_token is a malformed request rather than a rejected token.
 	if req.RefreshToken == "" {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 		return

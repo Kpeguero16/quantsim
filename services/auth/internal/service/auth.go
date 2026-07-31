@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,16 +31,33 @@ func NewService(users UserStore, jwtSecret []byte) *Service {
 	return &Service{users: users, jwtSecret: jwtSecret}
 }
 
-// Register hashes the password and creates the user and its $100k starting
-// account atomically (see UserStore.CreateUserWithAccount), then returns a
-// fresh token pair.
+// Register validates and normalizes the submitted identity, hashes the
+// password, and creates the user and its $100k starting account atomically
+// (see UserStore.CreateUserWithAccount), then returns a fresh token pair.
+//
+// Validation runs before hashing and before any store call, so a rejected
+// registration never reaches the database and never spends a bcrypt round.
+// This is the single choke point the rules live behind -- see validate.go.
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (*TokenPair, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
+	email, username, err := ValidateRegistration(req.Email, req.Username, req.Password)
 	if err != nil {
 		return nil, err
 	}
 
-	userID, err := s.users.CreateUserWithAccount(ctx, req.Email, req.Username, hash, StartingBalance)
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
+	if err != nil {
+		// Unreachable: ValidateRegistration already rejects anything over
+		// MaxPasswordBytes. Mapped anyway as defence in depth -- if a future
+		// path ever reaches this without validating, the caller should see a
+		// 400 describing the problem, not a 500. Never truncate to fit:
+		// that would make two distinct passwords hash identically.
+		if errors.Is(err, bcrypt.ErrPasswordTooLong) {
+			return nil, fmt.Errorf("%w: password must be at most %d bytes -- try a shorter one", ErrInvalidInput, MaxPasswordBytes)
+		}
+		return nil, err
+	}
+
+	userID, err := s.users.CreateUserWithAccount(ctx, email, username, hash, StartingBalance)
 	if err != nil {
 		return nil, err
 	}
@@ -64,8 +82,16 @@ func mustHash(password string) []byte {
 // whether an email is registered. A store error other than "no such user"
 // (a DB outage, a timeout) is not an auth failure and propagates as-is, so
 // it surfaces as a 500 rather than a misleading "invalid credentials".
+//
+// The email is normalized so a user who registered as Khalil@x.test can log
+// in as khalil@x.test. Nothing else is validated, deliberately: applying the
+// registration rules here would lock out every account whose password
+// predates them, and a policy-specific error would be distinguishable from
+// the uniform failure below -- which, with the dummy-hash timing defence, is
+// what keeps this endpoint from being a user-enumeration oracle. Registration
+// enforces policy; Login authenticates whoever already exists.
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenPair, error) {
-	user, err := s.users.GetUserByEmail(ctx, req.Email)
+	user, err := s.users.GetUserByEmail(ctx, NormalizeEmail(req.Email))
 	if err != nil {
 		if !errors.Is(err, ErrUserNotFound) {
 			return nil, err

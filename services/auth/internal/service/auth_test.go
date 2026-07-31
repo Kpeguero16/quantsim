@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestRegister_Success(t *testing.T) {
 	users := mock.NewUserStore()
 	svc := service.NewService(users, testSecret)
 
-	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}
+	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
 	tokens, err := svc.Register(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -58,7 +59,7 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}
+	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
 	if _, err := svc.Register(ctx, req); err != nil {
 		t.Fatalf("unexpected error on first register: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestRegister_AtomicOnAccountFailure(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}
+	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
 	if _, err := svc.Register(ctx, req); err == nil {
 		t.Fatal("expected register to fail")
 	}
@@ -108,12 +109,12 @@ func TestLogin_Success(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}
+	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
 	if _, err := svc.Register(ctx, registerReq); err != nil {
 		t.Fatalf("unexpected error on register: %v", err)
 	}
 
-	tokens, err := svc.Login(ctx, service.LoginRequest{Email: "a@b.com", Password: "pw12345678"})
+	tokens, err := svc.Login(ctx, service.LoginRequest{Email: "a@b.com", Password: validPassword})
 	if err != nil {
 		t.Fatalf("unexpected error on login: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}
+	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
 	if _, err := svc.Register(ctx, registerReq); err != nil {
 		t.Fatalf("unexpected error on register: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestRefresh_Success(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	registerTokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"})
+	registerTokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
 	if err != nil {
 		t.Fatalf("unexpected error on register: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestRefresh_AccessTokenRejected(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"})
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
 	if err != nil {
 		t.Fatalf("unexpected error on register: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestRefresh_UserNotFound(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"})
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
 	if err != nil {
 		t.Fatalf("unexpected error on register: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestMe_Success(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}); err != nil {
+	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}); err != nil {
 		t.Fatalf("unexpected error on register: %v", err)
 	}
 	stored, err := users.GetUserByEmail(ctx, "a@b.com")
@@ -296,7 +297,7 @@ func TestMe_UserNotFound(t *testing.T) {
 	svc := service.NewService(users, testSecret)
 
 	ctx := context.Background()
-	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: "pw12345678"}); err != nil {
+	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}); err != nil {
 		t.Fatalf("unexpected error on register: %v", err)
 	}
 	stored, err := users.GetUserByEmail(ctx, "a@b.com")
@@ -325,5 +326,143 @@ func TestMe_PropagatesNonNotFoundError(t *testing.T) {
 	_, err := svc.Me(context.Background(), uuid.New())
 	if !errors.Is(err, dbErr) {
 		t.Fatalf("expected the underlying db error to propagate, got %v", err)
+	}
+}
+
+// --- Step 9: registration validation (SPEC.md 2.1-2.9, 2.12) ---
+
+// TestRegister_RejectsInvalidInputBeforeTouchingStore is the assertion that
+// proves validation is a real choke point rather than the database happening
+// to reject bad input: nothing is written on the way to the rejection.
+func TestRegister_RejectsInvalidInputBeforeTouchingStore(t *testing.T) {
+	cases := []struct {
+		name, email, username, password string
+	}{
+		{"password one under the minimum", "new@b.test", "bob", "fourteen-chars"},
+		{"password over 72 bytes", "new@b.test", "bob", strings.Repeat("z", 80)},
+		{"password on the blocklist", "new@b.test", "bob", "aaaaaaaaaaaaaaaa"},
+		{"password contains the username", "new@b.test", "bobbie", "bobbie-bobbie-bobbie"},
+		{"malformed email", "x", "bob", validPassword},
+		{"username over the maximum", "new@b.test", strings.Repeat("u", 31), validPassword},
+		{"username with a disallowed character", "new@b.test", "bo b", validPassword},
+		{"everything empty", "", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			users := mock.NewUserStore()
+			svc := service.NewService(users, testSecret)
+
+			_, err := svc.Register(context.Background(), service.RegisterRequest{
+				Email: tc.email, Username: tc.username, Password: tc.password,
+			})
+
+			if !errors.Is(err, service.ErrInvalidInput) {
+				t.Fatalf("expected ErrInvalidInput, got %v", err)
+			}
+			if len(users.Accounts) != 0 {
+				t.Fatalf("a rejected registration still wrote %d account(s)", len(users.Accounts))
+			}
+		})
+	}
+}
+
+func TestRegister_StoresNormalizedIdentity(t *testing.T) {
+	users := mock.NewUserStore()
+	svc := service.NewService(users, testSecret)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, service.RegisterRequest{
+		Email: "  Alice@Example.TEST  ", Username: "  ALICE  ", Password: validPassword,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stored, err := users.GetUserByEmail(ctx, "alice@example.test")
+	if err != nil {
+		t.Fatalf("user was not stored under the normalized email: %v", err)
+	}
+	if stored.Username != "alice" {
+		t.Fatalf("username stored as %q, want %q", stored.Username, "alice")
+	}
+}
+
+// TestLogin_FindsUserRegisteredInADifferentCase covers the second of the two
+// bugs in SPEC.md section 1: registering as alice@example.test and then
+// logging in as Alice@Example.TEST returned 401 before this step.
+func TestLogin_FindsUserRegisteredInADifferentCase(t *testing.T) {
+	users := mock.NewUserStore()
+	svc := service.NewService(users, testSecret)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, service.RegisterRequest{
+		Email: "alice@example.test", Username: "alice", Password: validPassword,
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := svc.Login(ctx, service.LoginRequest{
+		Email: "Alice@Example.TEST", Password: validPassword,
+	}); err != nil {
+		t.Fatalf("login with different capitalization failed: %v", err)
+	}
+}
+
+// TestLogin_ExistingShortPasswordStillAuthenticates is the single most
+// important assertion in Step 9. Raising the minimum to 15 makes every
+// existing password in the database non-compliant; SPEC.md 2.12 keeps Login
+// untightened precisely so that locks nobody out. That property is load
+// bearing, so it is asserted rather than assumed.
+func TestLogin_ExistingShortPasswordStillAuthenticates(t *testing.T) {
+	const legacyPassword = "pw12345678" // 10 characters -- below the new minimum
+
+	users := mock.NewUserStore()
+	svc := service.NewService(users, testSecret)
+	ctx := context.Background()
+
+	// Seeded directly, bypassing Register: this stands in for an account that
+	// predates the policy, which Register would now refuse to create.
+	hash, err := bcrypt.GenerateFromPassword([]byte(legacyPassword), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if _, err := users.CreateUserWithAccount(ctx, "legacy@b.test", "legacy", hash, service.StartingBalance); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Guard the guard: if this password were still registerable, the test
+	// below would pass for the wrong reason and prove nothing.
+	if _, err := svc.Register(ctx, service.RegisterRequest{
+		Email: "new@b.test", Username: "newuser", Password: legacyPassword,
+	}); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected the legacy password to be unregisterable now, got %v", err)
+	}
+
+	if _, err := svc.Login(ctx, service.LoginRequest{
+		Email: "legacy@b.test", Password: legacyPassword,
+	}); err != nil {
+		t.Fatalf("an existing %d-character-password account can no longer log in: %v", len(legacyPassword), err)
+	}
+}
+
+// TestLogin_IsNotSubjectToRegistrationRules pins SPEC.md 2.12 directly: a
+// login whose password would fail every registration rule must still come
+// back as ErrInvalidCredentials, never ErrInvalidInput. A policy-specific
+// error here would be distinguishable from a wrong password and turn login
+// into a user-enumeration oracle.
+func TestLogin_IsNotSubjectToRegistrationRules(t *testing.T) {
+	users := mock.NewUserStore()
+	svc := service.NewService(users, testSecret)
+
+	for _, password := range []string{"a", "", "aaaaaaaaaaaaaaaa", strings.Repeat("z", 80)} {
+		_, err := svc.Login(context.Background(), service.LoginRequest{
+			Email: "nobody@b.test", Password: password,
+		})
+		if errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("login applied a registration rule to password of length %d", len(password))
+		}
+		if !errors.Is(err, service.ErrInvalidCredentials) {
+			t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+		}
 	}
 }

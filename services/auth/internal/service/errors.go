@@ -1,6 +1,9 @@
 package service
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // ErrDuplicateUser is returned by Register when the email or username is
 // already taken. Handlers map this to 409.
@@ -22,6 +25,23 @@ var ErrInvalidCredentials = errors.New("invalid email or password")
 // message would be distinguishable from the uniform ErrInvalidCredentials,
 // turning login into a user-enumeration oracle. See SPEC.md 2.12.
 var ErrInvalidInput = errors.New("invalid input")
+
+// InvalidInputMessage returns the user-facing half of an ErrInvalidInput --
+// everything after the sentinel's own text. Handlers render the result
+// verbatim, so the words "invalid input:" must never reach the user.
+//
+// Knowledge of the wrapping format stays in the package that produces it. A
+// handler doing this trimming itself would be one refactor away from
+// silently emitting the raw sentinel text into the UI.
+//
+// Any other error is returned in full rather than as an empty string, so a
+// miswired caller gets something diagnosable instead of a blank message.
+func InvalidInputMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimPrefix(err.Error(), ErrInvalidInput.Error()+": ")
+}
 
 // ErrTokenInvalid is returned by Refresh for any token problem: expired,
 // malformed, wrong signature, or the wrong token type presented. Handlers
