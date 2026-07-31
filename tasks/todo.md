@@ -26,9 +26,10 @@ Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **
 - [x] ✅ **Checkpoint: Rules enforced** — verified 2026-07-31 against the running stack on a second instance (port 8099, dev DB), then the test rows removed. All §3 rejections return `400`; the 80-byte password returns `400` instead of `500`; a 10 MB body returns `413`; valid registration still `201`; **`khalil-ui-check@quantsim.test` still logs in with its 10-character password**. Case-duplicates not fixed yet — that is Task 3
 
 ### Phase 3: The database
-- [ ] **Task 3** — Migration `004`: lowercase emails, then unique indexes on `lower(email)` and `lower(username)`. Highest-risk task; dry-run up **and** down on a throwaway DB first
+- [x] **Task 3** — Migration `004`: lowercase emails, then unique indexes on `lower(email)` and `lower(username)`. Dry-run up **and** down on a throwaway DB first, including a seeded collision to confirm it fails loudly and rolls back clean. Applied to the dev DB 2026-07-31 at version 4, not dirty
 
-- [ ] ✅ **Checkpoint: Database aligned** — no duplicate accounts, no case lockout, **every pre-existing user can still log in**
+- [x] ✅ **Checkpoint: Database aligned** — both §1 bugs verified fixed against the running stack: a second registration of the same address in different capitalisation returns **409**, and login with different capitalisation returns **200**. Username case-duplicates also return `409`. The collision pair was cleared by hand first (the uppercase row, per §3's "either row may go"), taking the table from 16 users to 15.
+  **On "every pre-existing user can still log in":** `khalil-ui-check@quantsim.test` was verified directly with its 10-character password, in both original and upper case. The other 14 could not be — their passwords aren't known to anyone but their owners. The checkable property was verified instead: a pre/post snapshot of all rows shows the deleted row as the **only** difference, so no surviving user's `email`, `username`, or `password_hash` was touched by the migration
 
 ### Phase 4: Close out
 - [ ] **Task 4** — Frontend hint to "At least 15 characters."; check off Step 9
