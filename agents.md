@@ -10,6 +10,8 @@ Any AI agent referencing this document should treat it as the single source of t
 
 As of 2026-07-29, QuantSim resumed development under a different workflow than Phase 1 started with. See `docs/intent/quantsim-resume.md` for the full rationale.
 
+> **Starting a session? Read `docs/NEXT_SESSION.md` first.** It records what is in flight (usually nothing), what to pick up next and why, how to restart the local stack, and the environment gotchas that have already cost time once. It is rewritten at the end of each working session rather than appended to.
+
 - **Khalil is the architect.** He sets direction, writes/edits specs and PRDs, makes architecture decisions, and reviews at checkpoints.
 - **Claude (via Claude Code) is the implementer.** For any non-trivial unit of work, write a PRD/spec first and get it reviewed before building. Then implement freely and stop at checkpoints.
 - **Checkpoints are scoped to one logical piece of implementation at a time** (e.g. "AccountStore done," "JWT helpers done") — not per-service or per-phase. Keep diffs small enough to review meaningfully.
