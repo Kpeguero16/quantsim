@@ -34,11 +34,11 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 ---
 
 ### Phase 1: The harness
-- [ ] **Task 1** — `harness_test.go` + `main_test.go`: repo-root discovery via `go.work`, `.env` reader that does not export, DSN resolution, **three guards**, `CREATE DATABASE`, migrations by glob-and-exec, `TRUNCATE`, raw seed helper. `services/auth/go.mod` must stay unchanged
+- [x] **Task 1** — `harness_test.go` + `main_test.go`: repo-root discovery via `go.work`, `.env` reader that does not export, DSN resolution, **three guards**, `CREATE DATABASE`, migrations by glob-and-exec, `TRUNCATE`, raw seed helper. `services/auth/go.mod` must stay unchanged
 
-- [ ] **Task 2** — 🔴 **SMOKE**: `SELECT 1` passes; `assertTestDB` rejects `postgres`, `quantsim`, `""`; `quantsim_test` has 5 tables; **dev DB still at 15 users**; forcing the DSN at `postgres` **refuses** instead of truncating
+- [x] **Task 2** — 🔴 **SMOKE**: `SELECT 1` passes; `assertTestDB` rejects `postgres`, `quantsim`, `""`; `quantsim_test` has 5 tables; **dev DB still at 15 users**; forcing the DSN at `postgres` **refuses** instead of truncating
 
-- [ ] ⏸️ **Checkpoint: The harness is proven safe** — nothing destructive has touched real data, and the guards are demonstrated rather than assumed
+- [x] ⏸️ **Checkpoint: The harness is proven safe** — nothing destructive has touched real data, and the guards are demonstrated rather than assumed
 
 ### Phase 2: The tests that justify the step
 - [ ] **Task 3** — `GetUserByEmail` / `GetUserByID`: mixed-case row seeded by raw SQL (the store cannot make one), stored-form return value, argument not lowercased, nil `PasswordHash`, `ErrUserNotFound`, full round-trip
