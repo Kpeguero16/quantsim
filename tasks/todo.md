@@ -27,7 +27,7 @@ Each checkpoint is a stop-for-review point per `agents.md`: implement, verify, *
 - [x] ⏸️ **Checkpoint: The core throttles correctly in isolation** — both suites green under `-race`, nothing wired into the request path yet
 
 ### Phase 2: Per-IP limiting
-- [ ] **Task 2** — `RateLimitByIP` middleware keyed on `r.RemoteAddr`, port stripped. **Test #4 RED first** — confirm it fails while keying on the header and passes after. Tests #4, #10
+- [x] **Task 2** — `RateLimitByIP` middleware keyed on `r.RemoteAddr`, port stripped. **Test #4 RED first** — confirm it fails while keying on the header and passes after. Tests #4, #10
 
 - [ ] **Task 3** — Wire into the router (`StripUserID -> CORS -> RateLimitByIP -> [routes]`), construct the store in `main.go`, document the five `RATE_LIMIT_*` knobs in `.env.example`. Test #11 proves a `429` still carries CORS headers
 
