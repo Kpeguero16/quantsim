@@ -6,21 +6,22 @@ This file answers three questions on picking the project back up: *is anything h
 
 ---
 
-## One thing is in flight
+## Nothing is in flight
 
-**Step 11 is complete and committed, but sits on a branch that has not been merged.**
+Step 11 is reviewed, merged, and pushed. There is no work to recover.
 
 | | |
 |---|---|
-| Branch | `step11-auth-rate-limiting`, clean, **6 commits ahead of `main`** |
-| `main` | unchanged at `8a8dbb9` |
+| Branch | `main`, clean, in sync with `origin/main` |
+| HEAD | `be77132` — *Merge Step 11: auth rate limiting* |
 | Migrations | schema at version **5**, not dirty — Step 11 added none |
-| Tests | green: `services/gateway` (incl. `-race`), `services/auth`, `pkg` |
-| Not pushed | the branch is local only |
+| Tests | green across all four modules; gateway also clean under `-race` |
+| Stale branch | `step11-auth-rate-limiting` still exists locally and on `origin` — safe to delete, it is fully merged |
 
-**The decision waiting for you: merge it, or review it first.** Nothing else
-depends on the branch, so there is no rush and no conflict risk — `main` has
-not moved.
+**Pre-merge review found two real bypasses**, both fixed on the branch before
+it merged (`4bf43e6`, `e6dc4c1`). They are worth reading before touching this
+code, because both were invisible to a passing test suite — see *What Step 11
+did* below.
 
 `SPEC.md`, `tasks/plan.md`, and `tasks/todo.md` describe **Step 11, fully
 checked off**. By convention they are archived to
@@ -52,16 +53,28 @@ and real addresses throttle identically. This is what keeps it from undoing
 the uniform-failure property Step 9 §2.12 built deliberately. There is a test
 that fails if it is ever broken, and it is verified by mutation.
 
+**The two bypasses review caught, both of which passed the suite at the time:**
+
+*Trailing data.* The gateway parsed the login body with `json.Unmarshal`,
+which rejects trailing bytes; auth uses `json.NewDecoder().Decode()`, which
+ignores them. Appending one junk byte made the gateway fail to extract an
+account key — skipping per-account backoff entirely — while auth processed the
+login normally. **The rule now written into the code: the gateway must never
+be stricter than the service it protects.** If you add any parsing at the
+gateway, check it against how the backend parses the same bytes.
+
+*Concurrent bursts.* Counting the failure after the backend replied left the
+counter clean for the whole round-trip, so 60 simultaneous guesses at a
+threshold of 5 all got through. Check-and-count is now atomic and optimistic
+(`Backoff.Attempt`), corrected afterwards by `Succeed` on `200` and `Undo` on
+anything that is not a credential verdict. **If you touch that ordering, the
+regression tests to keep are the two burst tests.**
+
 ---
 
 ## What to do next, in order
 
-### 1. Merge or review `step11-auth-rate-limiting`
-
-Six commits, each one task with its own tests. Any point on the branch is a
-clean rollback.
-
-### 2. A store-layer integration harness — unchanged from last time
+### 1. A store-layer integration harness — unchanged from last time
 
 `internal/store/` still has **no tests at all**. Both the service and handler
 suites run against `mock.UserStore`, a Go map — they would stay green with a
@@ -78,7 +91,7 @@ testcontainers vs. the existing docker-compose, and how CI gets a database.
 **Do this before the trading engine**, which will add far more SQL than auth
 ever had.
 
-### 3. Refresh-token revocation and a real logout
+### 2. Refresh-token revocation and a real logout
 
 `docs/security-backlog.md` item 2, now the **highest-priority open** security
 item. Refresh tokens live 7 days with no kill switch; "sign out" is
@@ -90,7 +103,7 @@ frontend's shared in-flight refresh (`frontend/src/api/client.ts`) stops being
 an efficiency measure and becomes a *correctness requirement* — seven parallel
 refreshes would burn seven tokens and look exactly like token theft.
 
-### 4. Phase 2 proper — the trading engine
+### 3. Phase 2 proper — the trading engine
 
 Order execution, trade history, P/L tracking. Per `agents.md`, start with a
 spec, get it reviewed, then build to checkpoints.
@@ -139,7 +152,7 @@ entire step once: `:8081` was still accepting one-character passwords while
 three commits of validation sat on disk. If behaviour does not match the code,
 check this first. It applies to the gateway now too.
 
-**The unit suites cannot see store-layer changes.** See item 2 above. Do not
+**The unit suites cannot see store-layer changes.** See item 1 above. Do not
 read a green suite as coverage of anything in `internal/store/`.
 
 **Rate-limit counters are per-process.** Correct today, because one gateway

@@ -26,9 +26,45 @@ defeats credential stuffing against reused passwords.
 - [x] Per-account backoff on `/auth/login`, keyed on the submitted email
 - [x] `docs/security-backlog.md` item 1 corrected and closed
 - [x] Two `docs/deferred-tuning.md` entries (§4, §5) with named triggers
+- [x] Pre-merge review: two bypasses found and fixed
 
 **Completed 2026-08-14.** Spec at `SPEC.md`, checkpoints in `tasks/plan.md` /
 `tasks/todo.md`. No new module dependency; no change to `services/auth/`.
+
+### What pre-merge review found
+
+Both were **invisible to a green test suite**, which is the point worth
+carrying forward: for a control like this, "the tests pass" is evidence of
+very little on its own.
+
+**1. Trailing data skipped per-account limiting entirely** (`4bf43e6`). The
+gateway parsed the login body with `json.Unmarshal`, which rejects trailing
+bytes; the auth service uses `json.NewDecoder().Decode()`, which parses the
+first JSON value and ignores the rest. Appending a single junk byte made the
+gateway fail to extract an account key — so backoff never ran — while auth
+parsed the same body and processed the login normally. Measured at a threshold
+of 3: a well-formed body was refused after 3 attempts; the same body plus one
+trailing `x` let **10 of 10** through.
+
+*The rule it produced:* **the gateway must never be stricter than the service
+it protects.** Anything the backend will act on has to be something the
+limiter can key. Being more lenient is safe; being stricter is a bypass.
+
+**2. Concurrent bursts outran the counter** (`e6dc4c1`). Backoff checked the
+count, proxied, and recorded the failure once the backend answered — leaving
+the counter untouched for the whole round-trip, so every request arriving
+meanwhile saw a clean slate. Measured through the running gateway with a 150ms
+backend: **60 concurrent guesses at a threshold of 5, all 60 reached the
+backend, none refused.** Backoff bounded sequential guessing and did nothing
+about concurrent guessing — the easy case for the distributed attack it exists
+to stop.
+
+Fixed by making check-and-count atomic and optimistic (`Backoff.Attempt`),
+corrected afterwards: `401` leaves the count, `200` clears it, anything else
+rolls it back. That last branch is what stops a downed auth service from
+throttling its own users — verified live: with auth stopped, ten attempts
+returned `502` throughout and never escalated to `429`. Same measurement after
+the fix: **5 of 60**.
 
 ### The two decisions worth remembering
 
