@@ -1,0 +1,106 @@
+# QuantSim Phase 2 — Trading Engine Checklist
+
+Phase 1 is complete (`PHASE1_CHECKLIST.md`). Phase 2 delivers the trading
+engine — order execution, trade storage, P/L tracking — and opens with the
+security work that Phase 2 itself makes consequential.
+
+**Why security comes first.** Today account takeover buys a read-only view of
+public market data. Once `/trading/*` executes orders against a $100k
+simulated balance, the same weakness lets someone trade as another user. The
+auth surface does not get weaker in Phase 2; the consequences of its existing
+gaps get materially worse. Reasoning in `docs/security-backlog.md`.
+
+---
+
+## Step 11: Auth Rate Limiting
+
+Closes `docs/security-backlog.md` item 1 — the largest remaining gap in the
+auth surface. Nothing throttled `/auth/login` before this: no per-IP limit, no
+per-account limit, no backoff. Step 9's password rules raised the cost *per
+guess*; nothing bounded the *number* of guesses, which is what actually
+defeats credential stuffing against reused passwords.
+
+- [x] Fixed-window counter store, sharded, with eviction and an injected clock
+- [x] Exponential backoff schedule over consecutive failures, always decaying
+- [x] Per-IP limiting on `/auth/*`, keyed on `r.RemoteAddr`
+- [x] Per-account backoff on `/auth/login`, keyed on the submitted email
+- [x] `docs/security-backlog.md` item 1 corrected and closed
+- [x] Two `docs/deferred-tuning.md` entries (§4, §5) with named triggers
+
+**Completed 2026-08-14.** Spec at `SPEC.md`, checkpoints in `tasks/plan.md` /
+`tasks/todo.md`. No new module dependency; no change to `services/auth/`.
+
+### The two decisions worth remembering
+
+**Backoff, not lockout.** A hard lockout is the stronger control against
+guessing and was rejected: anyone who knows a user's email could freeze that
+account at will, turning an auth control into a denial-of-service primitive,
+and it needs an unlock path that does not exist. The accepted residual risk is
+that an attacker can still degrade a known victim's login for up to ~15
+minutes — bounded, self-healing, and strictly better than the alternative.
+
+**Counters in memory, not Redis.** The backlog assumed Redis was free because
+the stack already runs it. It was not: the *gateway* had no Redis dependency,
+and Step 7 §8 required asking before adding one. In-memory also removes a
+question with no good answer — a shared store that is unreachable forces a
+choice between locking every user out and silently not limiting. The trade is
+that counters are per-process, recorded in `docs/deferred-tuning.md` §4 with
+its trigger: the second gateway instance.
+
+### The bug that never shipped
+
+The backlog stated that the gateway's `r.SetXForwarded()` call sanitises
+inbound `X-Forwarded-For`, so a per-IP limiter could trust that header.
+**It does not.** That call runs on `r.Out` inside `proxy.New`'s `Rewrite`,
+which executes *after* every middleware and builds only the upstream request.
+The inbound header is whatever the client sent.
+
+Building to the backlog as written would have produced a limiter bypassable
+with one forged header per request — an unlimited budget from a control that
+still looked like it worked, and would have passed a naive test suite. The
+limiter keys on `r.RemoteAddr`; the backlog entry is corrected in place.
+
+### On the tests
+
+Twelve tests, two of which are the step rather than coverage of it, both
+written before the code and both **verified by mutation** — the check that a
+test would actually fail against the wrong implementation:
+
+| Test | Mutation applied | Result |
+|---|---|---|
+| Forged `X-Forwarded-For` earns no budget | `clientIP` reads the header | 3 forged attempts returned `200` instead of `429` |
+| Unknown and known accounts throttle identically | only "real" accounts counted | unknown returned `401` where existing returned `429`, with different bodies and `Retry-After` |
+
+The second is the one that keeps a `429` from becoming the user-enumeration
+oracle Step 9 §2.12 deliberately closed. The limiter never consults a
+database, so it cannot tell a real address from an invented one — and neither
+can a caller.
+
+Verified against the running binary as well as in tests: with a threshold of
+3, a real and a nonexistent address both returned `401, 401, 401, 429` with
+byte-identical bodies; capitalisation variants shared one counter; a correct
+password cleared the count; `/healthz` answered `200` throughout; and the
+backend received the full request body every time.
+
+---
+
+## Still open before the trading engine
+
+- [ ] **Store-layer integration harness** — `internal/store/` has no tests at
+      all. Both existing suites run against a Go map and would stay green with
+      a completely wrong SQL query. `docs/TESTING_STRUCTURE.md` §4 sketches the
+      shape; the open decision is testcontainers vs. the existing
+      docker-compose, and how CI gets a database. **Do this before Phase 2
+      adds far more SQL than auth ever had.**
+- [ ] **Refresh-token revocation and a real logout** —
+      `docs/security-backlog.md` item 2, now the highest-priority open item.
+      Tokens live 7 days with no kill switch, and "sign out" is client-side
+      only.
+
+## Then the engine itself
+
+- [ ] Order execution (market buy/sell)
+- [ ] Trade storage and history
+- [ ] Position tracking and P/L
+- [ ] `/trading/*` stops returning `501` — the natural moment for the
+      gateway-wide body cap (`docs/security-backlog.md` item 4)

@@ -5,12 +5,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
 	"github.com/kpeguero/quantsim/services/gateway/internal/handler"
 	"github.com/kpeguero/quantsim/services/gateway/internal/httperr"
+	"github.com/kpeguero/quantsim/services/gateway/internal/limiter"
 	"github.com/kpeguero/quantsim/services/gateway/internal/proxy"
 )
 
@@ -33,6 +37,11 @@ type backendCall struct {
 // newGateway spins up fake auth and market-data backends and returns a router
 // wired to them, plus the recorders for each backend.
 func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
+	t.Helper()
+	return newGatewayWithRateLimit(t, noRateLimit)
+}
+
+func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall) {
 	t.Helper()
 
 	authCall := &backendCall{}
@@ -69,8 +78,25 @@ func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
 		proxy.New(mdURL, transport, "market-data"),
 		testSecret,
 		testOrigin,
+		rateLimit,
 	)
 	return r, authCall, mdCall
+}
+
+// noRateLimit leaves the limiter out of the chain, so the existing routing,
+// CORS and auth tests exercise what they were written to exercise rather than
+// tripping over a budget.
+var noRateLimit = handler.RateLimitConfig{Enabled: false}
+
+// rateLimitAfter returns a config that refuses everything past limit requests
+// from one address.
+func rateLimitAfter(limit int) handler.RateLimitConfig {
+	return handler.RateLimitConfig{
+		Enabled:  true,
+		Store:    limiter.NewMemoryStore(time.Now),
+		IPLimit:  limit,
+		IPWindow: 15 * time.Minute,
+	}
 }
 
 func accessToken(t *testing.T) string {
@@ -302,4 +328,259 @@ func TestPreflightNeedsNoTokenAndIsNotProxied(t *testing.T) {
 	if mdCall.hit {
 		t.Error("preflight was proxied to the backend")
 	}
+}
+
+// Test #11 -- a 429 must carry CORS headers.
+//
+// This is why RateLimitByIP sits inside the CORS middleware rather than
+// outside it. Without the headers a browser cannot read the response at all:
+// fetch rejects with an opaque network error, the frontend shows "failed to
+// fetch" instead of "too many requests", and whoever debugs it starts at the
+// network layer rather than at the limiter.
+func TestRateLimitedResponseCarriesCORSHeaders(t *testing.T) {
+	const limit = 2
+	r, _, _ := newGatewayWithRateLimit(t, rateLimitAfter(limit))
+
+	var rec *httptest.ResponseRecorder
+	for i := 0; i <= limit; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.Header.Set("Origin", testOrigin)
+		req.RemoteAddr = "203.0.113.9:54321"
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+	}
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("got status %d after %d requests, want %d", rec.Code, limit+1, http.StatusTooManyRequests)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != testOrigin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q -- a browser cannot read a 429 without it", got, testOrigin)
+	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("Vary = %q, want %q", got, "Origin")
+	}
+}
+
+// Health checks must never be rate limited. /healthz is what a load balancer
+// polls, and refusing it under load would pull a healthy instance out of
+// rotation at precisely the moment the limiter is doing its job.
+func TestHealthzIsNotRateLimited(t *testing.T) {
+	const limit = 1
+	r, _, _ := newGatewayWithRateLimit(t, rateLimitAfter(limit))
+
+	for i := 0; i < limit+5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.RemoteAddr = "203.0.113.9:54321"
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/healthz got status %d on request %d, want 200", rec.Code, i+1)
+		}
+	}
+}
+
+// The limiter is scoped to /auth/*, so exhausting that budget must not affect
+// the authenticated routes.
+func TestRateLimitDoesNotApplyToMarketData(t *testing.T) {
+	const limit = 1
+	r, _, mdCall := newGatewayWithRateLimit(t, rateLimitAfter(limit))
+
+	for i := 0; i <= limit; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.RemoteAddr = "203.0.113.9:54321"
+		r.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	req.RemoteAddr = "203.0.113.9:54321"
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("/market-data got status %d after the auth budget was spent, want 200", rec.Code)
+	}
+	if !mdCall.hit {
+		t.Error("market-data backend was never reached; the auth limiter must not gate other routes")
+	}
+}
+
+// gatewayWithFailingAuth builds a router whose auth backend answers every
+// request with 401, which is what the real service returns for both a wrong
+// password and an unknown email.
+func gatewayWithFailingAuth(t *testing.T, failures int) http.Handler {
+	t.Helper()
+	return gatewayWithLimits(t, 1000, failures)
+}
+
+// gatewayWithLimits builds a router with both limiter dimensions active, so a
+// test can raise whichever one it is not exercising out of the way.
+func gatewayWithLimits(t *testing.T, ipLimit, failures int) http.Handler {
+	t.Helper()
+
+	authBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(authBackend.Close)
+	mdBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(mdBackend.Close)
+
+	authURL, err := url.Parse(authBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing auth backend URL: %v", err)
+	}
+	mdURL, err := url.Parse(mdBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing market-data backend URL: %v", err)
+	}
+
+	transport := proxy.NewTransport()
+	return handler.NewRouter(
+		proxy.New(authURL, transport, "auth"),
+		proxy.New(mdURL, transport, "market-data"),
+		testSecret,
+		testOrigin,
+		handler.RateLimitConfig{
+			Enabled:  true,
+			Store:    limiter.NewMemoryStore(time.Now),
+			IPLimit:  ipLimit,
+			IPWindow: 15 * time.Minute,
+			Backoff: limiter.NewBackoff(time.Now, limiter.BackoffConfig{
+				FreeFailures: failures - 1,
+				BaseDelay:    time.Minute,
+				MaxDelay:     15 * time.Minute,
+			}),
+			MaxLoginBody: 64 << 10,
+		},
+	)
+}
+
+func postJSON(t *testing.T, gw http.Handler, path, body, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+	return rec
+}
+
+// Per-account backoff must work through the full chain, and must key on the
+// account rather than the connection -- that is the whole point of having it
+// alongside the per-IP limit. Failures are spread across different addresses
+// here, as credential stuffing from a botnet would be.
+func TestLoginBackoffAppliesAcrossDifferentAddresses(t *testing.T) {
+	gw := gatewayWithFailingAuth(t, 5)
+	const body = `{"email":"victim@example.test","password":"guess"}`
+
+	for i := 1; i <= 5; i++ {
+		addr := "203.0.113." + strconv.Itoa(i) + ":40000"
+		if rec := postJSON(t, gw, "/auth/login", body, addr); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d from %s got status %d, want 401", i, addr, rec.Code)
+		}
+	}
+
+	rec := postJSON(t, gw, "/auth/login", body, "203.0.113.99:40000")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("got status %d from a fresh address after 5 failures, want %d -- backoff must follow the account, not the connection",
+			rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+// /auth/refresh must not accumulate account backoff. It returns 401 for an
+// expired or malformed token, which is not a credential guess -- counting it
+// would throttle users for holding a stale token.
+func TestRefreshDoesNotAccumulateAccountBackoff(t *testing.T) {
+	gw := gatewayWithFailingAuth(t, 5)
+
+	for i := 1; i <= 10; i++ {
+		rec := postJSON(t, gw, "/auth/refresh", `{"refresh_token":"expired"}`, "203.0.113.9:40000")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("refresh attempt %d got status %d, want the backend's 401", i, rec.Code)
+		}
+	}
+}
+
+// The static /auth/login route must win over the /auth/* wildcard, or the
+// per-account limiter silently never runs.
+func TestLoginRouteTakesPrecedenceOverWildcard(t *testing.T) {
+	gw := gatewayWithFailingAuth(t, 2)
+	const body = `{"email":"user@example.test","password":"guess"}`
+
+	for i := 1; i <= 2; i++ {
+		postJSON(t, gw, "/auth/login", body, "203.0.113.9:40000")
+	}
+
+	rec := postJSON(t, gw, "/auth/login", body, "203.0.113.9:40000")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("got status %d, want %d -- /auth/login is being served by the wildcard route, so the account limiter never runs",
+			rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+// Per-IP limiting must still apply to /auth/login once the per-account route
+// is registered.
+//
+// This combination had no coverage: the CORS and precedence tests above run
+// with Backoff nil, so /auth/login is served by the /auth/* wildcard there.
+// With Backoff set it becomes its own static route registered via
+// r.With(...), and if chi did not carry the group's r.Use middleware onto it,
+// the single most attacked endpoint in the system would silently lose its
+// per-IP limit while every other test stayed green.
+func TestPerIPStillAppliesToTheStaticLoginRoute(t *testing.T) {
+	const ipLimit = 3
+	gw := gatewayWithLimits(t, ipLimit, 10000) // account threshold high enough never to fire
+	body := `{"email":"user@example.test","password":"guess"}`
+
+	for i := 1; i <= ipLimit; i++ {
+		if rec := postJSON(t, gw, "/auth/login", body, "203.0.113.9:54321"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("request %d got status %d, want the backend's 401", i, rec.Code)
+		}
+	}
+
+	rec := postJSON(t, gw, "/auth/login", body, "203.0.113.9:54321")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("got status %d past the per-IP limit, want %d -- the static /auth/login route is not inheriting the group's per-IP middleware",
+			rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+// The same measurement that exposed the gap, kept as a regression test.
+//
+// Before check-and-count became atomic, a burst of 60 concurrent guesses
+// against one account at a threshold of 5 saw all 60 reach the backend: the
+// counter went untouched for the length of each proxy round-trip, so every
+// request in flight saw a clean slate. Per-account backoff bounded sequential
+// guessing only, which is the wrong half of the problem for a distributed
+// attack.
+func TestConcurrentBurstIsBoundedByTheAccountThreshold(t *testing.T) {
+	const threshold = 5
+	gw := gatewayWithLimits(t, 10000, threshold) // per-IP raised out of the way
+	body := `{"email":"victim@example.test","password":"guess"}`
+
+	const burst = 60
+	var wg sync.WaitGroup
+	codes := make([]int, burst)
+	wg.Add(burst)
+	for i := 0; i < burst; i++ {
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = postJSON(t, gw, "/auth/login", body, "203.0.113.9:54321").Code
+		}(i)
+	}
+	wg.Wait()
+
+	reached := 0
+	for _, c := range codes {
+		if c == http.StatusUnauthorized {
+			reached++
+		}
+	}
+
+	if reached > threshold {
+		t.Errorf("%d of %d concurrent guesses reached the backend, want at most %d -- the burst outran the counter",
+			reached, burst, threshold)
+	}
+	t.Logf("burst of %d concurrent guesses: %d reached the backend, %d refused", burst, reached, burst-reached)
 }
