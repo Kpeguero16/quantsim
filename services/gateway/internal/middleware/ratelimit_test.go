@@ -2,9 +2,11 @@ package middleware_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,5 +174,206 @@ func TestIPv6AddressesShareOneKey(t *testing.T) {
 	h.ServeHTTP(rec, loginRequest("[2001:db8::1]:60000"))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("got status %d from the same IPv6 address, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+// --- per-account backoff on /auth/login ---------------------------------
+
+const maxLoginBody = 64 << 10
+
+func loginBackoff() *limiter.Backoff {
+	return limiter.NewBackoff(time.Now, limiter.BackoffConfig{
+		FreeFailures: 4,
+		BaseDelay:    time.Minute,
+		MaxDelay:     15 * time.Minute,
+	})
+}
+
+// alwaysStatus is a stand-in for the auth service that answers every request
+// with one status, and records the body it received.
+func alwaysStatus(status int, gotBody *string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if gotBody != nil {
+			*gotBody = string(b)
+		}
+		w.WriteHeader(status)
+	})
+}
+
+func postLogin(t *testing.T, h http.Handler, email string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"email":` + strconv.Quote(email) + `,"password":"whatever-it-does-not-matter"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	req.RemoteAddr = "203.0.113.9:54321"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// Test #8 -- THE enumeration-oracle test.
+//
+// Step 9 §2.12 made login's failure uniform on purpose: an unknown email and
+// a wrong password return the same 401, behind the same dummy-hash timing
+// defence, so login cannot be used to discover which accounts exist.
+//
+// A per-account throttle is an easy way to undo that. If the limiter only
+// counted failures for accounts that exist, a 429 would mean "this address is
+// real" and a 401 would mean "it is not" -- handing an attacker the exact
+// oracle Step 9 closed, through a control added to make login safer.
+//
+// SPEC.md §2.6 is the rule this pins: throttle on the submitted email whether
+// or not it resolves to an account. The middleware never consults a database,
+// so it cannot tell the difference and neither can a caller.
+func TestUnknownAndKnownAccountsThrottleIdentically(t *testing.T) {
+	// One backend, answering 401 to everything -- exactly what the real auth
+	// service does for both an unknown email and a wrong password.
+	h := middleware.RateLimitLoginByAccount(loginBackoff(), maxLoginBody)(alwaysStatus(http.StatusUnauthorized, nil))
+
+	const (
+		existing = "real-user@example.test"
+		unknown  = "no-such-person@example.test"
+	)
+
+	drive := func(email string) *httptest.ResponseRecorder {
+		var last *httptest.ResponseRecorder
+		for i := 0; i < 6; i++ {
+			last = postLogin(t, h, email)
+		}
+		return last
+	}
+
+	gotExisting := drive(existing)
+	gotUnknown := drive(unknown)
+
+	if gotExisting.Code != http.StatusTooManyRequests {
+		t.Fatalf("existing account got status %d after 6 failures, want %d", gotExisting.Code, http.StatusTooManyRequests)
+	}
+	if gotUnknown.Code != gotExisting.Code {
+		t.Errorf("unknown account got status %d but existing got %d -- a 429 that only happens for real accounts is an enumeration oracle",
+			gotUnknown.Code, gotExisting.Code)
+	}
+	if gotUnknown.Body.String() != gotExisting.Body.String() {
+		t.Errorf("bodies differ between unknown and existing accounts:\n unknown  = %q\n existing = %q",
+			gotUnknown.Body.String(), gotExisting.Body.String())
+	}
+	if gotUnknown.Header().Get("Retry-After") != gotExisting.Header().Get("Retry-After") {
+		t.Errorf("Retry-After differs: unknown = %q, existing = %q",
+			gotUnknown.Header().Get("Retry-After"), gotExisting.Header().Get("Retry-After"))
+	}
+}
+
+// Test #9 -- capitalisation must not buy a fresh budget. Steps 9 and 10 made
+// identity case-insensitive all the way down to the SQL lookup; a limiter
+// keyed on the raw string would let an attacker cycle Foo@, foo@, FOO@ for an
+// unlimited allowance against one account.
+func TestEmailKeyIsCaseAndSpaceInsensitive(t *testing.T) {
+	h := middleware.RateLimitLoginByAccount(loginBackoff(), maxLoginBody)(alwaysStatus(http.StatusUnauthorized, nil))
+
+	for _, variant := range []string{
+		"user@example.test",
+		"User@Example.test",
+		"USER@EXAMPLE.TEST",
+		"  user@example.test  ",
+		"uSeR@eXaMpLe.TeSt",
+	} {
+		postLogin(t, h, variant)
+	}
+
+	rec := postLogin(t, h, "user@example.test")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("got status %d after 5 failures across capitalisations, want %d -- all variants must share one counter",
+			rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+// A success clears the count, so an ordinary user who mistypes and then gets
+// it right is not left carrying a throttle.
+func TestSuccessfulLoginClearsTheBackoff(t *testing.T) {
+	b := loginBackoff()
+	failing := middleware.RateLimitLoginByAccount(b, maxLoginBody)(alwaysStatus(http.StatusUnauthorized, nil))
+	succeeding := middleware.RateLimitLoginByAccount(b, maxLoginBody)(alwaysStatus(http.StatusOK, nil))
+
+	for i := 0; i < 4; i++ {
+		postLogin(t, failing, "user@example.test")
+	}
+	postLogin(t, succeeding, "user@example.test")
+
+	// The slate is clean, so the next four failures must again cost nothing.
+	for i := 1; i <= 4; i++ {
+		if rec := postLogin(t, failing, "user@example.test"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d got status %d, want 401 -- a success must reset the counter", i, rec.Code)
+		}
+	}
+}
+
+// The proxy must receive the body byte-for-byte. Reading it to find the email
+// consumes it, so a missing replay would send an empty body upstream and
+// break every login -- the most likely way this middleware could go wrong.
+func TestBodyIsReplayedToTheBackendUnchanged(t *testing.T) {
+	var seen string
+	h := middleware.RateLimitLoginByAccount(loginBackoff(), maxLoginBody)(alwaysStatus(http.StatusOK, &seen))
+
+	want := `{"email":"user@example.test","password":"whatever-it-does-not-matter"}`
+	postLogin(t, h, "user@example.test")
+
+	if seen != want {
+		t.Errorf("backend received body %q, want %q", seen, want)
+	}
+}
+
+// An oversized body is passed through untouched rather than rejected. The
+// gateway does not own login's validation rules, so it forwards the request
+// and lets the auth service answer -- it simply cannot key it to an account.
+func TestOversizedBodyPassesThroughUntouched(t *testing.T) {
+	const maxBytes = 64
+	var seen string
+	h := middleware.RateLimitLoginByAccount(loginBackoff(), maxBytes)(alwaysStatus(http.StatusOK, &seen))
+
+	body := `{"email":"user@example.test","password":"` + strings.Repeat("x", 200) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	req.RemoteAddr = "203.0.113.9:54321"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200 -- an oversized body is the auth service's call, not the gateway's", rec.Code)
+	}
+	if seen != body {
+		t.Errorf("backend received a truncated or altered body:\n got  %q\n want %q", seen, body)
+	}
+}
+
+// Malformed JSON is likewise forwarded. There is no account to key on, and
+// inventing a rejection here would mean two services disagreeing about what a
+// valid login request looks like.
+func TestMalformedBodyPassesThrough(t *testing.T) {
+	var seen string
+	h := middleware.RateLimitLoginByAccount(loginBackoff(), maxLoginBody)(alwaysStatus(http.StatusBadRequest, &seen))
+
+	body := `{"email": not-valid-json`
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	req.RemoteAddr = "203.0.113.9:54321"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got status %d, want the backend's 400", rec.Code)
+	}
+	if seen != body {
+		t.Errorf("backend received %q, want the original body %q", seen, body)
+	}
+}
+
+// Only a 401 counts as a failure. A backend that is down returns 502, and
+// treating that as a failed password would throttle users out of a service
+// that is already broken -- turning an outage into a lockout.
+func TestNon401FailuresDoNotCountAgainstTheAccount(t *testing.T) {
+	h := middleware.RateLimitLoginByAccount(loginBackoff(), maxLoginBody)(alwaysStatus(http.StatusBadGateway, nil))
+
+	for i := 1; i <= 10; i++ {
+		if rec := postLogin(t, h, "user@example.test"); rec.Code != http.StatusBadGateway {
+			t.Fatalf("attempt %d got status %d, want 502 -- upstream errors must not accumulate as failed logins", i, rec.Code)
+		}
 	}
 }

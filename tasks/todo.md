@@ -34,9 +34,9 @@ Each checkpoint is a stop-for-review point per `agents.md`: implement, verify, *
 - [x] ⏸️ **Checkpoint: Per-IP limiting is live end to end** — restart the gateway, loop `/auth/login` past the threshold, confirm `429` with the standard body, recovery after the window, and `/healthz` + `/market-data/*` unaffected
 
 ### Phase 3: Per-account limiting
-- [ ] **Task 5** — `RateLimitLoginByAccount`: 64KB capped body read, replay via `io.NopCloser`, `ResponseWriter` wrapper counting only `401`s. **Test #8 RED first.** Tests #8, #9. Oversized/malformed bodies pass through untouched
+- [x] **Task 5** — `RateLimitLoginByAccount`: 64KB capped body read, replay via `io.NopCloser`, `ResponseWriter` wrapper counting only `401`s. **Test #8 RED first.** Tests #8, #9. Oversized/malformed bodies pass through untouched
 
-- [ ] ⏸️ **Checkpoint: Both dimensions live** — failures throttle after 5; a *nonexistent* email throttles identically in status, body, and timing; a correct password from another IP still succeeds mid-backoff
+- [x] ⏸️ **Checkpoint: Both dimensions live** — failures throttle after 5; a *nonexistent* email throttles identically in status, body, and timing; a correct password from another IP still succeeds mid-backoff
 
 ### Phase 4: Close out
 - [ ] **Task 6** — **Correct `docs/security-backlog.md` item 1** (its `X-Forwarded-For` premise is wrong) and mark it closed; add two `docs/deferred-tuning.md` entries with named triggers (multiple gateway instances; ALB deployment); write up Step 11; rewrite `docs/NEXT_SESSION.md`

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -399,5 +401,112 @@ func TestRateLimitDoesNotApplyToMarketData(t *testing.T) {
 	}
 	if !mdCall.hit {
 		t.Error("market-data backend was never reached; the auth limiter must not gate other routes")
+	}
+}
+
+// gatewayWithFailingAuth builds a router whose auth backend answers every
+// request with 401, which is what the real service returns for both a wrong
+// password and an unknown email.
+func gatewayWithFailingAuth(t *testing.T, failures int) http.Handler {
+	t.Helper()
+
+	authBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(authBackend.Close)
+	mdBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(mdBackend.Close)
+
+	authURL, err := url.Parse(authBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing auth backend URL: %v", err)
+	}
+	mdURL, err := url.Parse(mdBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing market-data backend URL: %v", err)
+	}
+
+	transport := proxy.NewTransport()
+	return handler.NewRouter(
+		proxy.New(authURL, transport, "auth"),
+		proxy.New(mdURL, transport, "market-data"),
+		testSecret,
+		testOrigin,
+		handler.RateLimitConfig{
+			Enabled:  true,
+			Store:    limiter.NewMemoryStore(time.Now),
+			IPLimit:  1000, // high enough that per-IP never fires here
+			IPWindow: 15 * time.Minute,
+			Backoff: limiter.NewBackoff(time.Now, limiter.BackoffConfig{
+				FreeFailures: failures - 1,
+				BaseDelay:    time.Minute,
+				MaxDelay:     15 * time.Minute,
+			}),
+			MaxLoginBody: 64 << 10,
+		},
+	)
+}
+
+func postJSON(t *testing.T, gw http.Handler, path, body, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+	return rec
+}
+
+// Per-account backoff must work through the full chain, and must key on the
+// account rather than the connection -- that is the whole point of having it
+// alongside the per-IP limit. Failures are spread across different addresses
+// here, as credential stuffing from a botnet would be.
+func TestLoginBackoffAppliesAcrossDifferentAddresses(t *testing.T) {
+	gw := gatewayWithFailingAuth(t, 5)
+	const body = `{"email":"victim@example.test","password":"guess"}`
+
+	for i := 1; i <= 5; i++ {
+		addr := "203.0.113." + strconv.Itoa(i) + ":40000"
+		if rec := postJSON(t, gw, "/auth/login", body, addr); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d from %s got status %d, want 401", i, addr, rec.Code)
+		}
+	}
+
+	rec := postJSON(t, gw, "/auth/login", body, "203.0.113.99:40000")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("got status %d from a fresh address after 5 failures, want %d -- backoff must follow the account, not the connection",
+			rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+// /auth/refresh must not accumulate account backoff. It returns 401 for an
+// expired or malformed token, which is not a credential guess -- counting it
+// would throttle users for holding a stale token.
+func TestRefreshDoesNotAccumulateAccountBackoff(t *testing.T) {
+	gw := gatewayWithFailingAuth(t, 5)
+
+	for i := 1; i <= 10; i++ {
+		rec := postJSON(t, gw, "/auth/refresh", `{"refresh_token":"expired"}`, "203.0.113.9:40000")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("refresh attempt %d got status %d, want the backend's 401", i, rec.Code)
+		}
+	}
+}
+
+// The static /auth/login route must win over the /auth/* wildcard, or the
+// per-account limiter silently never runs.
+func TestLoginRouteTakesPrecedenceOverWildcard(t *testing.T) {
+	gw := gatewayWithFailingAuth(t, 2)
+	const body = `{"email":"user@example.test","password":"guess"}`
+
+	for i := 1; i <= 2; i++ {
+		postJSON(t, gw, "/auth/login", body, "203.0.113.9:40000")
+	}
+
+	rec := postJSON(t, gw, "/auth/login", body, "203.0.113.9:40000")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("got status %d, want %d -- /auth/login is being served by the wildcard route, so the account limiter never runs",
+			rec.Code, http.StatusTooManyRequests)
 	}
 }

@@ -1,6 +1,7 @@
 package limiter
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -155,6 +156,24 @@ func (b *Backoff) EvictStale() {
 	for key, a := range b.attempts {
 		if b.stale(a, now) {
 			delete(b.attempts, key)
+		}
+	}
+}
+
+// Run sweeps aged-out entries every interval until ctx is cancelled. Without
+// it the map grows by one entry per distinct email ever submitted, which an
+// attacker controls directly.
+//
+// Intended to be run in its own goroutine.
+func (b *Backoff) Run(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			b.EvictStale()
 		}
 	}
 }

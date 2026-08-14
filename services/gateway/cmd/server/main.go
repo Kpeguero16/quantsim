@@ -25,6 +25,26 @@ const allowedOrigin = "http://localhost:5173"
 // connections, which makes it the one that needs Slowloris protection.
 const readHeaderTimeout = 10 * time.Second
 
+// loginBackoffBase is the first window opened once the failure threshold is
+// reached; each further failure doubles it up to RATE_LIMIT_LOGIN_MAX_BACKOFF.
+// Not an env knob -- the threshold and the ceiling are the two values worth
+// tuning, and a third would be knobs for their own sake.
+const loginBackoffBase = time.Minute
+
+// maxLoginBodyBytes caps how much of a login body is buffered to read the
+// email. Generous next to a real login payload of a couple hundred bytes, and
+// small enough that buffering it cannot be turned into memory pressure.
+//
+// This is a narrow slice of docs/security-backlog.md item 4 (a gateway-wide
+// body cap) arriving early, scoped to the one route that needs it. See
+// SPEC.md §10.2.
+const maxLoginBodyBytes = 64 << 10
+
+// evictInterval is how often the per-account sweep runs. Entries age out
+// after RATE_LIMIT_LOGIN_MAX_BACKOFF, so sweeping more often than that only
+// reclaims memory sooner; it never clears a live throttle.
+const evictInterval = 5 * time.Minute
+
 func main() {
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
@@ -59,6 +79,9 @@ func main() {
 	defer cancel()
 	if store, ok := rateLimit.Store.(*limiter.MemoryStore); ok && rateLimit.Enabled {
 		go store.Run(ctx, rateLimit.IPWindow)
+	}
+	if rateLimit.Enabled && rateLimit.Backoff != nil {
+		go rateLimit.Backoff.Run(ctx, evictInterval)
 	}
 
 	router := handler.NewRouter(authProxy, marketDataProxy, []byte(jwtSecret), allowedOrigin, rateLimit)
@@ -98,14 +121,26 @@ func rateLimitConfig() handler.RateLimitConfig {
 
 	ipLimit := mustParsePositiveInt("RATE_LIMIT_IP_REQUESTS", envOrDefault("RATE_LIMIT_IP_REQUESTS", "100"))
 	ipWindow := mustParsePositiveDuration("RATE_LIMIT_IP_WINDOW", envOrDefault("RATE_LIMIT_IP_WINDOW", "15m"))
+	loginFailures := mustParsePositiveInt("RATE_LIMIT_LOGIN_FAILURES", envOrDefault("RATE_LIMIT_LOGIN_FAILURES", "5"))
+	maxBackoff := mustParsePositiveDuration("RATE_LIMIT_LOGIN_MAX_BACKOFF", envOrDefault("RATE_LIMIT_LOGIN_MAX_BACKOFF", "15m"))
 
-	log.Printf("gateway: auth rate limiting enabled (%d requests per %s per IP)", ipLimit, ipWindow)
+	log.Printf("gateway: auth rate limiting enabled (%d requests per %s per IP; backoff after %d consecutive failed logins, up to %s)",
+		ipLimit, ipWindow, loginFailures, maxBackoff)
 
 	return handler.RateLimitConfig{
 		Enabled:  true,
 		Store:    limiter.NewMemoryStore(time.Now),
 		IPLimit:  ipLimit,
 		IPWindow: ipWindow,
+		Backoff: limiter.NewBackoff(time.Now, limiter.BackoffConfig{
+			// FreeFailures is one less than the configured threshold: the
+			// knob names the failure that opens the first window, and the
+			// schedule counts the ones before it that cost nothing.
+			FreeFailures: loginFailures - 1,
+			BaseDelay:    loginBackoffBase,
+			MaxDelay:     maxBackoff,
+		}),
+		MaxLoginBody: maxLoginBodyBytes,
 	}
 }
 

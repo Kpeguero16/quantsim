@@ -1,9 +1,13 @@
 package middleware
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kpeguero/quantsim/services/gateway/internal/httperr"
@@ -80,6 +84,126 @@ func RateLimitByIP(store limiter.Store, limit int, window time.Duration) func(ht
 				return
 			}
 			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// statusRecorder captures the status the next handler wrote, so the per-
+// account limiter can tell a rejected password from an accepted one.
+//
+// It forwards Flush because ReverseProxy streams: without it, a wrapped
+// response would buffer where the unwrapped one did not, changing behaviour
+// for every response that passes through.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Write covers handlers that never call WriteHeader explicitly, where net/http
+// implies 200.
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// loginEmail extracts the email from a login body, and returns the bytes to
+// hand onward so the proxy still sees the request the client sent.
+//
+// It reads at most maxBytes+1: enough to notice the body is oversized without
+// buffering an unbounded one, which would be a memory-exhaustion vector in
+// the middleware meant to prevent abuse. An oversized or unparseable body
+// yields no key and is forwarded untouched -- the gateway does not own
+// login's validation rules, and inventing a rejection here would mean two
+// services disagreeing about what a valid request looks like.
+func loginEmail(r *http.Request, maxBytes int64) (key string, restore io.Reader) {
+	if r.Body == nil {
+		return "", nil
+	}
+
+	buf, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
+	if err != nil {
+		return "", bytes.NewReader(buf)
+	}
+
+	// Over the cap: replay what was read followed by whatever remains, so the
+	// backend still receives the whole body despite it never being buffered.
+	if int64(len(buf)) > maxBytes {
+		return "", io.MultiReader(bytes.NewReader(buf), r.Body)
+	}
+
+	var payload struct {
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(buf, &payload); err != nil {
+		return "", bytes.NewReader(buf)
+	}
+
+	// The same normalisation Steps 9 and 10 made structural, down to the SQL
+	// lookup on lower(email). Without it an attacker cycles Foo@, foo@, FOO@
+	// for a fresh allowance against one account.
+	return strings.ToLower(strings.TrimSpace(payload.Email)), bytes.NewReader(buf)
+}
+
+// RateLimitLoginByAccount applies exponential backoff to consecutive failed
+// logins for one account, independent of which address they come from. Per-IP
+// limiting alone does not stop credential stuffing spread across a botnet,
+// where every bot starts with a fresh budget.
+//
+// Two properties here are security invariants rather than implementation
+// detail, and both have tests written before this code existed:
+//
+// Only a 401 counts. A success clears the count, so a legitimate user is
+// never throttled however often they sign in, and an upstream 502 does not
+// accumulate as failed passwords -- which would turn a backend outage into a
+// lockout.
+//
+// The key is whatever email the client submitted, and nothing here consults a
+// database. That is what keeps a 429 from becoming the user-enumeration
+// oracle Step 9 §2.12 deliberately closed: an unknown address accumulates
+// failures exactly like a real one, because this code cannot tell them apart.
+// See SPEC.md §2.6.
+func RateLimitLoginByAccount(b *limiter.Backoff, maxBodyBytes int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key, restore := loginEmail(r, maxBodyBytes)
+			if restore != nil {
+				r.Body = io.NopCloser(restore)
+			}
+
+			// No usable key -- oversized or malformed body. Forward it and
+			// let the auth service answer; per-IP limiting still applies.
+			if key == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if res := b.Check(key); !res.Allowed {
+				writeRateLimited(w, res.RetryAfter)
+				return
+			}
+
+			rec := &statusRecorder{ResponseWriter: w}
+			next.ServeHTTP(rec, r)
+
+			switch rec.status {
+			case http.StatusUnauthorized:
+				b.Fail(key)
+			case http.StatusOK:
+				b.Reset(key)
+			}
 		})
 	}
 }
