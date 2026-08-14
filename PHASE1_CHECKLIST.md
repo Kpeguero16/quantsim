@@ -300,3 +300,5 @@ It was reproduced before being fixed, against a row seeded with a real bcrypt ha
 ## Phase 1: complete
 
 All nine steps done, plus Step 10 closing Step 9's review findings. Next up: **Phase 2 — Trading Engine** (order execution, trade history, P/L tracking), which should open with **rate limiting** (`docs/security-backlog.md` items 1, 2, 4, 8) — Phase 2 is what makes account takeover consequential, since `/trading/*` moves a $100k simulated balance — followed by the store integration harness, before the trading engine adds far more SQL than auth ever had.
+
+> **Phase 2 is underway — see `PHASE2_CHECKLIST.md`.** Step 11 (auth rate limiting) shipped 2026-08-14 and closed `docs/security-backlog.md` item 1. The store integration harness is still open and still scheduled ahead of the engine itself.

@@ -29,38 +29,43 @@ from becoming "someone traded with my account."
 
 ---
 
-## 1. No rate limiting on `/auth/login` — **highest priority**
+## 1. No rate limiting on `/auth/login` — ~~highest priority~~ **CLOSED (Step 11, 2026-08-14)**
 
-**Where:** the gateway. Deliberately out of scope in the Step 7 spec §8.
+**Done.** Per-IP limiting on `/auth/*` and per-account exponential backoff on
+`/auth/login`, both at the gateway. Full reasoning in `SPEC.md` (Step 11);
+implementation in `services/gateway/internal/limiter/` and
+`internal/middleware/ratelimit.go`.
 
-**Now:** nothing throttles authentication attempts. An attacker can submit
-credentials against `/auth/login` as fast as the network allows. There is no
-per-IP limit, no per-account limit, and no lockout.
+Two things this entry said turned out to be **wrong**, and are corrected here
+rather than left to be rediscovered and believed:
 
-**Why it matters:** this is the single largest gap in the auth surface. Every
-other control in Step 9 — a 15-character minimum, a blocklist, bcrypt — raises
-the cost *per guess*. None of them bounds the *number* of guesses, which is
-what actually defeats credential stuffing against reused passwords.
+**❌ "The gateway calls `r.SetXForwarded()` … a per-IP limiter can therefore
+trust `X-Forwarded-For`."** It cannot. That call runs on `r.Out` inside
+`proxy.New`'s `Rewrite` (`services/gateway/internal/proxy/proxy.go:59`), which
+executes **after** every middleware and builds only the **upstream** request.
+The inbound header a middleware sees is whatever the client sent, and nothing
+sanitises it — because until Step 11 nothing read it. A limiter keying on that
+header would have been bypassable with one forged header per request: an
+unlimited budget, from a control that still looked like it was working. The
+limiter keys on `r.RemoteAddr`, and a test fails if that ever changes.
 
-**Already in place to build on:** the gateway calls `r.SetXForwarded()`
-(`services/gateway/internal/proxy/proxy.go:59`), which **replaces** any inbound
-`X-Forwarded-For` with the value from the real connection. A per-IP limiter can
-therefore trust that header — the usual reason naive limiters are bypassable
-does not apply here.
+**❌ "Redis is already a dependency, so a shared counter does not add
+infrastructure."** True of the stack, false of the gateway —
+`services/gateway/go.mod` required only `chi` and `pkg`; only market-data
+imports `go-redis`. Counters are held in memory instead, which adds no
+dependency and removes the fail-open/fail-closed question entirely, since an
+in-process store cannot be unavailable. See `SPEC.md` §2.1 and
+`docs/deferred-tuning.md` §4 for the trade and its trigger.
 
-**Shape when done:** per-IP and per-account limits on `/auth/login`, `/auth/register`,
-and `/auth/refresh`, returning `429` with the standard `{code, message}` body.
-Prefer a limiter that fails *closed* on its backing store being unavailable, and
-decide that deliberately. Redis is already a dependency, so a shared counter does
-not add infrastructure.
+**✅ What this entry got right:** the warning about lockouts. A per-account
+hard lockout was rejected for exactly the reason given — it hands anyone who
+knows an email a denial-of-service primitive against its owner — and the
+implementation uses decaying exponential backoff, with one identical `429` for
+both limiter dimensions so a refusal cannot report which one fired.
 
-**Watch for:** a per-account lockout is itself a denial-of-service vector — an
-attacker who knows an email can lock its owner out. Prefer throttling
-(exponential backoff) over hard lockout, and never let the response distinguish
-"locked" from "wrong password", which would undo the uniform-failure property
-Step 9 §2.12 protects.
-
-**Effort:** small-to-medium. **Do in:** Phase 2.
+**Residual risk, accepted:** an attacker can still degrade a known victim's
+login for up to ~15 minutes by failing on purpose. Bounded, self-healing, and
+strictly better than the alternative. `SPEC.md` §2.3.
 
 ---
 
@@ -142,6 +147,14 @@ handful of large requests.
 proxied route, so new services inherit it rather than each remembering.
 **Phase 2 adds `/trading/*` with order payloads** — the natural moment to do
 this is when that route stops returning `501`.
+
+**Partially addressed by Step 11.** The per-account limiter has to read
+`/auth/login`'s body to find the email, so it caps that read at 64 KiB
+(`maxLoginBodyBytes` in `services/gateway/cmd/server/main.go`). That is one
+route, not the gateway-wide middleware this item asks for, and it deliberately
+**forwards** an oversized body rather than rejecting it — the gateway does not
+own login's validation rules. Treat it as a worked example of the shape, not
+as the item being done.
 
 **Effort:** small. **Do in:** Phase 2, alongside the trading routes.
 
@@ -253,7 +266,7 @@ touch the hashing path — but it is worth doing on its own even if Argon2id sli
 
 | # | Item | Phase | Effort |
 |---|---|---|---|
-| 1 | Rate limiting on auth routes | **2** | S–M |
+| ~~1~~ | ~~Rate limiting on auth routes~~ | **done — Step 11** | — |
 | 2 | Refresh-token revocation + real logout | **2** | M |
 | 4 | Gateway-wide body size cap | **2** (with `/trading/*`) | S |
 | 8 | Unicode-normalise passwords before hashing | **2** (cheap now, lockout later) | XS |
@@ -264,3 +277,6 @@ touch the hashing path — but it is worth doing on its own even if Argon2id sli
 
 Items 1, 2, 4, and 8 are the Phase 2 set. Doing them alongside the trading engine
 costs little and closes the gaps that Phase 2 itself makes consequential.
+**Item 1 is done** (Step 11, 2026-08-14); **item 2 is now the highest-priority
+open item**, and it is the one that makes "sign out" mean something before
+`/trading/*` starts moving a balance.

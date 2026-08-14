@@ -39,9 +39,9 @@ Each checkpoint is a stop-for-review point per `agents.md`: implement, verify, *
 - [x] ⏸️ **Checkpoint: Both dimensions live** — failures throttle after 5; a *nonexistent* email throttles identically in status, body, and timing; a correct password from another IP still succeeds mid-backoff
 
 ### Phase 4: Close out
-- [ ] **Task 6** — **Correct `docs/security-backlog.md` item 1** (its `X-Forwarded-For` premise is wrong) and mark it closed; add two `docs/deferred-tuning.md` entries with named triggers (multiple gateway instances; ALB deployment); write up Step 11; rewrite `docs/NEXT_SESSION.md`
+- [x] **Task 6** — **Correct `docs/security-backlog.md` item 1** (its `X-Forwarded-For` premise is wrong) and mark it closed; add two `docs/deferred-tuning.md` entries with named triggers (multiple gateway instances; ALB deployment); write up Step 11; rewrite `docs/NEXT_SESSION.md`
 
-- [ ] ⏸️ **Checkpoint: Step 11 complete** — `go test ./...` green across the workspace, `go build ./...` clean, docs reflect reality
+- [x] ⏸️ **Checkpoint: Step 11 complete** — `go test ./...` green across the workspace, `go build ./...` clean, docs reflect reality
 
 ---
 

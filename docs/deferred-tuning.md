@@ -88,6 +88,63 @@ meaningful volume — realistically Phase 2's orders or trade-history tables, no
 
 ---
 
+## 4. Rate-limit counters are per-process
+
+**Where:** `services/gateway/internal/limiter/memory.go`, chosen in `SPEC.md`
+(Step 11) §2.1.
+
+**Now:** the gateway counts authentication attempts in its own memory. One
+gateway runs, so the count is the truth.
+
+**Why it is not Redis:** the gateway had no Redis dependency —
+`services/gateway/go.mod` required only `chi` and `pkg`, and Step 7 §8 listed
+any new dependency under *ask first*. In-memory also removes a decision that
+has no good answer: if a shared store is unreachable, failing closed locks
+every user out of login and failing open silently stops limiting. An
+in-process store cannot be unreachable.
+
+**The trade:** counters do not cross processes. Two gateway instances would
+each hold their own, so the effective limit is the configured one multiplied
+by the instance count. `limiter.Store` is an interface precisely so a Redis
+implementation drops in without touching middleware or handlers.
+
+**What to measure first:** nothing to measure — this is a topology question,
+not a load question. The moment more than one gateway serves traffic, the
+limit is wrong by a known factor.
+
+**When it changes:** **the second gateway instance.** Horizontal scaling, a
+blue/green deploy that runs two at once, or any load balancer in front of more
+than one process.
+
+---
+
+## 5. The per-IP limiter keys on `RemoteAddr`, which breaks behind a proxy
+
+**Where:** `clientIP` in `services/gateway/internal/middleware/ratelimit.go`,
+decided in `SPEC.md` (Step 11) §2.5.
+
+**Now:** the gateway is the edge. `r.RemoteAddr` is the real client, and
+forwarding headers are client-authored and therefore untrusted — reading them
+would make the limiter bypassable. This is correct **only** while nothing sits
+in front of the gateway.
+
+**What breaks when something does:** behind an ALB or any reverse proxy, every
+request arrives from the proxy's address. All traffic collapses onto one key,
+one shared budget, and the limiter starts refusing everyone at once — a
+self-inflicted outage rather than a security hole, but an outage.
+
+**Shape when it changes:** trust a forwarding header **only** from known proxy
+addresses — parse `X-Forwarded-For` right-to-left, skipping entries
+contributed by trusted hops, and take the first untrusted one. The trusted set
+must be configured explicitly; a limiter that trusts the header
+unconditionally is the bug this whole design avoids.
+
+**When it changes:** **Phase 4 deployment behind a load balancer.** Do it in
+the same change that introduces the proxy, never before — an untriggered
+"forward-compatible" version of this is just the bypass, early.
+
+---
+
 ## Related decisions recorded elsewhere
 
 - **Graceful shutdown** — none of the three services drain on SIGTERM
