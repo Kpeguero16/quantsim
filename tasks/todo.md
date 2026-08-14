@@ -1,70 +1,52 @@
-# QuantSim Identity Lookup Consistency — Task Checklist (Step 10)
+# QuantSim Auth Rate Limiting — Task Checklist (Step 11)
 
-> **`SPEC.md` is APPROVED** — the three open decisions were resolved 2026-07-31,
-> all as recommended. **Implementation is unblocked.**
+> **`SPEC.md` is APPROVED** — the three design decisions were resolved 2026-08-14
+> (§9), and both findings raised during drafting were approved as recommended
+> (§10). **Implementation is unblocked.**
 >
-> **Sequencing:** Step 10 lands **before Step 9 is merged**, because it closes
-> Step 9's own review findings. Merging first would put a known latent gap on
-> `main`. Tasks commit onto `step9-task1-auth-validation`; both steps merge
-> together at the end.
+> **Closes `docs/security-backlog.md` item 1** — the largest remaining gap in the
+> auth surface. First item of the Phase 2 security work.
 
 Full detail (acceptance criteria, verification steps, dependency graph, risks) in `tasks/plan.md`.
 
-Prior steps archived under `docs/archive/` — Auth Service (Step 4) through Auth Input Validation (Step 9). **Phase 1 is complete;** this step is its tail.
+Prior steps archived under `docs/archive/` — Auth Service (Step 4) through Identity Lookup Consistency (Step 10). **Phase 1 is complete;** this step opens Phase 2.
 
-Each task is a stop-for-review checkpoint per `agents.md`: implement, verify, **stop**.
+Each checkpoint is a stop-for-review point per `agents.md`: implement, verify, **stop**.
 
-### Phase 1: The fix
-- [x] **Task 1** — `GetUserByEmail` matches `WHERE lower(email) = $1`. One line; the verification is larger than the change
-
-- [x] ✅ **Checkpoint: Lookup no longer depends on stored form** — verified 2026-07-31 against a deliberately non-canonical row seeded with a real bcrypt hash. Before the change it was unfindable and login returned `401`; after, `200` in both capitalisations, while a wrong password still returns `401`. Every existing user still logs in
-
-### Phase 2: The schema
-- [x] **Task 2** — Migration `005`: drop `users_email_key` and `users_username_key`, both implied by `004`'s `lower()` indexes. Dry-run up **and** down completed on a throwaway DB, including `down` against a mixed-case username. Applied to the dev DB 2026-07-31 at version 5, not dirty
-
-- [x] ✅ **Checkpoint: Schema carries only what it needs** — three indexes remain (`users_pkey`, `idx_users_email_lower`, `idx_users_username_lower`). Duplicate registration still returns `409` in both exact and case-differing forms; all logins unaffected; 15 users unchanged.
-  **On query plans:** at 15 rows Postgres chooses a sequential scan for this lookup — and did so for the old exact-match query too (cost 1.23 vs 1.19), so nothing regressed. Forced with `enable_seqscan=off`, `idx_users_email_lower` is used at the same 8.15 cost as before. The index earns its place as a *constraint*; the planner will start choosing it for reads once the table is worth indexing
-
-### Phase 3: Close out
-- [x] **Task 3** — `InvalidInputMessage` table test (4 cases, both mutations caught); index-lock and `CONCURRENTLY` trade recorded as `docs/deferred-tuning.md` §3; Step 10 written up in `PHASE1_CHECKLIST.md`
-
-- [x] ✅ **Checkpoint: Complete** — all four Step 9 review findings closed. `go test -count=1 ./...` green in `services/auth` and `pkg`. **Steps 9 and 10 are ready to merge together;** next is rate limiting, then the store integration harness, then Phase 2
+**Two tests are written before the code they cover, and neither is optional** — each pins a security property that a green suite would otherwise fail to prove:
+- **Test #4** — a forged `X-Forwarded-For` must not buy a fresh budget (`SPEC.md` §2.5)
+- **Test #8** — unknown and known emails must throttle identically (`SPEC.md` §2.6)
 
 ---
 
-## Why this step exists
+### Phase 1: The limiter core
+- [ ] **Task 1** — `limiter.Store` + sharded in-memory implementation with injected clock and eviction. Tests #1, #2, #3, #12 written RED first. No new `go.mod` entry; `-race` clean
 
-Step 9's pre-merge review found four things. Only the first has a plausible failure behind it:
+- [ ] **Task 4** — Exponential backoff schedule: 4 failures free, then 1/2/4/8 min capped at 15. Tests #5, #6, #7 RED first. Pure function, no I/O, always decays
 
-| # | Finding | Severity |
-|---|---|---|
-| 1 | `GetUserByEmail` matches `email = $1`, depending on an invariant the database does not enforce | **Important** |
-| 2 | Four unique indexes on `users` where two suffice | Suggestion |
-| 3 | `CREATE UNIQUE INDEX` takes an `ACCESS EXCLUSIVE` lock — irrelevant now, not later | Suggestion |
-| 4 | `InvalidInputMessage` has no direct test | Suggestion |
+- [ ] ⏸️ **Checkpoint: The core throttles correctly in isolation** — both suites green under `-race`, nothing wired into the request path yet
 
-**Finding 1 is not a live bug.** `Login` lowercases the email, the store matches exactly, and that works because every stored email *happens* to be lowercase — `004` rewrote the existing rows and `service.Register` (the only write path) normalises new ones.
+### Phase 2: Per-IP limiting
+- [ ] **Task 2** — `RateLimitByIP` middleware keyed on `r.RemoteAddr`, port stripped. **Test #4 RED first** — confirm it fails while keying on the header and passes after. Tests #4, #10
 
-What `004` never did was make that structural. A unique index on `lower(email)` stops a *second* row colliding with `Foo@x.test`; it does not stop `Foo@x.test` existing. If one ever appeared, that user could never log in and the failure would be a silent `401` — indistinguishable from a wrong password.
+- [ ] **Task 3** — Wire into the router (`StripUserID -> CORS -> RateLimitByIP -> [routes]`), construct the store in `main.go`, document the five `RATE_LIMIT_*` knobs in `.env.example`. Test #11 proves a `429` still carries CORS headers
 
-That is Step 9 §2.10's own argument — *"app-level normalisation alone is one forgotten `strings.ToLower` from breaking"* — applied to only half the problem. It justified constraining uniqueness; it applies equally to lookup.
+- [ ] ⏸️ **Checkpoint: Per-IP limiting is live end to end** — restart the gateway, loop `/auth/login` past the threshold, confirm `429` with the standard body, recovery after the window, and `/healthz` + `/market-data/*` unaffected
 
-The fix is one query, and it is free: `EXPLAIN` shows `WHERE lower(email) = $1` using `idx_users_email_lower` at **identical cost** to the current plan.
+### Phase 3: Per-account limiting
+- [ ] **Task 5** — `RateLimitLoginByAccount`: 64KB capped body read, replay via `io.NopCloser`, `ResponseWriter` wrapper counting only `401`s. **Test #8 RED first.** Tests #8, #9. Oversized/malformed bodies pass through untouched
 
----
+- [ ] ⏸️ **Checkpoint: Both dimensions live** — failures throttle after 5; a *nonexistent* email throttles identically in status, body, and timing; a correct password from another IP still succeeds mid-backoff
 
-## The risk to watch
+### Phase 4: Close out
+- [ ] **Task 6** — **Correct `docs/security-backlog.md` item 1** (its `X-Forwarded-For` premise is wrong) and mark it closed; add two `docs/deferred-tuning.md` entries with named triggers (multiple gateway instances; ALB deployment); write up Step 11; rewrite `docs/NEXT_SESSION.md`
 
-**The unit suite cannot see this change.** `services/auth/internal/store/` has no test files, and both the service and handler suites run against `mock.UserStore` — a Go map. They would stay green with a completely wrong query.
-
-So the safety net is not CI, and pretending otherwise is the failure mode here. Task 1's manual check is a **hard acceptance criterion**: seed a non-canonical row with a real bcrypt hash of a known password, then log in as the lowercase form and require a `200`. Merely finding the row is not enough — authentication has to complete.
-
-That check proves the fix today and protects nothing tomorrow, which is exactly the argument for the store integration harness deferred in `SPEC.md` §7 and scheduled ahead of Phase 2, behind rate limiting.
+- [ ] ⏸️ **Checkpoint: Step 11 complete** — `go test ./...` green across the workspace, `go build ./...` clean, docs reflect reality
 
 ---
 
-**Also decided, and recorded rather than left implicit:** no `CHECK (email = lower(email))`. It is the obvious stricter fix, and §2.3 rejects it — once lookup is case-insensitive the constraint guarantees nothing anything depends on, and a check violation is SQLSTATE `23514` while the store maps only `23505`, so it would convert a harmless condition into a `500`.
+## Reminders that have cost time before
 
-Every checkpoint runs `go test -count=1 ./...` in `services/auth` and `pkg`.
+**Restart the gateway after every code change.** It runs under `go run`, so a live instance keeps serving the old binary. This silently burned an entire step once — `:8081` kept accepting one-character passwords while three commits of validation sat on disk. If behaviour does not match the code, check this first.
 
-Step 10 docs move to `docs/archive/phase1-step10-identity-lookup/` when the next spec is drafted, per convention.
+**A green unit suite proves nothing about `internal/store/`.** Not this step's concern (nothing here touches the store), but the store-layer integration harness is still unbuilt and is the item queued behind this one.
