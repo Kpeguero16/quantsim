@@ -43,7 +43,18 @@ Neither alone is sufficient:
 | Per-IP | all `/auth/*` | 100 requests / 15 min, fixed window |
 | Per-account | `/auth/login` only | exponential backoff on consecutive failures |
 
-Backoff schedule, keyed by submitted email: failures 1–4 pass freely; the 5th failure opens a 1-minute window, then 2, 4, 8, capped at 15 minutes. **Every window decays on its own.**
+Backoff schedule, keyed by submitted email. The delay is a function of the **consecutive-failure count already recorded**, so a window opens once the Nth failure has happened — all five attempts that produce failures 1–5 are themselves allowed to proceed, and the sixth is the first refused:
+
+| Failures recorded | Delay before the next attempt |
+|---|---|
+| 0–4 | none |
+| 5 | 1 min |
+| 6 | 2 min |
+| 7 | 4 min |
+| 8 | 8 min |
+| 9+ | 15 min (ceiling) |
+
+**Every window decays on its own**, and a full idle gap of `MaxDelay` clears the count entirely so failures never compound across unrelated sessions.
 
 `/auth/register` and `/auth/refresh` get per-IP only. Register has no account to key on yet; refresh would require decoding the token, which puts token parsing in the gateway for no gain the per-IP limit does not already provide.
 
