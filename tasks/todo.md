@@ -20,7 +20,7 @@ Each checkpoint is a stop-for-review point per `agents.md`: implement, verify, *
 ---
 
 ### Phase 1: The limiter core
-- [ ] **Task 1** — `limiter.Store` + sharded in-memory implementation with injected clock and eviction. Tests #1, #2, #3, #12 written RED first. No new `go.mod` entry; `-race` clean
+- [x] **Task 1** — `limiter.Store` + sharded in-memory implementation with injected clock and eviction. Tests #1, #2, #3, #12 written RED first. No new `go.mod` entry; `-race` clean
 
 - [ ] **Task 4** — Exponential backoff schedule: 4 failures free, then 1/2/4/8 min capped at 15. Tests #5, #6, #7 RED first. Pure function, no I/O, always decays
 
