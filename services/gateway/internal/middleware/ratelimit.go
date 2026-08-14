@@ -207,7 +207,11 @@ func RateLimitLoginByAccount(b *limiter.Backoff, maxBodyBytes int64) func(http.H
 				return
 			}
 
-			if res := b.Check(key); !res.Allowed {
+			// Attempt counts this as a failure up front, atomically with the
+			// check. Waiting until the backend answers would leave the
+			// counter untouched for the whole round-trip, so a concurrent
+			// burst would all pass a threshold none of them had spent yet.
+			if res := b.Attempt(key); !res.Allowed {
 				writeRateLimited(w, res.RetryAfter)
 				return
 			}
@@ -217,9 +221,14 @@ func RateLimitLoginByAccount(b *limiter.Backoff, maxBodyBytes int64) func(http.H
 
 			switch rec.status {
 			case http.StatusUnauthorized:
-				b.Fail(key)
+				// The optimistic count was right: leave it standing.
 			case http.StatusOK:
-				b.Reset(key)
+				b.Succeed(key)
+			default:
+				// Anything else -- 502 from a downed auth service, 400 from a
+				// malformed payload -- is not a verdict on the credentials,
+				// so it must not accumulate as a guess.
+				b.Undo(key)
 			}
 		})
 	}

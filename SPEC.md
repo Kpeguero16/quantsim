@@ -68,7 +68,21 @@ Exponential backoff keeps the useful property (guessing gets exponentially slowe
 
 Per-IP is checked **before** the proxy runs — cheap, and it blocks floods without any knowledge of what auth decided.
 
-Per-account is accounted **after** the proxy returns, and only when the upstream status is `401`. A success resets the counter to zero. This means a legitimate user typing the right password is never throttled, however often they log in — only misses burn budget.
+Per-account is counted **optimistically, before the proxy runs and atomically with the check**, then corrected once the outcome is known:
+
+| Upstream status | Action |
+|---|---|
+| `401` | the optimistic count was right — leave it |
+| `200` | `Succeed` — clear the counter entirely |
+| anything else (`502`, `400`, …) | `Undo` — roll the count back |
+
+A legitimate user typing the right password is therefore never throttled however often they log in, and a downed auth service returning `502` cannot throttle its own users — only genuine credential rejections accumulate.
+
+**Why optimistic, rather than counting after the response** *(revised 2026-08-14 during pre-merge review)*: the obvious design checks the counter, proxies, and counts the failure afterwards. That leaves the counter untouched for the entire backend round-trip, so every request arriving in the meantime sees a clean slate. Measured through the full gateway: **60 concurrent guesses against one account at a threshold of 5 — all 60 reached the backend, none refused.** Backoff bounded *sequential* guessing and did nothing about *concurrent* guessing, which is the easy case for the distributed attack per-account limiting exists to stop.
+
+Counting first, under the same lock as the check, inverts that: the Nth concurrent request finds the count already at N−1, so a burst is bounded by the threshold instead of by how fast the backend answers. The same measurement now yields 5 of 60.
+
+A refused attempt does **not** extend the window. Counting rejections would let an attacker keep their own victim throttled indefinitely just by continuing to knock.
 
 Cost: the gateway must observe the upstream response status, which needs a `ResponseWriter` wrapper capturing the code the proxy wrote. This is the one piece of real machinery in the step.
 

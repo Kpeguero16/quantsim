@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -543,4 +544,43 @@ func TestPerIPStillAppliesToTheStaticLoginRoute(t *testing.T) {
 		t.Errorf("got status %d past the per-IP limit, want %d -- the static /auth/login route is not inheriting the group's per-IP middleware",
 			rec.Code, http.StatusTooManyRequests)
 	}
+}
+
+// The same measurement that exposed the gap, kept as a regression test.
+//
+// Before check-and-count became atomic, a burst of 60 concurrent guesses
+// against one account at a threshold of 5 saw all 60 reach the backend: the
+// counter went untouched for the length of each proxy round-trip, so every
+// request in flight saw a clean slate. Per-account backoff bounded sequential
+// guessing only, which is the wrong half of the problem for a distributed
+// attack.
+func TestConcurrentBurstIsBoundedByTheAccountThreshold(t *testing.T) {
+	const threshold = 5
+	gw := gatewayWithLimits(t, 10000, threshold) // per-IP raised out of the way
+	body := `{"email":"victim@example.test","password":"guess"}`
+
+	const burst = 60
+	var wg sync.WaitGroup
+	codes := make([]int, burst)
+	wg.Add(burst)
+	for i := 0; i < burst; i++ {
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = postJSON(t, gw, "/auth/login", body, "203.0.113.9:54321").Code
+		}(i)
+	}
+	wg.Wait()
+
+	reached := 0
+	for _, c := range codes {
+		if c == http.StatusUnauthorized {
+			reached++
+		}
+	}
+
+	if reached > threshold {
+		t.Errorf("%d of %d concurrent guesses reached the backend, want at most %d -- the burst outran the counter",
+			reached, burst, threshold)
+	}
+	t.Logf("burst of %d concurrent guesses: %d reached the backend, %d refused", burst, reached, burst-reached)
 }

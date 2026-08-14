@@ -1,6 +1,7 @@
 package limiter_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -55,13 +56,12 @@ func TestFifthFailureOpensTheFirstWindow(t *testing.T) {
 	b := limiter.NewBackoff(clock.Now, testBackoffConfig())
 
 	for i := 1; i <= 5; i++ {
-		if res := b.Check("user@example.test"); !res.Allowed {
+		if res := b.Attempt("user@example.test"); !res.Allowed {
 			t.Fatalf("blocked before failure %d was recorded; the first 4 failures cost nothing", i)
 		}
-		b.Fail("user@example.test")
 	}
 
-	res := b.Check("user@example.test")
+	res := b.Attempt("user@example.test")
 	if res.Allowed {
 		t.Error("still allowed after 5 failures; the 5th must open a window")
 	}
@@ -77,18 +77,17 @@ func TestSuccessResetsFailureCount(t *testing.T) {
 	b := limiter.NewBackoff(clock.Now, testBackoffConfig())
 
 	for i := 0; i < 4; i++ {
-		b.Fail("user@example.test")
+		b.Attempt("user@example.test")
 	}
-	b.Reset("user@example.test")
+	b.Succeed("user@example.test")
 
 	// The slate is clean, so the full allowance must be available again.
 	for i := 1; i <= 5; i++ {
-		if res := b.Check("user@example.test"); !res.Allowed {
-			t.Fatalf("blocked before failure %d following a success; Reset must clear the count", i)
+		if res := b.Attempt("user@example.test"); !res.Allowed {
+			t.Fatalf("blocked before failure %d following a success; Succeed must clear the count", i)
 		}
-		b.Fail("user@example.test")
 	}
-	if b.Check("user@example.test").Allowed {
+	if b.Attempt("user@example.test").Allowed {
 		t.Error("the 5th failure after a reset should open a window again")
 	}
 }
@@ -101,15 +100,15 @@ func TestBlockExpiresWithoutIntervention(t *testing.T) {
 	b := limiter.NewBackoff(clock.Now, testBackoffConfig())
 
 	for i := 0; i < 5; i++ {
-		b.Fail("user@example.test")
+		b.Attempt("user@example.test")
 	}
-	if b.Check("user@example.test").Allowed {
+	if b.Attempt("user@example.test").Allowed {
 		t.Fatal("setup: 5 failures should be blocking")
 	}
 
 	clock.Advance(time.Minute + time.Second)
 
-	if !b.Check("user@example.test").Allowed {
+	if !b.Attempt("user@example.test").Allowed {
 		t.Error("still blocked after the delay elapsed; backoff must decay without any admin action")
 	}
 }
@@ -122,17 +121,16 @@ func TestFailureCountDecaysWhenIdle(t *testing.T) {
 	b := limiter.NewBackoff(clock.Now, cfg)
 
 	for i := 0; i < 4; i++ {
-		b.Fail("user@example.test")
+		b.Attempt("user@example.test")
 	}
 
 	clock.Advance(cfg.MaxDelay + time.Second)
 
 	// Those 4 failures have aged out, so the next 4 must be free again.
 	for i := 1; i <= 4; i++ {
-		if res := b.Check("user@example.test"); !res.Allowed {
-			t.Fatalf("blocked after %d fresh failures; stale failures must not carry over", i-1)
+		if res := b.Attempt("user@example.test"); !res.Allowed {
+			t.Fatalf("blocked on fresh attempt %d; stale failures must not carry over", i)
 		}
-		b.Fail("user@example.test")
 	}
 }
 
@@ -142,13 +140,13 @@ func TestBackoffKeysAreIndependent(t *testing.T) {
 	b := limiter.NewBackoff(clock.Now, testBackoffConfig())
 
 	for i := 0; i < 5; i++ {
-		b.Fail("victim@example.test")
+		b.Attempt("victim@example.test")
 	}
-	if b.Check("victim@example.test").Allowed {
+	if b.Attempt("victim@example.test").Allowed {
 		t.Fatal("setup: the first account should be blocked")
 	}
 
-	if !b.Check("bystander@example.test").Allowed {
+	if !b.Attempt("bystander@example.test").Allowed {
 		t.Error("a second account was blocked by the first's failures; accounts must not share counters")
 	}
 }
@@ -158,8 +156,8 @@ func TestBackoffEvictionReclaimsStaleEntries(t *testing.T) {
 	cfg := testBackoffConfig()
 	b := limiter.NewBackoff(clock.Now, cfg)
 
-	b.Fail("a@example.test")
-	b.Fail("b@example.test")
+	b.Attempt("a@example.test")
+	b.Attempt("b@example.test")
 	if got := b.Len(); got != 2 {
 		t.Fatalf("setup: Len() = %d, want 2", got)
 	}
@@ -173,5 +171,67 @@ func TestBackoffEvictionReclaimsStaleEntries(t *testing.T) {
 	b.EvictStale()
 	if got := b.Len(); got != 0 {
 		t.Errorf("Len() = %d after the entries aged out, want 0", got)
+	}
+}
+
+// Undo rolls back the optimistic count for outcomes that say nothing about
+// the credentials, so a downed auth service cannot throttle its own users.
+func TestUndoRollsBackTheOptimisticCount(t *testing.T) {
+	clock := newFakeClock()
+	b := limiter.NewBackoff(clock.Now, testBackoffConfig())
+
+	// Ten attempts that all end inconclusively, e.g. a 502 from upstream.
+	for i := 1; i <= 10; i++ {
+		if res := b.Attempt("user@example.test"); !res.Allowed {
+			t.Fatalf("blocked on attempt %d; outcomes that were rolled back must not accumulate", i)
+		}
+		b.Undo("user@example.test")
+	}
+
+	if got := b.Len(); got != 0 {
+		t.Errorf("Len() = %d after every attempt was undone, want 0", got)
+	}
+}
+
+// THE concurrency test.
+//
+// Before Attempt existed, checking and counting were separate steps with the
+// backend round-trip between them, so the counter stayed clean for the whole
+// duration of that call and every request arriving meanwhile saw a free slate.
+// Measured through the full gateway: 60 concurrent guesses against one
+// account at a threshold of 5 -- all 60 reached the backend, none refused.
+//
+// Backoff bounded sequential guessing and did nothing about concurrent
+// guessing, which is the easy case for the distributed attack it exists to
+// stop. Counting under the same lock as the check is what fixes it.
+func TestConcurrentAttemptsAreBoundedByTheThreshold(t *testing.T) {
+	clock := newFakeClock()
+	cfg := testBackoffConfig() // 4 free, so the 5th attempt is the last allowed
+	b := limiter.NewBackoff(clock.Now, cfg)
+
+	const burst = 200
+	var wg sync.WaitGroup
+	allowed := make([]bool, burst)
+	wg.Add(burst)
+	for i := 0; i < burst; i++ {
+		go func(i int) {
+			defer wg.Done()
+			allowed[i] = b.Attempt("victim@example.test").Allowed
+		}(i)
+	}
+	wg.Wait()
+
+	n := 0
+	for _, ok := range allowed {
+		if ok {
+			n++
+		}
+	}
+
+	// Exactly the allowance gets through: 4 free failures plus the one that
+	// opens the window. Anything more means the burst outran the counter.
+	if want := cfg.FreeFailures + 1; n != want {
+		t.Errorf("%d of %d concurrent attempts were allowed, want exactly %d -- a burst must not outrun the counter",
+			n, burst, want)
 	}
 }

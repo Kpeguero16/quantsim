@@ -94,36 +94,27 @@ func (b *Backoff) stale(a *attempt, now time.Time) bool {
 	return now.Sub(a.lastFailure) >= b.cfg.MaxDelay
 }
 
-// Check reports whether key may attempt authentication right now. It does not
-// record anything -- Fail and Reset do that, once the outcome is known.
-func (b *Backoff) Check(key string) Result {
-	now := b.now()
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	a, ok := b.attempts[key]
-	if !ok || b.stale(a, now) {
-		return Result{Allowed: true}
-	}
-
-	delay := Delay(a.failures, b.cfg)
-	if delay == 0 {
-		return Result{Allowed: true}
-	}
-
-	elapsed := now.Sub(a.lastFailure)
-	if elapsed >= delay {
-		return Result{Allowed: true}
-	}
-	return Result{Allowed: false, RetryAfter: delay - elapsed}
-}
-
-// Fail records one failed attempt for key.
+// Attempt asks whether key may try to authenticate, and — when the answer is
+// yes — counts the attempt as a failure before returning.
 //
-// The count resumes from zero if the previous failure has aged out, so
-// failures separated by a long idle gap do not compound.
-func (b *Backoff) Fail(key string) {
+// Checking and counting happen under **one** lock acquisition, and the count
+// is optimistic: it assumes the attempt will fail and is rolled back by
+// Succeed or Undo once the real outcome is known. Both details exist to close
+// the same hole.
+//
+// Splitting this into a read-only check followed by a separate count after
+// the backend replies leaves the counter untouched for the whole duration of
+// that round-trip, so every request arriving in the meantime sees a clean
+// slate. Measured before this changed: 60 concurrent guesses against one
+// account, with a threshold of 5, all 60 reached the backend and none were
+// refused. Backoff bounded sequential guessing and did nothing about
+// concurrent guessing — which is the easy case for the distributed attack it
+// exists to stop.
+//
+// Counting first inverts that. The Nth concurrent request finds the count
+// already at N-1, so a burst is bounded by the threshold rather than by how
+// fast the backend answers.
+func (b *Backoff) Attempt(key string) Result {
 	now := b.now()
 
 	b.mu.Lock()
@@ -131,18 +122,50 @@ func (b *Backoff) Fail(key string) {
 
 	a, ok := b.attempts[key]
 	if !ok || b.stale(a, now) {
+		// No history, or it has aged out: this attempt starts a fresh count.
 		b.attempts[key] = &attempt{failures: 1, lastFailure: now}
-		return
+		return Result{Allowed: true}
 	}
+
+	if delay := Delay(a.failures, b.cfg); delay > 0 {
+		if elapsed := now.Sub(a.lastFailure); elapsed < delay {
+			// Still inside the window. Deliberately does not extend it --
+			// counting refused attempts would let an attacker keep their own
+			// victim throttled indefinitely just by continuing to knock.
+			return Result{Allowed: false, RetryAfter: delay - elapsed}
+		}
+	}
+
 	a.failures++
 	a.lastFailure = now
+	return Result{Allowed: true}
 }
 
-// Reset clears key's failure count after a successful authentication.
-func (b *Backoff) Reset(key string) {
+// Succeed clears key's failure count after a successful authentication.
+func (b *Backoff) Succeed(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.attempts, key)
+}
+
+// Undo rolls back the failure Attempt counted optimistically, for outcomes
+// that are not a verdict on the credentials.
+//
+// An upstream 502 says the auth service is unreachable, not that the password
+// was wrong. Letting those accumulate would turn a backend outage into an
+// account lockout — users throttled out of a service that is already broken.
+func (b *Backoff) Undo(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	a, ok := b.attempts[key]
+	if !ok {
+		return
+	}
+	a.failures--
+	if a.failures <= 0 {
+		delete(b.attempts, key)
+	}
 }
 
 // EvictStale drops entries that have aged out. Entries still inside their
