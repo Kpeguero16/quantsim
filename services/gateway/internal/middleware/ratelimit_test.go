@@ -377,3 +377,44 @@ func TestNon401FailuresDoNotCountAgainstTheAccount(t *testing.T) {
 		}
 	}
 }
+
+// A parser differential between the gateway and the service behind it is a
+// bypass, not a nitpick.
+//
+// The auth service decodes with json.NewDecoder(...).Decode(), which parses
+// the first JSON value and ignores trailing bytes. This middleware originally
+// used json.Unmarshal, which rejects them. The gap was directly exploitable:
+// appending one junk byte to a valid login body made the gateway fail to
+// extract an account key -- skipping per-account backoff completely -- while
+// auth parsed the same body and processed the login. Measured end to end, a
+// threshold of 3 became 10 of 10 guesses reaching the backend.
+//
+// The invariant: the gateway must never be stricter than the service it
+// protects. Anything auth will act on must be something this can key.
+func TestTrailingDataDoesNotBypassAccountKeying(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"trailing garbage", `{"email":"victim@example.test","password":"guess"}x`},
+		{"trailing object", `{"email":"victim@example.test","password":"guess"} {"junk":1}`},
+		{"trailing whitespace", `{"email":"victim@example.test","password":"guess"}` + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := middleware.RateLimitLoginByAccount(loginBackoff(), maxLoginBody)(alwaysStatus(http.StatusUnauthorized, nil))
+
+			var last *httptest.ResponseRecorder
+			for i := 0; i < 6; i++ {
+				req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(tc.body))
+				req.RemoteAddr = "203.0.113.9:54321"
+				last = httptest.NewRecorder()
+				h.ServeHTTP(last, req)
+			}
+
+			if last.Code != http.StatusTooManyRequests {
+				t.Errorf("got status %d after 6 failures, want %d -- trailing data let the caller skip per-account backoff entirely while auth still processed the login",
+					last.Code, http.StatusTooManyRequests)
+			}
+		})
+	}
+}

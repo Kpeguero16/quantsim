@@ -409,6 +409,13 @@ func TestRateLimitDoesNotApplyToMarketData(t *testing.T) {
 // password and an unknown email.
 func gatewayWithFailingAuth(t *testing.T, failures int) http.Handler {
 	t.Helper()
+	return gatewayWithLimits(t, 1000, failures)
+}
+
+// gatewayWithLimits builds a router with both limiter dimensions active, so a
+// test can raise whichever one it is not exercising out of the way.
+func gatewayWithLimits(t *testing.T, ipLimit, failures int) http.Handler {
+	t.Helper()
 
 	authBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -437,7 +444,7 @@ func gatewayWithFailingAuth(t *testing.T, failures int) http.Handler {
 		handler.RateLimitConfig{
 			Enabled:  true,
 			Store:    limiter.NewMemoryStore(time.Now),
-			IPLimit:  1000, // high enough that per-IP never fires here
+			IPLimit:  ipLimit,
 			IPWindow: 15 * time.Minute,
 			Backoff: limiter.NewBackoff(time.Now, limiter.BackoffConfig{
 				FreeFailures: failures - 1,
@@ -507,6 +514,33 @@ func TestLoginRouteTakesPrecedenceOverWildcard(t *testing.T) {
 	rec := postJSON(t, gw, "/auth/login", body, "203.0.113.9:40000")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("got status %d, want %d -- /auth/login is being served by the wildcard route, so the account limiter never runs",
+			rec.Code, http.StatusTooManyRequests)
+	}
+}
+
+// Per-IP limiting must still apply to /auth/login once the per-account route
+// is registered.
+//
+// This combination had no coverage: the CORS and precedence tests above run
+// with Backoff nil, so /auth/login is served by the /auth/* wildcard there.
+// With Backoff set it becomes its own static route registered via
+// r.With(...), and if chi did not carry the group's r.Use middleware onto it,
+// the single most attacked endpoint in the system would silently lose its
+// per-IP limit while every other test stayed green.
+func TestPerIPStillAppliesToTheStaticLoginRoute(t *testing.T) {
+	const ipLimit = 3
+	gw := gatewayWithLimits(t, ipLimit, 10000) // account threshold high enough never to fire
+	body := `{"email":"user@example.test","password":"guess"}`
+
+	for i := 1; i <= ipLimit; i++ {
+		if rec := postJSON(t, gw, "/auth/login", body, "203.0.113.9:54321"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("request %d got status %d, want the backend's 401", i, rec.Code)
+		}
+	}
+
+	rec := postJSON(t, gw, "/auth/login", body, "203.0.113.9:54321")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("got status %d past the per-IP limit, want %d -- the static /auth/login route is not inheriting the group's per-IP middleware",
 			rec.Code, http.StatusTooManyRequests)
 	}
 }

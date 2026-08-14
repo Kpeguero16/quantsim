@@ -147,7 +147,24 @@ func loginEmail(r *http.Request, maxBytes int64) (key string, restore io.Reader)
 	var payload struct {
 		Email string `json:"email"`
 	}
-	if err := json.Unmarshal(buf, &payload); err != nil {
+	// Decode, not Unmarshal, and the difference is a bypass rather than a
+	// style preference.
+	//
+	// The auth service reads its body with json.NewDecoder(...).Decode()
+	// (services/auth/internal/handler/auth.go:40), which parses the first
+	// JSON value and ignores anything after it. Unmarshal instead rejects
+	// trailing data. Using Unmarshal here made the two disagree: appending a
+	// single junk byte to an otherwise valid login body made this parse fail,
+	// so no account key was extracted and the per-account limiter was skipped
+	// entirely -- while auth parsed the same body fine and processed the
+	// login. Verified end to end: one trailing byte turned a threshold of 3
+	// into 10 of 10 guesses reaching the backend.
+	//
+	// The rule this encodes: the gateway must never be *stricter* than the
+	// service it protects. Anything the backend will act on has to be
+	// something this can key. Being more lenient is safe -- it only means
+	// counting a request the backend would have rejected.
+	if err := json.NewDecoder(bytes.NewReader(buf)).Decode(&payload); err != nil {
 		return "", bytes.NewReader(buf)
 	}
 
