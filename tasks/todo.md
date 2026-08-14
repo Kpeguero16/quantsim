@@ -29,9 +29,9 @@ Each checkpoint is a stop-for-review point per `agents.md`: implement, verify, *
 ### Phase 2: Per-IP limiting
 - [x] **Task 2** — `RateLimitByIP` middleware keyed on `r.RemoteAddr`, port stripped. **Test #4 RED first** — confirm it fails while keying on the header and passes after. Tests #4, #10
 
-- [ ] **Task 3** — Wire into the router (`StripUserID -> CORS -> RateLimitByIP -> [routes]`), construct the store in `main.go`, document the five `RATE_LIMIT_*` knobs in `.env.example`. Test #11 proves a `429` still carries CORS headers
+- [x] **Task 3** — Wire into the router (`StripUserID -> CORS -> RateLimitByIP -> [routes]`), construct the store in `main.go`, document the five `RATE_LIMIT_*` knobs in `.env.example`. Test #11 proves a `429` still carries CORS headers
 
-- [ ] ⏸️ **Checkpoint: Per-IP limiting is live end to end** — restart the gateway, loop `/auth/login` past the threshold, confirm `429` with the standard body, recovery after the window, and `/healthz` + `/market-data/*` unaffected
+- [x] ⏸️ **Checkpoint: Per-IP limiting is live end to end** — restart the gateway, loop `/auth/login` past the threshold, confirm `429` with the standard body, recovery after the window, and `/healthz` + `/market-data/*` unaffected
 
 ### Phase 3: Per-account limiting
 - [ ] **Task 5** — `RateLimitLoginByAccount`: 64KB capped body read, replay via `io.NopCloser`, `ResponseWriter` wrapper counting only `401`s. **Test #8 RED first.** Tests #8, #9. Oversized/malformed bodies pass through untouched

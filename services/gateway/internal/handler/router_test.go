@@ -11,6 +11,7 @@ import (
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
 	"github.com/kpeguero/quantsim/services/gateway/internal/handler"
 	"github.com/kpeguero/quantsim/services/gateway/internal/httperr"
+	"github.com/kpeguero/quantsim/services/gateway/internal/limiter"
 	"github.com/kpeguero/quantsim/services/gateway/internal/proxy"
 )
 
@@ -33,6 +34,11 @@ type backendCall struct {
 // newGateway spins up fake auth and market-data backends and returns a router
 // wired to them, plus the recorders for each backend.
 func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
+	t.Helper()
+	return newGatewayWithRateLimit(t, noRateLimit)
+}
+
+func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall) {
 	t.Helper()
 
 	authCall := &backendCall{}
@@ -69,8 +75,25 @@ func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
 		proxy.New(mdURL, transport, "market-data"),
 		testSecret,
 		testOrigin,
+		rateLimit,
 	)
 	return r, authCall, mdCall
+}
+
+// noRateLimit leaves the limiter out of the chain, so the existing routing,
+// CORS and auth tests exercise what they were written to exercise rather than
+// tripping over a budget.
+var noRateLimit = handler.RateLimitConfig{Enabled: false}
+
+// rateLimitAfter returns a config that refuses everything past limit requests
+// from one address.
+func rateLimitAfter(limit int) handler.RateLimitConfig {
+	return handler.RateLimitConfig{
+		Enabled:  true,
+		Store:    limiter.NewMemoryStore(time.Now),
+		IPLimit:  limit,
+		IPWindow: 15 * time.Minute,
+	}
 }
 
 func accessToken(t *testing.T) string {
@@ -301,5 +324,80 @@ func TestPreflightNeedsNoTokenAndIsNotProxied(t *testing.T) {
 	}
 	if mdCall.hit {
 		t.Error("preflight was proxied to the backend")
+	}
+}
+
+// Test #11 -- a 429 must carry CORS headers.
+//
+// This is why RateLimitByIP sits inside the CORS middleware rather than
+// outside it. Without the headers a browser cannot read the response at all:
+// fetch rejects with an opaque network error, the frontend shows "failed to
+// fetch" instead of "too many requests", and whoever debugs it starts at the
+// network layer rather than at the limiter.
+func TestRateLimitedResponseCarriesCORSHeaders(t *testing.T) {
+	const limit = 2
+	r, _, _ := newGatewayWithRateLimit(t, rateLimitAfter(limit))
+
+	var rec *httptest.ResponseRecorder
+	for i := 0; i <= limit; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.Header.Set("Origin", testOrigin)
+		req.RemoteAddr = "203.0.113.9:54321"
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+	}
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("got status %d after %d requests, want %d", rec.Code, limit+1, http.StatusTooManyRequests)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != testOrigin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q -- a browser cannot read a 429 without it", got, testOrigin)
+	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("Vary = %q, want %q", got, "Origin")
+	}
+}
+
+// Health checks must never be rate limited. /healthz is what a load balancer
+// polls, and refusing it under load would pull a healthy instance out of
+// rotation at precisely the moment the limiter is doing its job.
+func TestHealthzIsNotRateLimited(t *testing.T) {
+	const limit = 1
+	r, _, _ := newGatewayWithRateLimit(t, rateLimitAfter(limit))
+
+	for i := 0; i < limit+5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.RemoteAddr = "203.0.113.9:54321"
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/healthz got status %d on request %d, want 200", rec.Code, i+1)
+		}
+	}
+}
+
+// The limiter is scoped to /auth/*, so exhausting that budget must not affect
+// the authenticated routes.
+func TestRateLimitDoesNotApplyToMarketData(t *testing.T) {
+	const limit = 1
+	r, _, mdCall := newGatewayWithRateLimit(t, rateLimitAfter(limit))
+
+	for i := 0; i <= limit; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.RemoteAddr = "203.0.113.9:54321"
+		r.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	req.RemoteAddr = "203.0.113.9:54321"
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("/market-data got status %d after the auth budget was spent, want 200", rec.Code)
+	}
+	if !mdCall.hit {
+		t.Error("market-data backend was never reached; the auth limiter must not gate other routes")
 	}
 }
