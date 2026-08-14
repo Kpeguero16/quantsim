@@ -41,9 +41,9 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 - [x] ⏸️ **Checkpoint: The harness is proven safe** — nothing destructive has touched real data, and the guards are demonstrated rather than assumed
 
 ### Phase 2: The tests that justify the step
-- [ ] **Task 3** — `GetUserByEmail` / `GetUserByID`: mixed-case row seeded by raw SQL (the store cannot make one), stored-form return value, argument not lowercased, nil `PasswordHash`, `ErrUserNotFound`, full round-trip
+- [x] **Task 3** — `GetUserByEmail` / `GetUserByID`: mixed-case row seeded by raw SQL (the store cannot make one), stored-form return value, argument not lowercased, nil `PasswordHash`, `ErrUserNotFound`, full round-trip
 
-- [ ] ⏸️ **Checkpoint: Step 10's fix is protected** — **and verified by mutation**: revert `GetUserByEmail` to `WHERE email = $1` and confirm the mixed-case test fails. A harness that passes against the pre-Step-10 query proves nothing
+- [x] ⏸️ **Checkpoint: Step 10's fix is protected** — **and verified by mutation**: revert `GetUserByEmail` to `WHERE email = $1` and confirm the mixed-case test fails. A harness that passes against the pre-Step-10 query proves nothing
 
 - [ ] **Task 4** — `CreateUserWithAccount`: duplicate email and **username**, exact and case-differing; rollback via `1e16` overflowing `NUMERIC(20,4)` (asserting `22003` and *not* `ErrDuplicateUser`); balance precision read as `::text`; `currency` default; plus `var _ service.UserStore = ...` in both the store and the mock
 

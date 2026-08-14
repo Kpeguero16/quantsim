@@ -56,6 +56,18 @@ const testDBName = "quantsim_test"
 // silently-skipping suite this design is otherwise built to avoid.
 var ErrUnsafeTarget = errors.New("unsafe target database")
 
+// ErrPostgresUnavailable marks the ONE condition that may skip the suite:
+// there is no server to talk to, which is the ordinary state of a laptop with
+// Docker stopped.
+//
+// Everything else -- a failed migration, a guard violation, a bad DSN -- is a
+// real problem and fails the run. Getting this backwards is not hypothetical:
+// the first version of this harness skipped on any setup error, and when
+// migrations turned out not to be idempotent, the whole suite reported a
+// green `ok` while executing no tests at all. A harness that cannot tell
+// "nothing to test against" from "the harness is broken" protects nothing.
+var ErrPostgresUnavailable = errors.New("postgres unavailable")
+
 // assertTestDB is the guard, and it fails closed: anything that is not exactly
 // testDBName is refused, `postgres` and `quantsim` very much included.
 //
@@ -169,7 +181,23 @@ func resolveDSNs() (adminDSN, testDSN string, err error) {
 	return adminU.String(), testU.String(), nil
 }
 
-// ensureTestDatabase creates testDBName if it does not already exist.
+// ensureTestDatabase drops and recreates testDBName, so every run starts from
+// an empty database.
+//
+// Recreating rather than reusing is what makes migrations idempotent without
+// any version tracking: they always run exactly once, against nothing. The
+// first version of this harness merely created the database when absent, and
+// the second run then failed on `CREATE TABLE users` with 42P07 -- which,
+// combined with skipping on any setup error, produced a green `ok` that ran
+// no tests.
+//
+// It also preserves the property this approach is worth having for: the
+// schema is rebuilt from 001 every single run, so the suite continuously
+// proves the migration chain applies cleanly to an empty cluster. The dev
+// database, migrated incrementally over months, has never demonstrated that.
+//
+// DROP DATABASE is obviously destructive, which is why it sits behind
+// assertTestDB and why that guard fails closed.
 func ensureTestDatabase(ctx context.Context, adminDSN string) error {
 	admin, err := pgxpool.New(ctx, adminDSN)
 	if err != nil {
@@ -178,24 +206,25 @@ func ensureTestDatabase(ctx context.Context, adminDSN string) error {
 	defer admin.Close()
 
 	// Ping rather than waiting for the first query, so "Docker is off" is
-	// reported as an unreachable server instead of a confusing query error.
+	// reported as an unreachable server -- the one skippable condition --
+	// rather than as a confusing query error.
 	if err := admin.Ping(ctx); err != nil {
-		return fmt.Errorf("connecting to Postgres: %w", err)
+		return fmt.Errorf("%w: %v", ErrPostgresUnavailable, err)
 	}
 
-	var exists bool
-	if err := admin.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`,
-		testDBName).Scan(&exists); err != nil {
+	// Belt and braces before a DROP: the name is a compile-time constant, but
+	// this is the single most destructive statement in the repo, so it is
+	// checked here too rather than trusting that a caller checked earlier.
+	if err := assertTestDB(testDBName); err != nil {
 		return err
 	}
-	if exists {
-		return nil
-	}
 
-	// CREATE DATABASE takes no bind parameters, hence the interpolation.
-	// testDBName is a compile-time constant that assertTestDB has already
-	// vetted -- never user input. If that ever changes, quote it properly.
+	// DROP/CREATE DATABASE take no bind parameters, hence the interpolation.
+	// testDBName is a constant, never user input. If that ever changes, use
+	// pgx.Identifier to quote it.
+	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+testDBName+` WITH (FORCE)`); err != nil {
+		return fmt.Errorf("dropping %s: %w", testDBName, err)
+	}
 	if _, err := admin.Exec(ctx, `CREATE DATABASE `+testDBName); err != nil {
 		return fmt.Errorf("creating %s: %w", testDBName, err)
 	}

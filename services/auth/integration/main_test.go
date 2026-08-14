@@ -33,24 +33,27 @@ var (
 
 func TestMain(m *testing.M) {
 	if err := setup(); err != nil {
-		// A guard violation is a misconfiguration, not an environment
-		// problem, and it is the one thing here that must never be shrugged
-		// off. Skipping would make "I aimed the harness at the dev database"
-		// produce the same green `ok` as "Docker is not running".
-		if errors.Is(err, ErrUnsafeTarget) {
-			fmt.Fprintf(os.Stderr, "\nFATAL: %v\n\n", err)
+		// Exactly ONE condition may skip: there is no server to talk to,
+		// which is the ordinary state of a laptop with Docker stopped. It is
+		// still announced, because a suite that skips forever looks exactly
+		// like a suite that passes.
+		if errors.Is(err, ErrPostgresUnavailable) {
+			skipReason = fmt.Sprintf("auth store integration tests unavailable: %v", err)
+			fmt.Fprintf(os.Stderr,
+				"\n%s\n  start Postgres with `make docker-up`, or set TEST_DATABASE_URL\n\n",
+				skipReason)
+		} else {
+			// Everything else -- a guard violation, a failed migration, an
+			// unparseable DSN -- means the harness itself is broken, and must
+			// fail rather than quietly test nothing.
+			//
+			// This is not a hypothetical distinction. An earlier version
+			// skipped on any setup error; when migrations turned out not to
+			// be idempotent, the entire suite reported `ok` while running
+			// zero tests.
+			fmt.Fprintf(os.Stderr, "\nFATAL: integration harness setup failed: %v\n\n", err)
 			os.Exit(1)
 		}
-
-		// Postgres being unreachable, by contrast, is the expected case with
-		// Docker stopped and must not fail the run. But it must not be silent
-		// either: a suite that skips forever looks exactly like a suite that
-		// passes, which is how integration tests quietly stop protecting
-		// anything. So the reason goes to stderr, naming the fix.
-		skipReason = fmt.Sprintf("auth store integration tests unavailable: %v", err)
-		fmt.Fprintf(os.Stderr,
-			"\n%s\n  start Postgres with `make docker-up`, or set TEST_DATABASE_URL\n\n",
-			skipReason)
 	}
 
 	code := m.Run()
