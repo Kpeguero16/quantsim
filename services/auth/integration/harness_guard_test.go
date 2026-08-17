@@ -15,7 +15,7 @@ import (
 // Both are plausible typos. Neither may ever be accepted.
 func TestAssertTestDBRefusesEverythingButTheTestDatabase(t *testing.T) {
 	for _, name := range []string{
-		"postgres",  // the dev database -- 15 real users
+		"postgres",  // the dev database -- where the real rows live
 		"quantsim",  // the empty decoy, and the value of POSTGRES_DB
 		"",          // an unparsed or pathless URL
 		"template1", // a system database
