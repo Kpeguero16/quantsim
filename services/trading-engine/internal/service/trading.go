@@ -110,14 +110,53 @@ func (s *Service) Positions(ctx context.Context, userID uuid.UUID) ([]Position, 
 		return nil, err
 	}
 
-	holdings, err := s.trading.ListHoldings(ctx, account.ID)
+	return s.positionsFor(ctx, account.ID)
+}
+
+// Portfolio is the whole account in one response: cash, positions, and what
+// the two are worth together (SPEC.md §2.9).
+//
+// It goes through the same positionsFor path GET /trading/positions does,
+// rather than a second query of its own. A divergent copy is how the two
+// endpoints would eventually disagree about the same account -- and the one
+// that disagreed would still look right on its own.
+func (s *Service) Portfolio(ctx context.Context, userID uuid.UUID) (PortfolioResponse, error) {
+	account, err := s.accounts.AccountForUser(ctx, userID)
+	if err != nil {
+		return PortfolioResponse{}, err
+	}
+
+	positions, err := s.positionsFor(ctx, account.ID)
+	if err != nil {
+		return PortfolioResponse{}, err
+	}
+
+	portfolio := PortfolioResponse{Balance: account.Balance, Positions: positions, TotalEquity: account.Balance}
+	for _, p := range positions {
+		// An unpriceable position is valued at cost -- never dropped from the
+		// total, never counted as zero. Dropping it would silently shrink the
+		// portfolio, and zeroing it would report the account as having lost
+		// everything it holds, both because one HTTP call failed.
+		value := p.AvgCost * p.Quantity
+		if p.LatestPrice != nil {
+			value = *p.LatestPrice * p.Quantity
+		}
+		portfolio.TotalEquity += value
+		portfolio.TotalUnrealizedPL += p.UnrealizedPL
+	}
+	return portfolio, nil
+}
+
+// positionsFor is the one path from an account to its priced positions, shared
+// by both endpoints that need it.
+func (s *Service) positionsFor(ctx context.Context, accountID uuid.UUID) ([]Position, error) {
+	holdings, err := s.trading.ListHoldings(ctx, accountID)
 	if err != nil {
 		// The store failing is not the same as market-data failing. There is
 		// no degraded answer here: without the holdings there is nothing to
 		// return, so this one does propagate.
 		return nil, err
 	}
-
 	return s.price(ctx, holdings), nil
 }
 

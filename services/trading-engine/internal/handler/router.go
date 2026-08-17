@@ -36,6 +36,7 @@ func NewRouter(trading *TradingHandler, jwtSecret []byte) *chi.Mux {
 		r.Post("/orders", trading.PlaceOrder)
 		r.Get("/orders", trading.ListOrders)
 		r.Get("/positions", trading.ListPositions)
+		r.Get("/portfolio", trading.Portfolio)
 	})
 
 	return r

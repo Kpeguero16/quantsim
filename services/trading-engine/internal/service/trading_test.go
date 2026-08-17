@@ -351,3 +351,141 @@ func TestPositions_NoHoldingsIsAnEmptySliceNotAnError(t *testing.T) {
 		t.Error("priced a portfolio with nothing in it")
 	}
 }
+
+func TestPortfolio_RollsUpCashAndPositions(t *testing.T) {
+	svc, accounts, trading, prices, userID := newService(t)
+	accounts.Account = service.Account{ID: accounts.Account.ID, Balance: 5000}
+	prices.Prices = map[string]float64{"AAPL": 150, "MSFT": 90}
+	trading.Holdings = []service.Holding{
+		{Symbol: "AAPL", Quantity: 10, AvgCost: 100},
+		{Symbol: "MSFT", Quantity: 5, AvgCost: 120},
+	}
+
+	got, err := svc.Portfolio(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Portfolio: %v", err)
+	}
+
+	if got.Balance != 5000 {
+		t.Errorf("balance = %v, want 5000", got.Balance)
+	}
+	// 5000 cash + 10*150 + 5*90
+	if got.TotalEquity != 6950 {
+		t.Errorf("total_equity = %v, want 6950", got.TotalEquity)
+	}
+	// 500 + (-150)
+	if got.TotalUnrealizedPL != 350 {
+		t.Errorf("total_unrealized_pl = %v, want 350", got.TotalUnrealizedPL)
+	}
+	if len(got.Positions) != 2 {
+		t.Errorf("got %d positions, want 2", len(got.Positions))
+	}
+}
+
+// 🔴 An unpriceable position is valued at cost. Dropping it would shrink the
+// portfolio silently; zeroing it would report the account as having lost
+// everything it holds -- both because one HTTP call failed.
+func TestPortfolio_UnpriceablePositionsAreValuedAtCostNotDroppedOrZeroed(t *testing.T) {
+	svc, accounts, trading, prices, userID := newService(t)
+	accounts.Account = service.Account{ID: accounts.Account.ID, Balance: 1000}
+	prices.Prices = map[string]float64{"AAPL": 150}
+	trading.Holdings = []service.Holding{
+		{Symbol: "AAPL", Quantity: 10, AvgCost: 100},
+		{Symbol: "DELISTED", Quantity: 4, AvgCost: 25},
+	}
+
+	got, err := svc.Portfolio(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Portfolio: %v", err)
+	}
+
+	if len(got.Positions) != 2 {
+		t.Fatalf("got %d positions, want both -- an unpriceable holding was dropped", len(got.Positions))
+	}
+	// 1000 cash + 10*150 priced + 4*25 at cost
+	if got.TotalEquity != 2600 {
+		t.Errorf("total_equity = %v, want 2600 (1000 + 1500 + 100 at cost)", got.TotalEquity)
+	}
+	// Only the priced position contributes P/L; an unvalued one contributes 0
+	// rather than a made-up number.
+	if got.TotalUnrealizedPL != 500 {
+		t.Errorf("total_unrealized_pl = %v, want 500", got.TotalUnrealizedPL)
+	}
+}
+
+// With market-data completely down the portfolio still answers, valued
+// entirely at cost.
+func TestPortfolio_UpstreamDownStillAnswers(t *testing.T) {
+	svc, accounts, trading, prices, userID := newService(t)
+	accounts.Account = service.Account{ID: accounts.Account.ID, Balance: 2000}
+	prices.Err = service.ErrUpstreamUnavailable
+	trading.Holdings = []service.Holding{{Symbol: "AAPL", Quantity: 10, AvgCost: 100}}
+
+	got, err := svc.Portfolio(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("a price outage failed the portfolio: %v -- this path fails open", err)
+	}
+	if got.TotalEquity != 3000 {
+		t.Errorf("total_equity = %v, want 3000 (2000 cash + 10 shares at cost)", got.TotalEquity)
+	}
+	if got.TotalUnrealizedPL != 0 {
+		t.Errorf("total_unrealized_pl = %v, want 0 when nothing can be priced", got.TotalUnrealizedPL)
+	}
+}
+
+func TestPortfolio_EmptyPortfolioIsJustTheCash(t *testing.T) {
+	svc, accounts, _, _, userID := newService(t)
+	accounts.Account = service.Account{ID: accounts.Account.ID, Balance: 100000}
+
+	got, err := svc.Portfolio(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Portfolio: %v", err)
+	}
+	if got.TotalEquity != 100000 || got.Balance != 100000 {
+		t.Errorf("got equity %v balance %v, want both 100000", got.TotalEquity, got.Balance)
+	}
+	if got.Positions == nil || len(got.Positions) != 0 {
+		t.Errorf("got positions %v, want an empty slice", got.Positions)
+	}
+}
+
+// The two endpoints must not be able to disagree about the same account.
+func TestPortfolio_PositionsMatchThePositionsEndpoint(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+	prices.Prices = map[string]float64{"AAPL": 150}
+	trading.Holdings = []service.Holding{
+		{Symbol: "AAPL", Quantity: 10, AvgCost: 100},
+		{Symbol: "DELISTED", Quantity: 4, AvgCost: 25},
+	}
+
+	standalone, err := svc.Positions(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	rolled, err := svc.Portfolio(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Portfolio: %v", err)
+	}
+
+	if len(standalone) != len(rolled.Positions) {
+		t.Fatalf("got %d and %d positions from the two endpoints", len(standalone), len(rolled.Positions))
+	}
+	for i := range standalone {
+		a, b := standalone[i], rolled.Positions[i]
+		if a.Symbol != b.Symbol || a.Quantity != b.Quantity || a.AvgCost != b.AvgCost || a.UnrealizedPL != b.UnrealizedPL {
+			t.Errorf("position %d differs: %+v vs %+v", i, a, b)
+		}
+		if (a.LatestPrice == nil) != (b.LatestPrice == nil) {
+			t.Errorf("position %d disagrees on whether it could be priced", i)
+		}
+	}
+}
+
+func TestPortfolio_StoreFailurePropagates(t *testing.T) {
+	svc, _, trading, _, userID := newService(t)
+	trading.HoldingsErr = errors.New("connection reset")
+
+	if _, err := svc.Portfolio(context.Background(), userID); err == nil {
+		t.Fatal("a store failure was swallowed")
+	}
+}

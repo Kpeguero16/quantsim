@@ -111,6 +111,30 @@ func (h *TradingHandler) ListPositions(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, service.PositionsResponse{Positions: positions})
 }
 
+// Portfolio returns cash, positions and totals in one response, so a dashboard
+// needs one call rather than composing three.
+//
+// It inherits the positions endpoint's fail-open behaviour: an unpriceable
+// position is valued at cost rather than dropped from the total.
+func (h *TradingHandler) Portfolio(w http.ResponseWriter, r *http.Request) {
+	userID, ok := userID(r)
+	if !ok {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return
+	}
+
+	portfolio, err := h.service.Portfolio(r.Context(), userID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if portfolio.Positions == nil {
+		portfolio.Positions = []service.Position{}
+	}
+
+	WriteJSON(w, http.StatusOK, portfolio)
+}
+
 // userID reads the subject RequireAuth put on the context and parses it.
 //
 // A token whose subject is not a UUID fails here rather than being passed

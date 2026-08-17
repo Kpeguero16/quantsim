@@ -508,3 +508,46 @@ func TestListPositions_StoreFailureIs500(t *testing.T) {
 		t.Fatalf("got %d, want 500", rec.Code)
 	}
 }
+
+func TestPortfolio_ReturnsTheRollup(t *testing.T) {
+	h, trading, _, accounts := newHandler(t)
+	accounts.Account = service.Account{ID: accounts.Account.ID, Balance: 5000}
+	trading.Holdings = []service.Holding{{Symbol: "AAPL", Quantity: 10, AvgCost: 100}}
+
+	rec := get(t, h, "/trading/portfolio", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var got service.PortfolioResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if got.Balance != 5000 || got.TotalEquity != 6500 || got.TotalUnrealizedPL != 500 {
+		t.Errorf("rollup is wrong: %+v", got)
+	}
+	if len(got.Positions) != 1 {
+		t.Errorf("got %d positions, want 1", len(got.Positions))
+	}
+}
+
+func TestPortfolio_EmptyPortfolioHasAnEmptyPositionsArray(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+
+	rec := get(t, h, "/trading/portfolio", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); !strings.Contains(body, `"positions":[]`) {
+		t.Errorf("got %s, want an empty array", body)
+	}
+}
+
+func TestPortfolio_RequiresAuthentication(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+
+	if rec := get(t, h, "/trading/portfolio", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401 -- GET /trading/portfolio is not behind RequireAuth", rec.Code)
+	}
+}
