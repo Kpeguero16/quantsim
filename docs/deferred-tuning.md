@@ -206,6 +206,38 @@ library in the same change.
 
 ---
 
+## 8. Refresh-token revocation is a denylist, not rotation with reuse detection
+
+**Where:** `SPEC.md` (Step 13) §2.1, closing `docs/security-backlog.md` item 2.
+
+**Now:** `POST /auth/logout` writes the token's `jti` to Redis with a TTL
+equal to its remaining lifetime; `Refresh` checks it. A refresh token is not
+itself rotated or revoked by a successful `Refresh` call — it stays valid,
+reusable, until it expires or is explicitly logged out.
+
+**The trade:** this closes "there is no kill switch," which is what the
+backlog item asked for. It does not add *theft detection* — rotation with
+reuse detection would additionally notice when an already-used refresh token
+is presented again (a strong signal of a stolen token) and revoke the whole
+token family. A denylist alone cannot tell "the legitimate owner refreshed
+twice" apart from "someone else has a copy and is also refreshing."
+
+**Why not now:** rotation touches `frontend/src/api/client.ts`'s shared
+in-flight-refresh promise (module docstring, `client.ts:1-26`), which today
+tolerates duplicate refreshes as harmless. Under rotation, duplicate refreshes
+burn tokens from the same family and look exactly like theft — the shared
+promise stops being an optimization and becomes a correctness requirement,
+and the client needs a new codepath to distinguish "expired, retry is fine"
+from "theft detected, force a real sign-in." Bigger and riskier than the
+problem being solved right now.
+
+**When it changes:** the threat model needs theft *detection*, not just a way
+to end a session — e.g. evidence of token exfiltration in practice, or a
+compliance requirement for it. The `jti` infrastructure this step adds is the
+prerequisite either design needs, so this is additive later, not a rewrite.
+
+---
+
 ## Related decisions recorded elsewhere
 
 - **Graceful shutdown** — none of the three services drain on SIGTERM

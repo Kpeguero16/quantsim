@@ -230,12 +230,67 @@ compiled.
 
 ---
 
+## Step 13: Refresh-Token Revocation and Logout
+
+`docs/security-backlog.md` item 2, carried as the highest-priority open
+security item since Step 11. Refresh tokens lived 7 days with no server-side
+kill switch, and `services/auth/internal/service/auth.go` said outright:
+*"refresh tokens are stateless by design; no revocation list exists."*
+
+- [x] `GenerateToken` sets a `jti` on every token (`pkg/auth`)
+- [x] `RevocationStore` interface, a Redis-backed implementation, and a mock
+      with error-injection fields for testing the fail-open path
+- [x] `services/auth` gains its first Redis dependency (`go-redis`)
+- [x] `Refresh` rejects a revoked `jti`; `POST /auth/logout` revokes one
+- [x] Redis integration tests on logical DB 15 — round-trip, real TTL expiry,
+      no key collision — independent of the existing Postgres skip path
+- [x] Frontend: `api.logout`, `AuthProvider`'s `logout` clears the session
+      immediately and revokes best-effort
+
+**Completed 2026-08-17.** Spec at `SPEC.md` (archived alongside prior steps
+once the next spec is drafted). No gateway changes — `/auth/*` was already
+proxied and rate-limited as a wildcard.
+
+### The decisions
+
+**A `jti` denylist, not rotation with reuse detection.** Closes the actual
+stated problem — no kill switch — without forcing
+`frontend/src/api/client.ts`'s shared in-flight-refresh promise to become a
+correctness requirement instead of an optimization. Recorded as the upgrade
+path in `docs/deferred-tuning.md` §8 with its trigger: the threat model needing
+theft *detection*, not just a way to end a session.
+
+**`go-redis` in `services/auth/go.mod` is a new dependency, not an inherited
+one.** `docs/security-backlog.md` item 1 already corrected itself once on
+"already a dependency" meaning the workspace, not the specific service — the
+same scrutiny applied here before implementation rather than after.
+
+**Fail open on a Redis error, at both the check and the write.** A Redis
+outage must not become a second, unrelated way to log out every active session
+every 15 minutes, and a failed revocation write must not surface as a failed
+sign-out when the frontend already treats clearing local state as the whole
+guarantee "sign out" makes. Both paths log so an outage stays visible.
+
+**Logout returns `200 {}`, not `204`.** Caught before it shipped:
+`client.ts`'s generic response handling calls `response.json()`
+unconditionally on success, which throws on an empty 204 body.
+
+### Verification
+
+**Mutation check:** commented out the `IsRevoked` call in `Refresh` —
+`TestRefresh_RevokedTokenRejected` and `TestLogout_RevokesTheToken` both
+failed, as they should. Reverted.
+
+**Manual, end to end:** registered and signed out in a real Chrome tab —
+network tab showed `POST /auth/logout` → `200`, the UI returned to the login
+screen instantly, no console errors. Separately confirmed by `curl` against
+the gateway that replaying the same (now revoked) refresh token against
+`/auth/refresh` returns `401 invalid_token`.
+
+---
+
 ## Still open before the trading engine
 
-- [ ] **Refresh-token revocation and a real logout** —
-      `docs/security-backlog.md` item 2, now the highest-priority open item.
-      Tokens live 7 days with no kill switch, and "sign out" is client-side
-      only.
 - [ ] **market-data's store has the same gap** — `historical_price_store.go`
       has no tests either, and its idempotent upsert (`UNIQUE(symbol,
       timeframe, timestamp)`) is exactly the kind of SQL worth covering. Step
@@ -243,8 +298,10 @@ compiled.
       considering at that point, but not before (see
       `docs/TESTING_STRUCTURE.md` §4).
 - [ ] **Pre-existing `gofmt` drift** in `services/auth/internal/service/`
-      (`interfaces.go`, `types.go`). Untouched by Steps 11–12 and left alone
-      deliberately; worth a one-line cleanup commit before any `fmt` check
+      (`interfaces.go`, `types.go`). Untouched by Steps 11–12; Step 13 added
+      to `interfaces.go` but matched its existing (unformatted) style rather
+      than fixing it as a drive-by. Still worth a one-line cleanup commit
+      before any `fmt` check
       lands in a Makefile target or CI.
 
 ## Then the engine itself

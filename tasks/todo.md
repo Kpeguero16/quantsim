@@ -91,7 +91,7 @@ confirm the "revoked token still refreshes" test fails, then restore.
 - [x] ⏸️ **Checkpoint: sign-out is real, verified against a running system**
 
 ### Phase 5: Close-out
-- [ ] **Task 5** — `.env.example`: one line on `REDIS_URL` now being read by
+- [x] **Task 5** — `.env.example`: one line on `REDIS_URL` now being read by
       `services/auth` too. `docs/security-backlog.md`: item 2 → **CLOSED**,
       same write-up style as item 1. `docs/deferred-tuning.md`: rotation-with-
       reuse-detection recorded with its trigger (theft *detection* becomes a
@@ -99,7 +99,7 @@ confirm the "revoked token still refreshes" test fails, then restore.
       mutation-check result included. `docs/NEXT_SESSION.md` rewritten — the
       trading engine becomes the sole next item
 
-- [ ] ⏸️ **Checkpoint: Step 13 complete** — `make test` green with Docker
+- [x] ⏸️ **Checkpoint: Step 13 complete** — `make test` green with Docker
       down, `make test-integration` green with it up (Redis tests included),
       `make vet` clean
 

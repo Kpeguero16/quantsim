@@ -69,39 +69,40 @@ strictly better than the alternative. `SPEC.md` §2.3.
 
 ---
 
-## 2. Refresh tokens cannot be revoked, and logout is client-side only
+## 2. Refresh tokens cannot be revoked, and logout is client-side only — **CLOSED (Step 13, 2026-08-17)**
 
-**Where:** `services/auth/internal/service/auth.go:86-88` says it outright —
-*"refresh tokens are stateless by design; no revocation list exists."*
+**Done.** `POST /auth/logout` revokes the presented refresh token; `Refresh`
+rejects a revoked token before issuing a new pair. Redis-backed, keyed by a
+`jti` claim added to every token (access and refresh alike). Full design in
+`SPEC.md` (Step 13; archived alongside prior steps once the next spec is
+drafted, per `docs/NEXT_SESSION.md`'s convention).
 
-**Now:** a refresh token is valid for **7 days** from issue. There is no
-server-side logout endpoint (verified: none exists). The frontend's "Sign out"
-drops the tokens from memory — which is genuinely all it *can* do — but the
-token itself stays valid for the rest of its lifetime. Anyone holding a copy
-keeps minting access tokens, and there is no way to stop them short of rotating
-`JWT_SECRET`, which logs out every user at once.
+One thing this entry said turned out to need a correction, in the same spirit
+as item 1's self-correction above:
 
-**Why it matters, and why it pairs with Phase 2:** with a trading engine, a
-leaked refresh token is a week of authenticated access to someone's positions
-and order history. "Sign out" not actually ending a session is also the kind of
-thing users reasonably assume works.
+**❌ "a token store (Redis, already a dependency)."** True of the workspace
+(`services/market-data` already used it), **not true of `services/auth`**,
+which had zero Redis usage before this step. `go-redis` is a genuinely new
+dependency there — SPEC.md §2.2 caught this before implementation rather than
+after, the same distinction item 1 draws between "the stack" and "the specific
+service."
 
-**Shape when done:** a token store (Redis, already a dependency) keyed by a
-`jti` claim, plus a real `POST /auth/logout`. Two designs worth weighing:
-a denylist of revoked `jti`s until natural expiry (simple, storage grows with
-revocations), or refresh-token rotation with reuse detection (stronger — reuse
-of an already-spent token signals theft and can revoke the whole family, per
-OAuth 2.0 BCP).
+**✅ What this entry got right:** the denylist-vs-rotation framing, and
+specifically the rotation warning. Denylist was chosen (SPEC.md §2.1) — simpler,
+closes the actual stated problem (no kill switch), and doesn't force
+`frontend/src/api/client.ts`'s shared in-flight-refresh promise to become a
+correctness requirement instead of an optimization. That trap is exactly what
+this entry predicted, and it's still live if rotation is ever chosen later —
+the client comment still says so.
 
-**Note if rotation is chosen:** the frontend's API client already shares one
-in-flight refresh across concurrent 401s
-(`frontend/src/api/client.ts`, Step 8 spec §2.6). That was an efficiency measure
-under today's stateless refresh — **under rotation it becomes a correctness
-requirement**, because seven parallel refreshes would burn seven tokens and look
-exactly like token theft to a reuse detector. The client comment says so; do not
-remove it.
+**Residual risk, accepted:** access tokens are not revoked, only refresh
+tokens — a stolen access token is valid for its full 15-minute life regardless
+of logout. Bounded and short-lived by design, the same shape of accepted
+residual risk as item 1's. A Redis outage also makes revocation fail open
+(SPEC.md §2.3): a token revoked moments before the outage could still refresh
+until Redis recovers. Both are documented trade-offs, not oversights.
 
-**Effort:** medium. **Do in:** Phase 2.
+**Effort:** medium. **Done in:** Phase 2 (Step 13).
 
 ---
 
