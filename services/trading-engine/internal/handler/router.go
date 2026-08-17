@@ -34,6 +34,7 @@ func NewRouter(trading *TradingHandler, jwtSecret []byte) *chi.Mux {
 		r.Use(pkgauth.RequireAuth(jwtSecret))
 
 		r.Post("/orders", trading.PlaceOrder)
+		r.Get("/orders", trading.ListOrders)
 	})
 
 	return r

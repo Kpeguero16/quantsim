@@ -547,3 +547,98 @@ func TestRecordRejectedOrder(t *testing.T) {
 		t.Errorf("got %d trades, want 0", n)
 	}
 }
+
+func TestListOrders_NewestFirstWithRejectionsIncluded(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, accountID := seedAccount(t, ctx, pool, 1000)
+
+	// One of each outcome, in a known order.
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 2, 100)); err != nil {
+		t.Fatalf("filled buy: %v", err)
+	}
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 50, 100)); !errors.Is(err, service.ErrInsufficientBalance) {
+		t.Fatalf("got %v, want ErrInsufficientBalance", err)
+	}
+	if _, err := s.ExecuteOrder(ctx, sell(accountID, 99, 100)); !errors.Is(err, service.ErrInsufficientPosition) {
+		t.Fatalf("got %v, want ErrInsufficientPosition", err)
+	}
+
+	orders, err := s.ListOrders(ctx, accountID)
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if len(orders) != 3 {
+		t.Fatalf("got %d orders, want 3 -- rejected orders belong in the history (SPEC.md §2.5)", len(orders))
+	}
+
+	// Newest first.
+	for i := 1; i < len(orders); i++ {
+		if orders[i].CreatedAt.After(orders[i-1].CreatedAt) {
+			t.Fatalf("order %d is newer than order %d: history is not newest-first", i, i-1)
+		}
+	}
+
+	if orders[0].Side != service.SideSell || orders[0].Status != service.StatusRejected {
+		t.Errorf("newest order is %+v, want the rejected sell", orders[0])
+	}
+	if orders[0].RejectionReason == nil || *orders[0].RejectionReason != "insufficient_position" {
+		t.Errorf("rejected sell lost its reason: %v", orders[0].RejectionReason)
+	}
+	if orders[1].RejectionReason == nil || *orders[1].RejectionReason != "insufficient_balance" {
+		t.Errorf("rejected buy lost its reason: %v", orders[1].RejectionReason)
+	}
+	oldest := orders[2]
+	if oldest.Status != service.StatusFilled || oldest.FilledPrice == nil || *oldest.FilledPrice != 100 {
+		t.Errorf("oldest order is %+v, want the fill at 100", oldest)
+	}
+	if oldest.RejectionReason != nil {
+		t.Errorf("a filled order carries a rejection reason: %q", *oldest.RejectionReason)
+	}
+	if oldest.OrderType != service.OrderTypeMarket {
+		t.Errorf("order_type = %q, want market", oldest.OrderType)
+	}
+}
+
+// Isolation proven by putting a second account's orders in the same table and
+// asking for one account's history -- not by reading the WHERE clause.
+func TestListOrders_ReturnsOnlyTheAccountsOwnOrders(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, mine := seedAccount(t, ctx, pool, 10000)
+	_, theirs := seedAccount(t, ctx, pool, 10000)
+
+	if _, err := s.ExecuteOrder(ctx, buy(mine, 1, 100)); err != nil {
+		t.Fatalf("my order: %v", err)
+	}
+	if _, err := s.ExecuteOrder(ctx, buy(theirs, 7, 100)); err != nil {
+		t.Fatalf("their order: %v", err)
+	}
+
+	orders, err := s.ListOrders(ctx, mine)
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if len(orders) != 1 {
+		t.Fatalf("got %d orders, want only my own -- another account's history leaked", len(orders))
+	}
+	if orders[0].Quantity != 1 {
+		t.Errorf("got quantity %v, want 1 -- this is the other account's order", orders[0].Quantity)
+	}
+}
+
+// An account that has never traded gets an empty slice, not nil: the handler
+// encodes it as [], and a client mapping over null would break.
+func TestListOrders_EmptyHistoryIsAnEmptySliceNotNil(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, accountID := seedAccount(t, ctx, pool, 1000)
+
+	orders, err := s.ListOrders(ctx, accountID)
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if orders == nil {
+		t.Fatal("got nil, want an empty slice")
+	}
+	if len(orders) != 0 {
+		t.Errorf("got %d orders for an account that never traded", len(orders))
+	}
+}

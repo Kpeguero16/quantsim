@@ -78,6 +78,21 @@ func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, req PlaceOrd
 	})
 }
 
+// Orders returns the caller's own order history, newest first, with rejected
+// orders included -- an audit trail missing its failures would be a worse
+// record than none, because it would look complete (SPEC.md §2.5).
+//
+// Scoping runs through AccountForUser rather than taking an account id from
+// the request, which is what makes reading someone else's history impossible
+// to express rather than merely forbidden.
+func (s *Service) Orders(ctx context.Context, userID uuid.UUID) ([]Order, error) {
+	account, err := s.accounts.AccountForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.trading.ListOrders(ctx, account.ID)
+}
+
 // recordRejection persists an order that failed before any transaction opened.
 //
 // Its own failure is logged and swallowed on purpose. The caller is already

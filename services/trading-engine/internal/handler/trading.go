@@ -60,6 +60,33 @@ func (h *TradingHandler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, result)
 }
 
+// ListOrders returns the caller's order history.
+//
+// An account with no orders is 200 with an empty array, never 404: "you have
+// never traded" is an answer, not a missing resource.
+func (h *TradingHandler) ListOrders(w http.ResponseWriter, r *http.Request) {
+	userID, ok := userID(r)
+	if !ok {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return
+	}
+
+	orders, err := h.service.Orders(r.Context(), userID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	// The store already returns a non-nil slice; this is the encoding boundary
+	// enforcing its own promise, because the difference between [] and null is
+	// the difference between a client rendering an empty list and one crashing
+	// on it.
+	if orders == nil {
+		orders = []service.Order{}
+	}
+
+	WriteJSON(w, http.StatusOK, service.OrdersResponse{Orders: orders})
+}
+
 // userID reads the subject RequireAuth put on the context and parses it.
 //
 // A token whose subject is not a UUID fails here rather than being passed

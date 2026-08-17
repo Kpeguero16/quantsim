@@ -70,6 +70,17 @@ func doAs(t *testing.T, h http.Handler, subject, body string) *httptest.Response
 	return rec
 }
 
+func get(t *testing.T, h http.Handler, path, subject string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if subject != "" {
+		req.Header.Set("Authorization", "Bearer "+tokenFor(t, subject))
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 type errorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -318,5 +329,95 @@ func TestPlaceOrder_OversizedBodyIsRejected(t *testing.T) {
 	}
 	if len(trading.ExecuteCalls) != 0 {
 		t.Error("an oversized body reached the store")
+	}
+}
+
+func TestListOrders_ReturnsTheHistoryWithRejectionsIncluded(t *testing.T) {
+	h, trading, _, _ := newHandler(t)
+	price := 150.0
+	reason := "insufficient_balance"
+	trading.Orders = []service.Order{
+		{ID: uuid.New(), Symbol: "AAPL", Side: service.SideBuy, Quantity: 10,
+			Status: service.StatusFilled, OrderType: service.OrderTypeMarket, FilledPrice: &price},
+		{ID: uuid.New(), Symbol: "MSFT", Side: service.SideBuy, Quantity: 1000,
+			Status: service.StatusRejected, OrderType: service.OrderTypeMarket, RejectionReason: &reason},
+	}
+
+	rec := get(t, h, "/trading/orders", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	var got service.OrdersResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(got.Orders) != 2 {
+		t.Fatalf("got %d orders, want 2 -- a history that hides its rejections is not an audit trail", len(got.Orders))
+	}
+	if got.Orders[0].FilledPrice == nil || *got.Orders[0].FilledPrice != 150 {
+		t.Errorf("filled order lost its price: %+v", got.Orders[0])
+	}
+	if got.Orders[1].RejectionReason == nil || *got.Orders[1].RejectionReason != reason {
+		t.Errorf("rejected order lost its reason: %+v", got.Orders[1])
+	}
+	if got.Orders[1].FilledPrice != nil {
+		t.Errorf("rejected order reports a fill price %v; it never filled", *got.Orders[1].FilledPrice)
+	}
+}
+
+// An account that has never traded gets [], not null. A client that maps over
+// the field would crash on null, and "never traded" is an answer rather than a
+// missing resource -- so not a 404 either.
+func TestListOrders_EmptyHistoryIsAnEmptyArray(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+
+	rec := get(t, h, "/trading/orders", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); !strings.Contains(body, `"orders":[]`) {
+		t.Errorf("got %s, want an empty array", body)
+	}
+}
+
+func TestListOrders_RequiresAuthenticationAndScopesToTheToken(t *testing.T) {
+	t.Run("no token", func(t *testing.T) {
+		h, _, _, _ := newHandler(t)
+
+		if rec := get(t, h, "/trading/orders", ""); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("got %d, want 401 -- GET /trading/orders is not behind RequireAuth", rec.Code)
+		}
+	})
+
+	// The account is resolved from the token subject and from nowhere else,
+	// which is what makes reading another user's history unexpressable rather
+	// than merely forbidden.
+	t.Run("scoped to the token subject", func(t *testing.T) {
+		h, _, _, accounts := newHandler(t)
+		subject := uuid.New()
+
+		if rec := get(t, h, "/trading/orders", subject.String()); rec.Code != http.StatusOK {
+			t.Fatalf("got %d, want 200", rec.Code)
+		}
+		if len(accounts.Calls) != 1 || accounts.Calls[0] != subject {
+			t.Errorf("history was resolved from %v, want the token subject %s", accounts.Calls, subject)
+		}
+	})
+}
+
+func TestListOrders_StoreFailureIs500(t *testing.T) {
+	h, trading, _, _ := newHandler(t)
+	trading.OrdersErr = errors.New("connection reset")
+
+	rec := get(t, h, "/trading/orders", uuid.NewString())
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("got %d, want 500", rec.Code)
+	}
+	if got := decodeError(t, rec).Code; got != "internal_error" {
+		t.Errorf("got code %q, want internal_error", got)
 	}
 }

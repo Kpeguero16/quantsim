@@ -110,6 +110,14 @@ type PlaceOrderResult struct {
 	Balance float64 `json:"balance"`
 }
 
+// OrdersResponse is GET /trading/orders. The array is wrapped in an object
+// rather than returned bare, matching market-data's SymbolsResponse: a
+// top-level array leaves no room to add anything beside it later without
+// breaking every client.
+type OrdersResponse struct {
+	Orders []Order `json:"orders"`
+}
+
 // PortfolioResponse is GET /trading/portfolio: one call for a dashboard that
 // would otherwise compose three.
 type PortfolioResponse struct {
