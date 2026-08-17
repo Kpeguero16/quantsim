@@ -149,8 +149,8 @@ func executeBuy(ctx context.Context, tx pgx.Tx, p service.ExecuteOrderParams, ba
 	// here for the same reason as above, and only for that reason: this
 	// transaction holds the row lock, so the value read at the top cannot have
 	// moved underneath it.
-	newBalance := balance - cost
-	if err := updateBalance(ctx, tx, p.AccountID, newBalance); err != nil {
+	newBalance, err := updateBalance(ctx, tx, p.AccountID, balance-cost)
+	if err != nil {
 		return service.PlaceOrderResult{}, err
 	}
 
@@ -210,8 +210,8 @@ func executeSell(ctx context.Context, tx pgx.Tx, p service.ExecuteOrderParams, b
 		return service.PlaceOrderResult{}, err
 	}
 
-	newBalance := balance + p.Price*p.Quantity
-	if err := updateBalance(ctx, tx, p.AccountID, newBalance); err != nil {
+	newBalance, err := updateBalance(ctx, tx, p.AccountID, balance+p.Price*p.Quantity)
+	if err != nil {
 		return service.PlaceOrderResult{}, err
 	}
 
@@ -367,11 +367,23 @@ func upsertPosition(ctx context.Context, q querier, accountID uuid.UUID, symbol 
 	return nil
 }
 
-func updateBalance(ctx context.Context, q querier, accountID uuid.UUID, balance float64) error {
-	_, err := q.Exec(ctx,
-		`UPDATE accounts SET balance = $1, updated_at = now() WHERE id = $2`, balance, accountID)
+// updateBalance writes the new balance and returns what Postgres actually
+// stored, which is not always what it was handed.
+//
+// balance is NUMERIC(20,4) and the value computed here is a float64, so a cost
+// like 0.0001 * 305.655 = 0.0305655 is rounded on the way in. Returning the
+// argument back would make the order response report a balance the database
+// does not hold -- and the response already reports the STORED quantity and
+// price, since insertOrder and insertTrade both RETURNING. RETURNING here is
+// what keeps one response internally consistent, and keeps the next
+// GET /trading/portfolio from disagreeing with the order that caused it.
+func updateBalance(ctx context.Context, q querier, accountID uuid.UUID, balance float64) (float64, error) {
+	var stored float64
+	err := q.QueryRow(ctx,
+		`UPDATE accounts SET balance = $1, updated_at = now() WHERE id = $2 RETURNING balance`,
+		balance, accountID).Scan(&stored)
 	if err != nil {
-		return fmt.Errorf("updating balance: %w", err)
+		return 0, fmt.Errorf("updating balance: %w", err)
 	}
-	return nil
+	return stored, nil
 }

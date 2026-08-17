@@ -178,6 +178,56 @@ func TestExecuteOrder_SpendingTheEntireBalanceIsAllowed(t *testing.T) {
 		0, "balance after spending everything")
 }
 
+// The balance handed back to the caller must be the balance Postgres holds,
+// not the one Go computed on the way in.
+//
+// Every other test in this file uses round numbers, where the two agree by
+// coincidence -- 10000 - 10*150 lands exactly on four decimal places, so a
+// store that returned its own arithmetic would pass. This one picks a cost
+// that does NOT: 0.0001 * 305.655 = 0.0305655, which NUMERIC(20,4) rounds on
+// the way in. The gap is ~4.5e-5, well outside the 1e-6 tolerance.
+//
+// It matters beyond neatness because the POST response already reports the
+// stored quantity and price -- insertOrder and insertTrade both RETURNING --
+// so a computed balance makes one response internally inconsistent, and makes
+// the very next GET /trading/portfolio disagree with the order that caused it.
+func TestExecuteOrder_TheReturnedBalanceIsTheOnePostgresStored(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		order func(uuid.UUID) service.ExecuteOrderParams
+		setup func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, accountID uuid.UUID)
+	}{
+		{
+			name:  "buy",
+			order: func(id uuid.UUID) service.ExecuteOrderParams { return buy(id, 0.0001, 305.655) },
+		},
+		{
+			name:  "sell",
+			order: func(id uuid.UUID) service.ExecuteOrderParams { return sell(id, 0.0001, 305.655) },
+			setup: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, accountID uuid.UUID) {
+				seedPosition(t, ctx, pool, accountID, symbol, 10, 100)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, pool, ctx := newStore(t)
+			_, accountID := seedAccount(t, ctx, pool, 1000)
+			if tt.setup != nil {
+				tt.setup(t, ctx, pool, accountID)
+			}
+
+			result, err := s.ExecuteOrder(ctx, tt.order(accountID))
+			if err != nil {
+				t.Fatalf("ExecuteOrder: %v", err)
+			}
+
+			stored := numeric(t, ctx, pool, `SELECT balance::text FROM accounts WHERE id = $1`, accountID)
+			assertMoney(t, result.Balance, stored,
+				"returned balance vs the balance Postgres stored")
+		})
+	}
+}
+
 func TestExecuteOrder_SellBooksRealizedPLAndLeavesTheCostBasisAlone(t *testing.T) {
 	s, pool, ctx := newStore(t)
 	_, accountID := seedAccount(t, ctx, pool, 10000)
