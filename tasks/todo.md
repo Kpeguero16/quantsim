@@ -58,7 +58,7 @@ confirm the "revoked token still refreshes" test fails, then restore.
       actually revokes one** — proven, not assumed
 
 ### Phase 3: The endpoint
-- [ ] **Task 3** — `services/auth/internal/handler/auth.go`: `+ Logout`
+- [x] **Task 3** — `services/auth/internal/handler/auth.go`: `+ Logout`
       handler, reuses `service.RefreshTokenRequest`, success is
       `WriteJSON(w, 200, struct{}{})` → `{}` (§2.5 — not `204`, or
       `client.ts`'s generic response handling breaks on the empty body).
@@ -66,7 +66,7 @@ confirm the "revoked token still refreshes" test fails, then restore.
       `/login` and `/refresh`. End-to-end handler test: register → logout →
       refresh with the same token → `401`
 
-- [ ] ⏸️ **Checkpoint: the endpoint is reachable and a logged-out token
+- [x] ⏸️ **Checkpoint: the endpoint is reachable and a logged-out token
       demonstrably cannot refresh**
 
 ### Phase 4: Frontend

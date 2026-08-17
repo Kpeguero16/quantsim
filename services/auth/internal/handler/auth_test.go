@@ -199,6 +199,103 @@ func TestRefreshHandler_GarbageToken(t *testing.T) {
 	}
 }
 
+// TestLogoutHandler_Success pins SPEC.md 2.5: 200 with an empty JSON body,
+// not 204 -- client.ts's generic response handling calls response.json()
+// unconditionally on success and would break on an empty body.
+func TestLogoutHandler_Success(t *testing.T) {
+	r := newTestRouter()
+	registerBody, _ := json.Marshal(map[string]string{
+		"email": "a@b.com", "username": "alice", "password": testPassword,
+	})
+	registerRec := doRequest(t, r, http.MethodPost, "/auth/register", registerBody)
+	var registerTokens service.TokenPair
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registerTokens); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+
+	logoutBody, _ := json.Marshal(map[string]string{"refresh_token": registerTokens.RefreshToken})
+	rec := doRequest(t, r, http.MethodPost, "/auth/logout", logoutBody)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.TrimSpace(rec.Body.String()) != "{}" {
+		t.Fatalf("expected an empty JSON object body, got %q", rec.Body.String())
+	}
+}
+
+// TestLogoutHandler_EndToEnd_RevokedTokenCannotRefresh is the test that
+// proves the whole feature works, not just its parts in isolation: a token
+// logged out through the HTTP layer must then fail /auth/refresh.
+func TestLogoutHandler_EndToEnd_RevokedTokenCannotRefresh(t *testing.T) {
+	r := newTestRouter()
+	registerBody, _ := json.Marshal(map[string]string{
+		"email": "a@b.com", "username": "alice", "password": testPassword,
+	})
+	registerRec := doRequest(t, r, http.MethodPost, "/auth/register", registerBody)
+	var registerTokens service.TokenPair
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registerTokens); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+
+	logoutBody, _ := json.Marshal(map[string]string{"refresh_token": registerTokens.RefreshToken})
+	logoutRec := doRequest(t, r, http.MethodPost, "/auth/logout", logoutBody)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("expected logout to succeed with 200, got %d: %s", logoutRec.Code, logoutRec.Body.String())
+	}
+
+	refreshBody, _ := json.Marshal(map[string]string{"refresh_token": registerTokens.RefreshToken})
+	refreshRec := doRequest(t, r, http.MethodPost, "/auth/refresh", refreshBody)
+	if refreshRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected a logged-out token to fail refresh with 401, got %d: %s", refreshRec.Code, refreshRec.Body.String())
+	}
+}
+
+func TestLogoutHandler_AccessTokenRejected(t *testing.T) {
+	r := newTestRouter()
+	registerBody, _ := json.Marshal(map[string]string{
+		"email": "a@b.com", "username": "alice", "password": testPassword,
+	})
+	registerRec := doRequest(t, r, http.MethodPost, "/auth/register", registerBody)
+	var registerTokens service.TokenPair
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registerTokens); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"refresh_token": registerTokens.AccessToken})
+	rec := doRequest(t, r, http.MethodPost, "/auth/logout", body)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for access token used as refresh, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLogoutHandler_GarbageToken(t *testing.T) {
+	r := newTestRouter()
+	body, _ := json.Marshal(map[string]string{"refresh_token": "not-a-real-token"})
+	rec := doRequest(t, r, http.MethodPost, "/auth/logout", body)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLogoutHandler_MissingRefreshToken(t *testing.T) {
+	r := newTestRouter()
+	rec := doRequest(t, r, http.MethodPost, "/auth/logout", []byte(`{}`))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var errResp handler.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Code != "invalid_request" {
+		t.Fatalf("expected code invalid_request, got %q", errResp.Code)
+	}
+}
+
 func registerAndDecode(t *testing.T, r http.Handler, email, username, password string) service.TokenPair {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{

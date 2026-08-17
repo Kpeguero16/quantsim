@@ -152,3 +152,33 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, tokens)
 }
+
+// Logout revokes the presented refresh token. Request/validation shape
+// deliberately mirrors Refresh exactly -- same request type, same missing-
+// field check, same ErrTokenInvalid -> 401 mapping -- rather than a separate
+// vocabulary for one endpoint.
+//
+// Success is 200 with an empty JSON object, not 204: client.ts's generic
+// response handling calls response.json() unconditionally on success, which
+// throws on an empty body (SPEC.md Step 13, 2.5).
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	var req service.RefreshTokenRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.RefreshToken == "" {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
+		return
+	}
+
+	if err := h.service.Logout(r.Context(), req); err != nil {
+		if errors.Is(err, service.ErrTokenInvalid) {
+			WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "internal_error", "something went wrong")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, struct{}{})
+}

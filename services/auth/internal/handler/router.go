@@ -20,6 +20,7 @@ func NewRouter(auth *AuthHandler, jwtSecret []byte) *chi.Mux {
 		r.Post("/register", auth.Register)
 		r.Post("/login", auth.Login)
 		r.Post("/refresh", auth.Refresh)
+		r.Post("/logout", auth.Logout)
 
 		r.Group(func(r chi.Router) {
 			r.Use(pkgauth.RequireAuth(jwtSecret))
