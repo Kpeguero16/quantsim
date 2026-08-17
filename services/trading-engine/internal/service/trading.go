@@ -27,6 +27,26 @@ const maxSymbolLength = 16
 // the column's limit.
 const maxQuantity = 1e9
 
+// quantityScale and minQuantity are maxQuantity's mirror at the bottom of the
+// range, and they exist because Step 14's adversarial review found the gap.
+//
+// NUMERIC(20,4) stores four decimal places. A quantity of 0.00001 passes a
+// `> 0` check, is charged for in full against the balance, and then rounds to
+// 0.0000 shares on its way into positions and trades. The cash leg lands and
+// the share leg vanishes: a buy destroys money, and a sell -- the direction an
+// attacker picks -- mints it, at roughly a third of a cent per request with no
+// bound on how often it can be repeated. Thirty dust sells against a 300-share
+// AAPL position moved the balance +0.0930 and left the position untouched.
+//
+// So the ledger's own tick is the floor: anything the database cannot store is
+// refused rather than half-executed, and anything finer than the tick is
+// rounded to it up front, so the number that moves the balance is the same
+// number that reaches positions and trades.
+const (
+	quantityScale = 1e4
+	minQuantity   = 1 / quantityScale
+)
+
 type Service struct {
 	accounts AccountStore
 	trading  TradingStore
@@ -240,10 +260,15 @@ func validateOrder(req PlaceOrderRequest) (PlaceOrderRequest, error) {
 		return req, ErrInvalidOrder
 	}
 	// NaN fails every comparison including this one, so the check is written
-	// to reject rather than to accept: `!(q > 0)` catches NaN where `q <= 0`
-	// would let it through.
-	if !(req.Quantity > 0) || math.IsInf(req.Quantity, 0) || req.Quantity > maxQuantity {
+	// to reject rather than to accept: `!(q >= minQuantity)` catches NaN where
+	// `q < minQuantity` would let it through.
+	if !(req.Quantity >= minQuantity) || math.IsInf(req.Quantity, 0) || req.Quantity > maxQuantity {
 		return req, ErrInvalidOrder
 	}
+	// Snap to the tick the ledger stores, so the quantity that is charged for
+	// is the quantity that is recorded. Rounding after the bounds check, not
+	// before: a rejected order should be rejected for what was asked, not for
+	// what it would have become.
+	req.Quantity = math.Round(req.Quantity*quantityScale) / quantityScale
 	return req, nil
 }

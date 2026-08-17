@@ -3,7 +3,9 @@ package service
 import "errors"
 
 // ErrInvalidOrder is a malformed order the engine can reject without asking
-// anything else: an unknown side, a non-positive quantity, an empty symbol.
+// anything else: an unknown side, an empty symbol, or a quantity outside
+// [minQuantity, maxQuantity] -- which includes dust below the ledger's tick,
+// not just zero and negatives.
 // Nothing is persisted for one of these -- it never became an order.
 // Handlers map this to 400 invalid_request.
 var ErrInvalidOrder = errors.New("invalid order")

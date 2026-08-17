@@ -160,7 +160,7 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, service.ErrInvalidOrder):
 		WriteError(w, http.StatusBadRequest, "invalid_request",
-			"symbol, side (buy or sell) and a positive quantity are required")
+			"symbol, side (buy or sell) and a quantity of at least 0.0001 are required")
 
 	case errors.Is(err, service.ErrInsufficientBalance):
 		WriteError(w, http.StatusBadRequest, "insufficient_balance",

@@ -163,6 +163,8 @@ func TestPlaceOrder_InvalidOrdersAreRejectedBeforeAnyDependencyIsTouched(t *test
 		{"zero quantity", buy(testSymbol, 0)},
 		{"negative quantity", buy(testSymbol, -5)},
 		{"absurd quantity", buy(testSymbol, 1e18)},
+		{"dust below the ledger tick", buy(testSymbol, 0.00001)},
+		{"just under the ledger tick", buy(testSymbol, 0.00009)},
 		{"empty symbol", buy("", 1)},
 		{"whitespace symbol", buy("   ", 1)},
 		{"overlong symbol", buy("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 1)},
@@ -204,6 +206,65 @@ func TestPlaceOrder_NaNQuantityIsRejected(t *testing.T) {
 	}
 	if len(trading.ExecuteCalls) != 0 {
 		t.Fatal("a NaN quantity reached the store")
+	}
+}
+
+// The exploit this floor exists to close, kept as its own test because the
+// table above proves only that dust is rejected -- not why it has to be.
+//
+// Before the floor, a sell of 0.00001 shares was charged at the full price and
+// then rounded to 0.0000 shares by NUMERIC(20,4). The cash leg landed and the
+// share leg vanished, so the account was paid for nothing: thirty of these
+// against a live 300-share position moved the balance +0.0930 and left the
+// position at exactly 300. Nothing bounded how often it could be repeated.
+//
+// A sell rather than a buy because that is the profitable direction; the buy
+// side of the same bug merely destroyed the money instead.
+func TestPlaceOrder_DustSellCannotMintMoney(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+
+	_, err := svc.PlaceOrder(context.Background(), userID,
+		service.PlaceOrderRequest{Symbol: testSymbol, Side: service.SideSell, Quantity: 0.00001})
+
+	if !errors.Is(err, service.ErrInvalidOrder) {
+		t.Fatalf("got %v, want ErrInvalidOrder -- a quantity the ledger rounds to zero was accepted", err)
+	}
+	if len(prices.Calls) != 0 {
+		t.Error("a dust order cost a price lookup")
+	}
+	if len(trading.ExecuteCalls) != 0 {
+		t.Fatal("a dust order reached the store: it would have paid cash for zero shares")
+	}
+}
+
+// The tick itself is legal. A floor that also refused the smallest storable
+// quantity would be off by one in the direction nobody tests.
+func TestPlaceOrder_ExactlyTheLedgerTickIsAllowed(t *testing.T) {
+	svc, _, trading, _, userID := newService(t)
+
+	if _, err := svc.PlaceOrder(context.Background(), userID, buy(testSymbol, 0.0001)); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+
+	if got := trading.ExecuteCalls[0].Quantity; got != 0.0001 {
+		t.Errorf("got quantity %v, want 0.0001", got)
+	}
+}
+
+// Above the tick, a quantity finer than the ledger stores is snapped up front
+// rather than left to Postgres to round on the way in. Otherwise the balance
+// moves by price x 1.23456 while positions and trades record 1.2346, and the
+// two legs of the same trade disagree by the difference.
+func TestPlaceOrder_QuantityIsSnappedToTheLedgerTickBeforeItIsCharged(t *testing.T) {
+	svc, _, trading, _, userID := newService(t)
+
+	if _, err := svc.PlaceOrder(context.Background(), userID, buy(testSymbol, 1.23456)); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+
+	// The value Postgres would have stored, reached before Postgres sees it.
+	if got := trading.ExecuteCalls[0].Quantity; got != 1.2346 {
+		t.Errorf("got quantity %v, want 1.2346 -- the charged quantity is not the stored one", got)
 	}
 }
 
