@@ -10,7 +10,7 @@ This file answers three questions on picking the project back up: *is anything h
 
 | | |
 |---|---|
-| Branch | `step14-trading-engine-mvp` — **24 commits ahead of `main`**, and 21 ahead of `origin/step14-trading-engine-mvp` (only the three spec commits were ever pushed). `main` is untouched at `75d050b` (Step 13). |
+| Branch | `step14-trading-engine-mvp` — the whole step, one commit per task. Ahead of `origin/step14-trading-engine-mvp` too: only the three spec commits were ever pushed. `main` is untouched at `75d050b` (Step 13). |
 | Merge | **Not merged.** The branch is complete and verified; merging it to `main` is the first thing left to do. |
 | Migrations | version **6**. `006_trading_cost_basis_and_order_audit` added `positions.avg_cost`, `orders.filled_price`, `orders.rejection_reason`, `trades.realized_pl`. |
 | `services/trading-engine` | a real fourth Go module — in `go.work`, in the Makefile's `GO_MODULES`, with `run-trading-engine`, and its own `integration/` suite wired into `test-integration` and `vet`. Listens on **:8083**. |
