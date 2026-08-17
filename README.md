@@ -10,12 +10,82 @@ This project demonstrates real‑time systems design, financial data processing,
 
 ---
 
+# Status
+
+QuantSim is in active development (Phase 2). This section reflects what's actually built, not the target design further down.
+
+| Service | State |
+|---|---|
+| `services/auth` | Built — registration, login, JWT issuance, case-insensitive identity lookup, per-IP and per-account rate limiting on `/auth/*` |
+| `services/gateway` | Built — reverse proxy to auth and market-data, auth-aware rate limiting |
+| `services/market-data` | Built — Alpaca ingestion, Redis caching |
+| `services/trading-engine` | Not started (stub `go.mod` only) |
+| `services/backtesting` | Not started (stub `go.mod` only) |
+| `services/ai-insights` | Not started (stub `go.mod` only) |
+
+Schema is at migration version 5. Auth's store layer has an integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. No CI is wired up yet.
+
+For a detailed, checkpointed history of what's shipped, see `PHASE1_CHECKLIST.md` and `PHASE2_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
+
+---
+
+# Local Development
+
+### Prerequisites
+- Go 1.25+
+- Node 18+
+- Docker & Docker Compose
+- [golang-migrate CLI](https://github.com/golang-migrate/migrate/tree/master/cmd/migrate)
+
+### Setup
+
+```bash
+cp .env.example .env        # fill in real values (DB password, JWT secret, Alpaca keys)
+make docker-up               # start Postgres + Redis
+make migrate-up               # apply migrations
+```
+
+### Running services
+
+Each runs in its own terminal:
+
+```bash
+make run-auth          # :8081
+make run-gateway       # :8080
+make run-market-data   # :8082
+make run-frontend      # :5173 (Vite dev server)
+```
+
+### Testing
+
+```bash
+make test               # unit tests, all modules — no Docker needed
+make test-integration   # auth store tests against a real Postgres — needs `make docker-up`
+make test-all           # both
+make vet                # go vet, including files behind the integration build tag
+```
+
+### Other useful targets
+
+```bash
+make docker-down      # stop Postgres + Redis
+make docker-ps        # list running containers
+make migrate-down     # roll back one migration
+make test-db-drop     # drop the quantsim_test database
+```
+
+Run `make help` for the full list.
+
+**Watch out:** `DATABASE_URL` points at the `postgres` database — that's where real dev data lives. `POSTGRES_DB=quantsim` is a separate, empty database. `psql -d quantsim` connecting successfully and showing no tables is expected, not data loss.
+
+---
+
 # Core Features
 
-## 1. Real Market Data Ingestion
+## 1. Real Market Data Ingestion — ✅ built
 
 ### Description
-QuantSim ingests real stock market data and streams it throughout the platform to power trading simulations, charts, and analytics.
+QuantSim ingests real stock market data (via Alpaca) and streams it throughout the platform to power trading simulations, charts, and analytics.
 
 ### Data Types
 - OHLC candle data
@@ -31,11 +101,11 @@ Market Data API → Data Ingestion Service → Redis → WebSockets → Frontend
 
 ### Implementation Phases
 
-**Phase 1 (MVP)**
+**Phase 1 (MVP)** — done
 - REST polling every few seconds
 - Normalized price storage
 
-**Phase 2 (Advanced)**
+**Phase 2 (Advanced)** — not started
 - Live WebSocket market feeds
 - Stream processing
 
@@ -46,7 +116,7 @@ Market Data API → Data Ingestion Service → Redis → WebSockets → Frontend
 
 ---
 
-## 2. Simulated Trading Engine
+## 2. Simulated Trading Engine — 🚧 not started
 
 ### Description
 Users execute simulated trades using real market prices. All trades are paper trades — no real money involved.
@@ -85,14 +155,14 @@ Users execute simulated trades using real market prices. All trades are paper tr
 
 ---
 
-## 3. Strategy Backtesting Engine ⭐
+## 3. Strategy Backtesting Engine ⭐ — 🚧 not started
 
 ### Description
 Users can test trading strategies against historical market data to evaluate performance before applying them in live simulations.
 
 ### Example Use Case
 
-> “If I bought when the 50‑day moving average crossed the 200‑day moving average, what would my returns be?”
+> "If I bought when the 50‑day moving average crossed the 200‑day moving average, what would my returns be?"
 
 ---
 
@@ -152,7 +222,7 @@ Stored in Postgres or columnar storage.
 
 ---
 
-## 4. AI Trade Insights Engine ⭐
+## 4. AI Trade Insights Engine ⭐ — 🚧 not started
 
 ### Description
 Generates intelligent insights about user portfolios, strategies, and trading behavior.
@@ -211,6 +281,8 @@ Trade Data + Portfolio Data → Analytics Service → AI Insight Generator → D
 
 # System Architecture
 
+This is the target architecture. See [Status](#status) for what's actually running today.
+
 ```
                 Market Data APIs
                         │
@@ -240,7 +312,7 @@ Trade Data + Portfolio Data → Analytics Service → AI Insight Generator → D
 ## Frontend
 - React
 - Tailwind CSS
-- Charting libraries (TradingView / D3 / Recharts)
+- lightweight-charts (TradingView)
 
 ## Backend
 - Go (primary services)
@@ -261,58 +333,59 @@ Trade Data + Portfolio Data → Analytics Service → AI Insight Generator → D
 ## DevOps / Infrastructure
 - Docker (service containerization)
 - Docker Compose (local orchestration)
-- Cloud deployment (AWS/GCP/Azure)
+- Cloud deployment (AWS/GCP/Azure) — not yet configured
 
-Optional:
+Optional, considered but not adopted (see `docs/deferred-tuning.md` for what would trigger each):
 - Kubernetes
 - Terraform
 - CI/CD pipelines
 
 ---
 
-# Service Architecture
+# Repository Layout
 
 ```
 /services
-  /auth
-  /gateway
-  /market-data
-  /trading-engine
-  /backtesting
-  /ai-insights
+  /auth            — built
+  /gateway         — built
+  /market-data     — built
+  /trading-engine  — stub
+  /backtesting     — stub
+  /ai-insights     — stub
 /pkg
 /frontend
 /infra
   /docker
   /migrations
-  /terraform
-/docs
+/docs              — design notes, session handoffs, archived specs
+/tasks             — active spec checkpoints (plan.md, todo.md)
 ```
 
 ---
 
 # Development Roadmap
 
-Target: ~5–10 hrs/week over ~3–4 months. Each month maps to a phase.
+Originally scoped at ~5–10 hrs/week over ~3–4 months; six months in and still mid-Phase 2, so treat this as direction rather than a schedule.
 
-## Month 1 (Phase 1) — Trading Foundations
+## Phase 1 — Trading Foundations — done
 - User authentication
 - Account balances
 - Portfolio schema
 - Market data ingestion
 
-## Month 2 (Phase 2) — Trading Engine
-- Order execution
-- Trade history
-- Profit/loss tracking
-- Live portfolio UI
+## Phase 2 — Trading Engine — in progress
+- Auth hardening (rate limiting, store-layer integration tests) — done
+- Order execution — not started
+- Trade history — not started
+- Profit/loss tracking — not started
+- Live portfolio UI — not started
 
-## Month 3 (Phase 3) — Backtesting Engine
+## Phase 3 — Backtesting Engine — not started
 - Historical data ingestion
 - Strategy simulator
 - Performance dashboards
 
-## Month 4 (Phase 4) — AI Insights + Deployment
+## Phase 4 — AI Insights + Deployment — not started
 - Portfolio analytics
 - AI trade insights
 - Dockerization
@@ -323,13 +396,14 @@ Target: ~5–10 hrs/week over ~3–4 months. Each month maps to a phase.
 # Deployment Architecture
 
 ## Local
-- Docker Compose; copy `.env.example` to `.env` and set values. Run `docker compose up -d` for Postgres and Redis.
-- Service networking
+See [Local Development](#local-development) above.
 
 ## Cloud
 - Container hosting (ECS / EC2 / GKE)
 - Managed Postgres (RDS / Cloud SQL)
 - Object storage (S3)
+
+Not yet implemented — no cloud deployment exists today.
 
 ---
 
@@ -360,11 +434,13 @@ This project showcases:
 
 Do not commit `.env`; use environment variables or a secrets manager in production. Use HTTPS in production.
 
+Known gaps and accepted risks are tracked in `docs/security-backlog.md`.
+
 ---
 
 # License
 
-MIT (or preferred license)
+MIT — see `LICENSE`.
 
 ---
 
@@ -378,5 +454,4 @@ Software Engineer | Full‑Stack Developer | Fintech Enthusiast
 
 # Summary
 
-QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture.
-
+QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture. Phase 1 (auth, market data ingestion) is done; Phase 2 (trading engine) is in progress.
