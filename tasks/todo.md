@@ -48,7 +48,7 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 - [x] **Task 4** — `CreateUserWithAccount`: duplicate email and **username**, exact and case-differing; rollback via `1e16` overflowing `NUMERIC(20,4)` (asserting `22003` and *not* `ErrDuplicateUser`); balance precision read as `::text`; `currency` default; plus `var _ service.UserStore = ...` in both the store and the mock
 
 ### Phase 3: Wiring and close-out
-- [ ] **Task 5** — Makefile: `test`, `test-integration` (`-count=1`), `test-all`, `test-db-drop`, `vet` **including a `-tags=integration` pass** — tagged files are otherwise never type-checked by anything
+- [x] **Task 5** — Makefile: `test`, `test-integration` (`-count=1`), `test-all`, `test-db-drop`, `vet` **including a `-tags=integration` pass** — tagged files are otherwise never type-checked by anything
 
 - [ ] **Task 6** — Docs: a real "Integration tests" section in `docs/TESTING_STRUCTURE.md`; two `docs/deferred-tuning.md` entries with named triggers (testcontainers ← CI arriving; golang-migrate ← first migration needing a directive); Step 12 in `PHASE2_CHECKLIST.md` with mutation results; rewrite `docs/NEXT_SESSION.md`
 
