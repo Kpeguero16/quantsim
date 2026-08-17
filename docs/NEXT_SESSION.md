@@ -16,7 +16,7 @@ Step 13 is committed and pushed to `main`. There is no work to recover.
 | Process | **Departure from Steps 11/12:** built and committed directly on `main`, five commits, no feature branch. There is nothing to merge and no branch to delete. If a branch-per-step process is wanted going forward, say so explicitly next session — nothing here restores it automatically. |
 | Migrations | schema at version **5**, unchanged — Step 13 added none |
 | Tests | `make test` 10 packages ok; `make test-integration` **18 PASS / 0 SKIP** (15 from Step 12 + 3 new Redis tests) |
-| Dev database | `users=19`, `accounts=19` — **up from Step 12's baseline of 15.** Two of those four are this session's own manual verification (`e2e-*@test.com`, `browser-e2e@test.com`, both real `POST /auth/register` calls against the live dev stack); the other two are unaccounted for by this session and are presumably Khalil's own testing between 2026-08-14 and now. Left in place — deleting rows from the dev database is not a step to take casually, and none of it is destructive to anything real. |
+| Dev database | `users=20`, `accounts=20` — **up from Step 12's baseline of 15.** Three of those five are this session's own manual verification (`e2e-*@test.com`, `browser-e2e@test.com`, `review-check-*@test.com`, all real `POST /auth/register` calls against the live dev stack, the last one from the pre-push adversarial review); the other two are unaccounted for by this session and are presumably Khalil's own testing between 2026-08-14 and now. Left in place — deleting rows from the dev database is not a step to take casually, and none of it is destructive to anything real. |
 | Local branches | only `main` |
 
 `SPEC.md`, `tasks/plan.md`, and `tasks/todo.md` describe **Step 13, fully
@@ -150,7 +150,7 @@ people out:
 
 ```bash
 docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
-  "SELECT count(*) FROM users"     # 19, as of this session
+  "SELECT count(*) FROM users"     # 20, as of this session
 ```
 
 **`migrate` lives at `~/go/bin/migrate` and is not on a non-interactive
