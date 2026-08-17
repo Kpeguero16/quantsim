@@ -15,6 +15,13 @@ type AccountRecord struct {
 	Balance float64
 }
 
+// Compile-time proof that the mock still satisfies the same interface as the
+// real store. This is the more valuable of the two assertions: the service and
+// handler suites run entirely against this type, so if it drifted away from
+// store.PostgresUserStore they would keep passing while testing a shape
+// production no longer has.
+var _ service.UserStore = (*UserStore)(nil)
+
 type UserStore struct {
 	byEmail  map[string]*service.User
 	byID     map[uuid.UUID]*service.User

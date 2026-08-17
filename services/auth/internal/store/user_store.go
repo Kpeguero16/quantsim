@@ -13,6 +13,12 @@ import (
 	"github.com/kpeguero/quantsim/services/auth/internal/service"
 )
 
+// Compile-time proof that this implementation still satisfies the interface
+// the service depends on. Without it, a signature drift is caught only when
+// cmd/server is built -- which no test does -- so `go test ./...` would stay
+// green against a store the service can no longer use.
+var _ service.UserStore = (*PostgresUserStore)(nil)
+
 type PostgresUserStore struct {
 	pool *pgxpool.Pool
 }

@@ -45,7 +45,7 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 
 - [x] ⏸️ **Checkpoint: Step 10's fix is protected** — **and verified by mutation**: revert `GetUserByEmail` to `WHERE email = $1` and confirm the mixed-case test fails. A harness that passes against the pre-Step-10 query proves nothing
 
-- [ ] **Task 4** — `CreateUserWithAccount`: duplicate email and **username**, exact and case-differing; rollback via `1e16` overflowing `NUMERIC(20,4)` (asserting `22003` and *not* `ErrDuplicateUser`); balance precision read as `::text`; `currency` default; plus `var _ service.UserStore = ...` in both the store and the mock
+- [x] **Task 4** — `CreateUserWithAccount`: duplicate email and **username**, exact and case-differing; rollback via `1e16` overflowing `NUMERIC(20,4)` (asserting `22003` and *not* `ErrDuplicateUser`); balance precision read as `::text`; `currency` default; plus `var _ service.UserStore = ...` in both the store and the mock
 
 ### Phase 3: Wiring and close-out
 - [ ] **Task 5** — Makefile: `test`, `test-integration` (`-count=1`), `test-all`, `test-db-drop`, `vet` **including a `-tags=integration` pass** — tagged files are otherwise never type-checked by anything
