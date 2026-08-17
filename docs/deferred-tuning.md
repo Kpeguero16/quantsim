@@ -249,8 +249,9 @@ DESC, id DESC` against an unindexed column, so it is a sequential scan of the
 whole table filtered down to one account's rows. Every rejected order is persisted
 too (that is deliberate — the audit trail is worth more than a small table),
 so the table grows faster than the fill rate alone suggests: Step 14's own
-adversarial review put 101 orders in the dev database in an afternoon, of
-which 72 were fills.
+adversarial review wrote 103 orders in an afternoon, of which only 73 were
+fills. (Those rows were deleted before the merge, so the table is empty today
+— the number is the growth rate, not the current size.)
 
 **Why it was left out:** the spec scoped migration 006 to exactly four columns,
 and the plan treats anything beyond that scope as an "ask first" boundary

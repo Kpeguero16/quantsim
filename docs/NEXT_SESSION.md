@@ -15,23 +15,18 @@ This file answers three questions on picking the project back up: *is anything h
 | Migrations | version **6**. `006_trading_cost_basis_and_order_audit` added `positions.avg_cost`, `orders.filled_price`, `orders.rejection_reason`, `trades.realized_pl`. |
 | `services/trading-engine` | a real fourth Go module — in `go.work`, in the Makefile's `GO_MODULES`, with `run-trading-engine`, and its own `integration/` suite wired into `test-integration` and `vet`. Listens on **:8083**. |
 | Tests | `make test` **13 packages ok** (no Docker needed); `make test-integration` **43 PASS / 0 FAIL / 0 SKIP** with Docker up; `make vet` clean |
-| Dev database | `users=24`, `accounts=24`, `orders=101`, `trades=72`, `positions=4` — **see the note below, this needs a decision** |
+| Dev database | `users=20`, `accounts=20`, and the trading tables **empty** — `orders=0`, `trades=0`, `positions=0` |
 | Local branches | `main`, `step14-trading-engine-mvp` (current) |
 
 `docs/archive/phase2-step14-trading-engine-mvp/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo.
 
-### The dev-database count needs your call before the merge
+### The trading tables are empty, and that is deliberate
 
-The plan's own Checkpoint E criterion said *"dev DB at 20"*. That number is now four steps stale, for a legitimate reason: **verifying this step required registering real users and placing real orders through the real edge.** Three sessions of end-to-end checks added `step14manual`, `step14gateway`, `step14adva` and `step14advb`.
+Verifying this step meant registering real users and placing real orders through the real edge, so three sessions of end-to-end checks left four throwaway accounts (`step14manual`, `step14gateway`, `step14adva`, `step14advb`) behind — including **31 `quantity = 0, status = filled` rows**, the artifact of the money-minting bug the adversarial review found and fixed.
 
-**31 of those 101 orders are `quantity = 0, status = filled` rows** — the artifact of the money-minting bug the adversarial review found and fixed (see `PHASE2_CHECKLIST.md`, Step 14). They document a defect that no longer exists.
+Those four accounts owned *every* order, trade and position in the dev database — the twenty pre-existing users have never traded. They were deleted before the merge, which returns the database to `users=20, accounts=20` and the plan's Checkpoint E criterion to what it always said, at the cost of leaving the trading tables with nothing in them.
 
-Two options, and the recommendation is the first:
-
-1. **Delete the four review users and their rows**, returning the database to `users=20, accounts=20` and the criterion to what it always said. These are throwaway accounts created for verification, not data anyone will miss, and the zero-quantity rows are actively misleading to anyone who opens `psql` later.
-2. Keep them and update the criterion to 24. Cheaper, but leaves a permanent set of nonsense rows in the only database with real data in it.
-
-Nothing has been deleted. This was raised at Checkpoints B, C and D and is still open.
+**So an empty `orders` table is the expected state, not a sign something failed to write.** The first real order placed after this step is the first row.
 
 ---
 
@@ -99,7 +94,7 @@ Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff a
 
 ```bash
 docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
-  "SELECT count(*) FROM users"     # 24, as of this session
+  "SELECT count(*) FROM users"     # 20, as of this session
 ```
 
 **Money is `float64` in Go and `NUMERIC(20,4)` in Postgres, and Postgres is the authority.** Read money as `::text` in tests — scanning straight into a `float64` lets a value that lost precision on the way in come back looking exactly like the number you expected. `total_equity` can legitimately come back as `99999.99999999999`; `docs/deferred-tuning.md` §10 has the measured numbers and the trigger for fixing it properly.

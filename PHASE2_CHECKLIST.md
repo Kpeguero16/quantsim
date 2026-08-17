@@ -567,9 +567,12 @@ and the gateway, migrations at version 6.
       (`interfaces.go`, `types.go`). Untouched by Steps 11–14. Still worth a
       one-line cleanup commit before any `fmt` check lands in a Makefile
       target or CI.
-- [ ] **Dev-database rows from Step 14's verification.** Four throwaway users
-      (`step14manual`, `step14gateway`, `step14adva`, `step14advb`) and their
-      orders, 31 of which are the `quantity = 0, status = filled` artifact of
-      the bug the review found. Deleting them returns the database to
-      `users=20` and the plan's own criterion to what it said; keeping them
-      means updating the criterion to 24. **Khalil's call — nothing deleted.**
+- [x] ~~**Dev-database rows from Step 14's verification.**~~ **Resolved
+      2026-08-17.** The four throwaway users (`step14manual`, `step14gateway`,
+      `step14adva`, `step14advb`) and their rows were deleted before the merge,
+      on Khalil's approval — including the 31 `quantity = 0, status = filled`
+      rows left by the bug the review found, which documented a defect that no
+      longer exists. All 103 orders, 73 trades and 4 positions in the dev
+      database belonged to those four accounts, so the trading tables are now
+      empty and the database is back to `users=20, accounts=20` — the plan's
+      own criterion, unamended.
