@@ -82,9 +82,10 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 
 - [x] **Task 15** — Replace the gateway's `501` with a real proxy to `TRADING_ENGINE_SERVICE_URL` (`:8083`), inside the existing auth group. `router_test.go:234`'s `not_implemented` assertion gets **replaced, not deleted**. **Manual: trade through `:8080` for the first time**
 
-- [ ] ⏸️ **Checkpoint D: Wired to the edge** — a trade placed through the gateway lands in Postgres
+- [x] ⏸️ **Checkpoint D: Wired to the edge** — a trade placed through the gateway lands in Postgres
 
-- [ ] **Task 16** — 🔴 **Adversarial review.** Green tests are not evidence. Re-run both mutations on final code; 20 concurrent orders against one account (balance never negative); sell into a short; garbage quantities and sides; forged `X-User-ID` at the gateway; kill `market-data` mid-session. Write findings down, including ones found *and* fixed
+- [x] **Task 16** — 🔴 **Adversarial review.** Green tests are not evidence. Re-run both mutations on final code; 20 concurrent orders against one account (balance never negative); sell into a short; garbage quantities and sides; forged `X-User-ID` at the gateway; kill `market-data` mid-session. Write findings down, including ones found *and* fixed
+  - **One real defect found and fixed** (`00cb7ba`): a quantity below the ledger's 4-decimal tick was charged for in full and then rounded to zero shares — money minted on the sell side. Full write-up goes into `PHASE2_CHECKLIST.md` in Task 17
 
 - [ ] **Task 17** — Close-out: Step 14 in `PHASE2_CHECKLIST.md` with the mutation results; `security-backlog` item 4 **closed**; `TESTING_STRUCTURE.md` §6a on the now-duplicated harness and the trigger for extracting it; `deferred-tuning.md` entries for the `orders(account_id)` index and the `float64` money representation; **rewrite** `NEXT_SESSION.md`; archive spec/plan/todo
 
