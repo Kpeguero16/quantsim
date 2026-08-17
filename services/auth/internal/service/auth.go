@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,12 +24,13 @@ const (
 )
 
 type Service struct {
-	users     UserStore
-	jwtSecret []byte
+	users       UserStore
+	revocations RevocationStore
+	jwtSecret   []byte
 }
 
-func NewService(users UserStore, jwtSecret []byte) *Service {
-	return &Service{users: users, jwtSecret: jwtSecret}
+func NewService(users UserStore, revocations RevocationStore, jwtSecret []byte) *Service {
+	return &Service{users: users, revocations: revocations, jwtSecret: jwtSecret}
 }
 
 // Register validates and normalizes the submitted identity, hashes the
@@ -107,19 +109,31 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenPair, erro
 	return s.issueTokenPair(user.ID)
 }
 
-// Refresh validates a refresh token, confirms the user it was issued for
-// still exists, and issues a brand-new token pair. The old refresh token is
-// not revoked and remains valid until its natural expiry -- refresh tokens
-// are stateless by design (see SPEC.md); no revocation list exists. The
-// user-existence check is a separate concern from revocation: it's the same
-// invariant Me enforces, so a deleted user's refresh token can't keep
-// minting valid access tokens.
+// Refresh validates a refresh token, confirms it has not been revoked and
+// that the user it was issued for still exists, and issues a brand-new
+// token pair. The old refresh token is not itself revoked by this call and
+// remains valid until its natural expiry -- this step adds revocation via
+// Logout, not rotation (SPEC.md Step 13, 2.1). The user-existence check is a
+// separate concern from revocation: it's the same invariant Me enforces, so
+// a deleted user's refresh token can't keep minting valid access tokens.
 func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (*TokenPair, error) {
 	claims, err := pkgauth.ValidateToken(s.jwtSecret, req.RefreshToken)
 	if err != nil {
 		return nil, ErrTokenInvalid
 	}
 	if claims.TokenType != pkgauth.TokenTypeRefresh {
+		return nil, ErrTokenInvalid
+	}
+
+	// Checked before the user lookup: cheaper to reject a revoked token on a
+	// store hit than to round-trip Postgres for one about to fail anyway. A
+	// store error fails open and is logged rather than returned -- SPEC.md
+	// Step 13, 2.3. Otherwise a Redis outage would become a second, unrelated
+	// way to log out every active session every 15 minutes.
+	revoked, err := s.revocations.IsRevoked(ctx, claims.ID)
+	if err != nil {
+		log.Printf("auth: revocation check unavailable, failing open: %v", err)
+	} else if revoked {
 		return nil, ErrTokenInvalid
 	}
 
@@ -136,6 +150,40 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (*TokenP
 	}
 
 	return s.issueTokenPair(userID)
+}
+
+// Logout revokes the presented refresh token so it can no longer mint an
+// access token via Refresh. Access tokens already issued from it are not
+// revoked and remain valid until their own (short) expiry -- SPEC.md Step
+// 13, §1 non-goals.
+//
+// Validation mirrors Refresh's first two checks exactly: a malformed token
+// or an access token presented here gets the same ErrTokenInvalid, not a
+// separate failure vocabulary for one endpoint.
+//
+// An already-expired token is not written to the store: there is nothing
+// left to protect, and a non-positive TTL would be a malformed revocation
+// entry. A store error fails open -- the caller already treats "sign out"
+// as something the client can guarantee locally regardless of what the
+// server call does (SPEC.md Step 13, 2.3).
+func (s *Service) Logout(ctx context.Context, req RefreshTokenRequest) error {
+	claims, err := pkgauth.ValidateToken(s.jwtSecret, req.RefreshToken)
+	if err != nil {
+		return ErrTokenInvalid
+	}
+	if claims.TokenType != pkgauth.TokenTypeRefresh {
+		return ErrTokenInvalid
+	}
+
+	ttl := time.Until(claims.ExpiresAt.Time)
+	if ttl <= 0 {
+		return nil
+	}
+
+	if err := s.revocations.Revoke(ctx, claims.ID, ttl); err != nil {
+		log.Printf("auth: revocation write failed: %v", err)
+	}
+	return nil
 }
 
 // Me returns the profile for an already-authenticated user. The caller

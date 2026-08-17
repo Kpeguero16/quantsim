@@ -17,7 +17,7 @@ var testSecret = []byte("test-secret")
 
 func newTestRouter() http.Handler {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 	return handler.NewRouter(handler.NewAuthHandler(svc), testSecret)
 }
 

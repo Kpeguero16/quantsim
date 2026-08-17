@@ -20,7 +20,7 @@ var testSecret = []byte("test-secret")
 
 func TestRegister_Success(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
 	tokens, err := svc.Register(context.Background(), req)
@@ -56,7 +56,7 @@ func TestRegister_Success(t *testing.T) {
 
 func TestRegister_DuplicateEmail(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
@@ -80,7 +80,7 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 func TestRegister_AtomicOnAccountFailure(t *testing.T) {
 	users := mock.NewUserStore()
 	users.CreateAccountErr = errors.New("simulated account insert failure")
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	req := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
@@ -106,7 +106,7 @@ func TestRegister_AtomicOnAccountFailure(t *testing.T) {
 
 func TestLogin_Success(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
@@ -125,7 +125,7 @@ func TestLogin_Success(t *testing.T) {
 
 func TestLogin_WrongPassword(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	registerReq := service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}
@@ -141,7 +141,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 
 func TestLogin_UnknownEmail(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	_, err := svc.Login(context.Background(), service.LoginRequest{Email: "nouser@x.com", Password: "whatever123"})
 	if !errors.Is(err, service.ErrInvalidCredentials) {
@@ -157,7 +157,7 @@ func TestLogin_PropagatesNonNotFoundError(t *testing.T) {
 	users := mock.NewUserStore()
 	dbErr := errors.New("simulated database connection failure")
 	users.GetByEmailErr = dbErr
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	_, err := svc.Login(context.Background(), service.LoginRequest{Email: "a@b.com", Password: "whatever123"})
 	if !errors.Is(err, dbErr) {
@@ -170,7 +170,7 @@ func TestLogin_PropagatesNonNotFoundError(t *testing.T) {
 
 func TestRefresh_Success(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	registerTokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
@@ -189,7 +189,7 @@ func TestRefresh_Success(t *testing.T) {
 
 func TestRefresh_ExpiredToken(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	expired := fabricateToken(t, testSecret, "some-user-id", pkgauth.TokenTypeRefresh, -1*time.Hour)
 
@@ -201,7 +201,7 @@ func TestRefresh_ExpiredToken(t *testing.T) {
 
 func TestRefresh_GarbageToken(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	_, err := svc.Refresh(context.Background(), service.RefreshTokenRequest{RefreshToken: "not-a-real-token"})
 	if !errors.Is(err, service.ErrTokenInvalid) {
@@ -211,7 +211,7 @@ func TestRefresh_GarbageToken(t *testing.T) {
 
 func TestRefresh_AccessTokenRejected(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
@@ -230,7 +230,7 @@ func TestRefresh_AccessTokenRejected(t *testing.T) {
 // exists, the same invariant Me already enforces.
 func TestRefresh_UserNotFound(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
@@ -247,6 +247,162 @@ func TestRefresh_UserNotFound(t *testing.T) {
 	_, err = svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: tokens.RefreshToken})
 	if !errors.Is(err, service.ErrTokenInvalid) {
 		t.Fatalf("expected ErrTokenInvalid for a deleted user's refresh token, got %v", err)
+	}
+}
+
+// TestRefresh_RevokedTokenRejected is the headline check for Step 13: a
+// refresh token whose jti has been revoked must not mint a new pair, even
+// though the token itself is otherwise perfectly valid and unexpired.
+func TestRefresh_RevokedTokenRejected(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+
+	ctx := context.Background()
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	claims, err := pkgauth.ValidateToken(testSecret, tokens.RefreshToken)
+	if err != nil {
+		t.Fatalf("failed to parse claims: %v", err)
+	}
+	if err := revocations.Revoke(ctx, claims.ID, time.Hour); err != nil {
+		t.Fatalf("failed to seed revocation: %v", err)
+	}
+
+	_, err = svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: tokens.RefreshToken})
+	if !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid for a revoked token, got %v", err)
+	}
+}
+
+// TestRefresh_FailsOpenWhenRevocationCheckErrors: a Redis outage must not
+// become a second, unrelated way to log out every active session (SPEC.md
+// Step 13, 2.3). This is proven directly rather than assumed.
+func TestRefresh_FailsOpenWhenRevocationCheckErrors(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+
+	ctx := context.Background()
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	revocations.IsRevokedErr = errors.New("redis unreachable")
+
+	newTokens, err := svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: tokens.RefreshToken})
+	if err != nil {
+		t.Fatalf("expected Refresh to fail open when the revocation store errors, got: %v", err)
+	}
+	if newTokens.AccessToken == "" || newTokens.RefreshToken == "" {
+		t.Fatal("expected a fresh token pair despite the revocation check erroring")
+	}
+}
+
+func TestLogout_RevokesTheToken(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+
+	ctx := context.Background()
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	if err := svc.Logout(ctx, service.RefreshTokenRequest{RefreshToken: tokens.RefreshToken}); err != nil {
+		t.Fatalf("unexpected error on logout: %v", err)
+	}
+
+	claims, err := pkgauth.ValidateToken(testSecret, tokens.RefreshToken)
+	if err != nil {
+		t.Fatalf("failed to parse claims: %v", err)
+	}
+	revoked, err := revocations.IsRevoked(ctx, claims.ID)
+	if err != nil {
+		t.Fatalf("unexpected error checking revocation: %v", err)
+	}
+	if !revoked {
+		t.Fatal("expected the token's jti to be revoked after Logout")
+	}
+
+	// The ttl handed to the store should be positive and no more than the
+	// token's full lifetime -- proof the caller computed "time remaining",
+	// not something accidentally zero or unbounded.
+	if revocations.LastRevokeTTL <= 0 || revocations.LastRevokeTTL > service.RefreshTokenTTL {
+		t.Fatalf("expected a ttl in (0, %v], got %v", service.RefreshTokenTTL, revocations.LastRevokeTTL)
+	}
+
+	// And the point of the whole feature: the same token can no longer refresh.
+	_, err = svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: tokens.RefreshToken})
+	if !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected a logged-out token to fail refresh, got %v", err)
+	}
+}
+
+func TestLogout_AccessTokenRejected(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+
+	ctx := context.Background()
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	err = svc.Logout(ctx, service.RefreshTokenRequest{RefreshToken: tokens.AccessToken})
+	if !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid for an access token presented to Logout, got %v", err)
+	}
+
+	claims, err := pkgauth.ValidateToken(testSecret, tokens.AccessToken)
+	if err != nil {
+		t.Fatalf("failed to parse claims: %v", err)
+	}
+	revoked, err := revocations.IsRevoked(ctx, claims.ID)
+	if err != nil {
+		t.Fatalf("unexpected error checking revocation: %v", err)
+	}
+	if revoked {
+		t.Fatal("expected Logout to reject an access token without ever calling Revoke")
+	}
+}
+
+func TestLogout_GarbageToken(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+
+	err := svc.Logout(context.Background(), service.RefreshTokenRequest{RefreshToken: "not-a-real-token"})
+	if !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
+	}
+}
+
+// TestLogout_FailsOpenWhenRevocationWriteErrors: a failed server-side write
+// must not surface as a failed sign-out -- the frontend already treats
+// clearing local state as the guarantee "sign out" makes (SPEC.md Step 13,
+// 2.3).
+func TestLogout_FailsOpenWhenRevocationWriteErrors(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+
+	ctx := context.Background()
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+
+	revocations.RevokeErr = errors.New("redis unreachable")
+
+	if err := svc.Logout(ctx, service.RefreshTokenRequest{RefreshToken: tokens.RefreshToken}); err != nil {
+		t.Fatalf("expected Logout to fail open when the revocation store errors, got: %v", err)
 	}
 }
 
@@ -272,7 +428,7 @@ func fabricateToken(t *testing.T, secret []byte, userID, tokenType string, ttl t
 
 func TestMe_Success(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}); err != nil {
@@ -294,7 +450,7 @@ func TestMe_Success(t *testing.T) {
 
 func TestMe_UserNotFound(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	ctx := context.Background()
 	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}); err != nil {
@@ -321,7 +477,7 @@ func TestMe_PropagatesNonNotFoundError(t *testing.T) {
 	users := mock.NewUserStore()
 	dbErr := errors.New("simulated database connection failure")
 	users.GetByIDErr = dbErr
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	_, err := svc.Me(context.Background(), uuid.New())
 	if !errors.Is(err, dbErr) {
@@ -351,7 +507,7 @@ func TestRegister_RejectsInvalidInputBeforeTouchingStore(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			users := mock.NewUserStore()
-			svc := service.NewService(users, testSecret)
+			svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 			_, err := svc.Register(context.Background(), service.RegisterRequest{
 				Email: tc.email, Username: tc.username, Password: tc.password,
@@ -369,7 +525,7 @@ func TestRegister_RejectsInvalidInputBeforeTouchingStore(t *testing.T) {
 
 func TestRegister_StoresNormalizedIdentity(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 	ctx := context.Background()
 
 	if _, err := svc.Register(ctx, service.RegisterRequest{
@@ -392,7 +548,7 @@ func TestRegister_StoresNormalizedIdentity(t *testing.T) {
 // logging in as Alice@Example.TEST returned 401 before this step.
 func TestLogin_FindsUserRegisteredInADifferentCase(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 	ctx := context.Background()
 
 	if _, err := svc.Register(ctx, service.RegisterRequest{
@@ -417,7 +573,7 @@ func TestLogin_ExistingShortPasswordStillAuthenticates(t *testing.T) {
 	const legacyPassword = "pw12345678" // 10 characters -- below the new minimum
 
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 	ctx := context.Background()
 
 	// Seeded directly, bypassing Register: this stands in for an account that
@@ -452,7 +608,7 @@ func TestLogin_ExistingShortPasswordStillAuthenticates(t *testing.T) {
 // into a user-enumeration oracle.
 func TestLogin_IsNotSubjectToRegistrationRules(t *testing.T) {
 	users := mock.NewUserStore()
-	svc := service.NewService(users, testSecret)
+	svc := service.NewService(users, mock.NewRevocationStore(), testSecret)
 
 	for _, password := range []string{"a", "", "aaaaaaaaaaaaaaaa", strings.Repeat("z", 80)} {
 		_, err := svc.Login(context.Background(), service.LoginRequest{

@@ -24,6 +24,12 @@ type RevocationStore struct {
 	// path.
 	RevokeErr    error
 	IsRevokedErr error
+
+	// LastRevokeTTL is the ttl argument from the most recent Revoke call.
+	// TTL expiry itself is not modeled here (see the type doc) -- this only
+	// lets a test assert the *caller* computed a sane ttl before handing it
+	// to the store.
+	LastRevokeTTL time.Duration
 }
 
 func NewRevocationStore() *RevocationStore {
@@ -31,6 +37,7 @@ func NewRevocationStore() *RevocationStore {
 }
 
 func (m *RevocationStore) Revoke(ctx context.Context, jti string, ttl time.Duration) error {
+	m.LastRevokeTTL = ttl
 	if m.RevokeErr != nil {
 		return m.RevokeErr
 	}

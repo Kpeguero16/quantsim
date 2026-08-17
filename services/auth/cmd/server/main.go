@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
 	"github.com/kpeguero/quantsim/services/auth/internal/handler"
@@ -25,6 +26,17 @@ func main() {
 	}
 	if err := pkgauth.ValidateSecret([]byte(jwtSecret)); err != nil {
 		log.Fatal(err)
+	}
+	// Not a new variable -- services/market-data already requires this same
+	// REDIS_URL. Required here too, at boot, rather than optional: no
+	// service in this repo degrades gracefully without a configured
+	// dependency, and inventing that pattern for one small feature isn't
+	// worth it. This is separate from the fail-open behavior at request time
+	// for a Redis that's configured but transiently unreachable (SPEC.md
+	// Step 13, 2.3, 2.5).
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		log.Fatal("REDIS_URL is required")
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -45,8 +57,16 @@ func main() {
 	}
 	defer pool.Close()
 
+	redisOpts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatalf("invalid REDIS_URL: %v", err)
+	}
+	redisClient := redis.NewClient(redisOpts)
+	defer redisClient.Close()
+
 	userStore := store.NewPostgresUserStore(pool)
-	svc := service.NewService(userStore, []byte(jwtSecret))
+	revocationStore := store.NewRedisTokenStore(redisClient)
+	svc := service.NewService(userStore, revocationStore, []byte(jwtSecret))
 	authHandler := handler.NewAuthHandler(svc)
 	router := handler.NewRouter(authHandler, []byte(jwtSecret))
 

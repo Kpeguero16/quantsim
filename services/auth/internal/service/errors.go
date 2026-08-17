@@ -43,9 +43,10 @@ func InvalidInputMessage(err error) string {
 	return strings.TrimPrefix(err.Error(), ErrInvalidInput.Error()+": ")
 }
 
-// ErrTokenInvalid is returned by Refresh for any token problem: expired,
-// malformed, wrong signature, or the wrong token type presented. Handlers
-// map this to 401.
+// ErrTokenInvalid is returned by Refresh and Logout for any token problem:
+// expired, malformed, wrong signature, the wrong token type presented, or
+// (Refresh only) a revoked jti. One failure vocabulary for both, rather than
+// a separate one for logout. Handlers map this to 401.
 var ErrTokenInvalid = errors.New("invalid or expired token")
 
 // ErrUserNotFound is the canonical "no such user" outcome from a store

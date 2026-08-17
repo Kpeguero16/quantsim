@@ -27,7 +27,7 @@ confirm the "revoked token still refreshes" test fails, then restore.
 ---
 
 ### Phase 1: The store layer
-- [ ] **Task 1** — `pkg/auth/jwt.go`: `GenerateToken` sets a `jti` on every
+- [x] **Task 1** — `pkg/auth/jwt.go`: `GenerateToken` sets a `jti` on every
       token. `services/auth/internal/service/interfaces.go`: `RevocationStore`
       interface. `services/auth/internal/store/redis_token_store.go`: real
       implementation, `revoked:` key prefix. `services/auth/internal/service/mock/revocation_store.go`:
@@ -38,11 +38,11 @@ confirm the "revoked token still refreshes" test fails, then restore.
       15** — round-trip, real TTL expiry (2s sleep after a 1s TTL — the mock
       cannot prove this), no key collision, skips cleanly with Redis down
 
-- [ ] ⏸️ **Checkpoint: the store layer exists and is proven against real
+- [x] ⏸️ **Checkpoint: the store layer exists and is proven against real
       Redis** — nothing in the running service behaves differently yet
 
 ### Phase 2: Wiring the service
-- [ ] **Task 2** — `services/auth/internal/service/auth.go`: `Refresh` checks
+- [x] **Task 2** — `services/auth/internal/service/auth.go`: `Refresh` checks
       `IsRevoked` before the user lookup, fails open + logs on a store error;
       `+ Logout` (validates like `Refresh`, then `Revoke`s the `jti` with its
       remaining TTL, fails open + logs on a store error). `NewService` gains a
@@ -52,9 +52,9 @@ confirm the "revoked token still refreshes" test fails, then restore.
       `REDIS_URL` (not new — market-data already requires it), wires
       `store.NewRedisTokenStore`
 
-- [ ] Mutation check run and reverted — see the warning above
+- [x] Mutation check run and reverted — see the warning above
 
-- [ ] ⏸️ **Checkpoint: Refresh actually rejects a revoked token; Logout
+- [x] ⏸️ **Checkpoint: Refresh actually rejects a revoked token; Logout
       actually revokes one** — proven, not assumed
 
 ### Phase 3: The endpoint
