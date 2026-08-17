@@ -43,9 +43,9 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 ---
 
 ### Phase 1: Foundation
-- [ ] **Task 1** — Migration `006`: `positions.avg_cost` (NOT NULL DEFAULT 0), `orders.filled_price`, `orders.rejection_reason`, `trades.realized_pl` (all nullable). Real `.down.sql`, verified by down-then-up
+- [x] **Task 1** — Migration `006`: `positions.avg_cost` (NOT NULL DEFAULT 0), `orders.filled_price`, `orders.rejection_reason`, `trades.realized_pl` (all nullable). Real `.down.sql`, verified by down-then-up
 
-- [ ] **Task 2** — Module scaffold: `go.mod` (chi, pgx, uuid, `replace ../../pkg` — **no new project dependency**), `go.work`, `cmd/server` with `/healthz`, `handler/errors.go` copied from `market-data`, `Makefile` (`GO_MODULES`, `run-trading-engine`), `.env.example`. No `REDIS_URL`
+- [x] **Task 2** — Module scaffold: `go.mod` (chi, pgx, uuid, `replace ../../pkg` — **no new project dependency**), `go.work`, `cmd/server` with `/healthz`, `handler/errors.go` copied from `market-data`, `Makefile` (`GO_MODULES`, `run-trading-engine`), `.env.example`. No `REDIS_URL`
 
 - [ ] ⏸️ **Checkpoint A: Foundation** — 4 modules build/test/vet clean, service answers `/healthz`, migration reversible, dev DB at 20
 
