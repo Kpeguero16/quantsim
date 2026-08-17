@@ -50,9 +50,9 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 ### Phase 3: Wiring and close-out
 - [x] **Task 5** — Makefile: `test`, `test-integration` (`-count=1`), `test-all`, `test-db-drop`, `vet` **including a `-tags=integration` pass** — tagged files are otherwise never type-checked by anything
 
-- [ ] **Task 6** — Docs: a real "Integration tests" section in `docs/TESTING_STRUCTURE.md`; two `docs/deferred-tuning.md` entries with named triggers (testcontainers ← CI arriving; golang-migrate ← first migration needing a directive); Step 12 in `PHASE2_CHECKLIST.md` with mutation results; rewrite `docs/NEXT_SESSION.md`
+- [x] **Task 6** — Docs: a real "Integration tests" section in `docs/TESTING_STRUCTURE.md`; two `docs/deferred-tuning.md` entries with named triggers (testcontainers ← CI arriving; golang-migrate ← first migration needing a directive); Step 12 in `PHASE2_CHECKLIST.md` with mutation results; rewrite `docs/NEXT_SESSION.md`
 
-- [ ] ⏸️ **Checkpoint: Step 12 complete** — `make test` green with Docker down, `make test-integration` green with it up, `make vet` clean, dev DB still at 15 users
+- [x] ⏸️ **Checkpoint: Step 12 complete** — `make test` green with Docker down, `make test-integration` green with it up, `make vet` clean, dev DB still at 15 users
 
 ---
 

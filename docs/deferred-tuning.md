@@ -145,6 +145,67 @@ the same change that introduces the proxy, never before — an untriggered
 
 ---
 
+## 6. Integration tests reuse the dev Postgres instead of testcontainers
+
+**Where:** `services/auth/integration/`, chosen in `SPEC.md` (Step 12) §2.1.
+
+**Now:** the store suite connects to the Postgres that `make docker-up`
+already runs, against a dedicated `quantsim_test` database it drops and
+recreates each run. Correct and fast on a development laptop.
+
+**Why not testcontainers:** there is **no CI anywhere in this repo** — no
+`.github/`, nothing. Testcontainers' main advantage is a self-contained
+ephemeral database that CI can start without any host setup, which is
+currently an advantage over nothing. It would also add a heavyweight
+dependency to `services/auth` and container startup to every run.
+
+**The trade:** the suite needs a running Postgres and depends on host state
+(the compose stack, `.env`). It cannot run on a machine that has only a Go
+toolchain. And it is the developer's own database server, so the guards
+described in `docs/TESTING_STRUCTURE.md` §6a are what stand between the suite
+and real data — a design with an ephemeral container would not need them.
+
+**What to measure first:** nothing to measure. This is an environment
+question, not a performance one.
+
+**When it changes:** **the first CI pipeline that needs to run
+`make test-integration`.** At that point testcontainers (or a service
+container in the CI config) stops being optional. The harness is structured so
+only `ensureTestDatabase` and DSN resolution change; no test moves.
+
+---
+
+## 7. Migrations are applied to the test database by exec'ing the SQL files
+
+**Where:** `applyMigrations` in `services/auth/integration/harness_test.go`,
+chosen in `SPEC.md` (Step 12) §2.4.
+
+**Now:** the harness globs `infra/migrations/*.up.sql`, sorts by filename, and
+executes each with the pgx pool it already holds. Verified at the time: every
+migration is plain SQL, 1–5 statements, with no golang-migrate directives.
+This keeps `services/auth/go.mod` unchanged — Step 7 §8 makes any new
+dependency an ask-first decision, and Go does not mark test-only dependencies
+differently in the module graph.
+
+Version tracking and dirty-state recovery buy nothing here because the
+database is recreated on every run, so migrations always apply exactly once
+against an empty database.
+
+**The trade:** this is a second, simpler implementation of something
+golang-migrate already does, and the two could diverge. Concretely, it ignores
+anything migrate would interpret rather than execute — `-- no-transaction`
+above all.
+
+**When it changes:** **the first migration that needs a golang-migrate
+directive.** §3 above makes this a live possibility rather than a
+hypothetical: `CREATE INDEX CONCURRENTLY` cannot run inside a transaction
+block, which under golang-migrate means `-- no-transaction`. The moment a
+migration carries one, this loop applies it as ordinary SQL and the test
+schema stops matching what `make migrate-up` produces. Switch to the migrate
+library in the same change.
+
+---
+
 ## Related decisions recorded elsewhere
 
 - **Graceful shutdown** — none of the three services drain on SIGTERM

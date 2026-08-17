@@ -1,112 +1,113 @@
 # Next session — state of play
 
-Last updated **2026-08-14**, at the end of the session that shipped Step 11.
+Last updated **2026-08-17**, at the end of the session that shipped Step 12.
 
 This file answers three questions on picking the project back up: *is anything half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not appended to.
 
 ---
 
-## Nothing is in flight
+## One thing is in flight
 
-Step 11 is reviewed, merged, and pushed. There is no work to recover.
+**Step 12 is complete and committed, but sits on a branch that has not been merged or pushed.**
 
 | | |
 |---|---|
-| Branch | `main`, clean, in sync with `origin/main` |
-| HEAD | `be77132` — *Merge Step 11: auth rate limiting* |
-| Migrations | schema at version **5**, not dirty — Step 11 added none |
-| Tests | green across all four modules; gateway also clean under `-race` |
-| Stale branch | `step11-auth-rate-limiting` still exists locally and on `origin` — safe to delete, it is fully merged |
+| Branch | `step12-store-integration-harness`, clean, **6 commits ahead of `main`** |
+| `main` | unchanged at `61738e4` (Step 11's merge and docs) |
+| Migrations | schema at version **5**, not dirty — Step 12 added none |
+| Tests | `make test` green (4 modules); `make test-integration` **14 PASS / 0 SKIP** |
+| Dev database | verified `users=15`, `accounts=15` — unchanged throughout |
+| Not pushed | the branch is local only |
 
-**Pre-merge review found two real bypasses**, both fixed on the branch before
-it merged (`4bf43e6`, `e6dc4c1`). They are worth reading before touching this
-code, because both were invisible to a passing test suite — see *What Step 11
-did* below.
+**The decision waiting for you: review it, or merge it.** Nothing depends on
+the branch and `main` has not moved, so there is no rush and no conflict risk.
 
-`SPEC.md`, `tasks/plan.md`, and `tasks/todo.md` describe **Step 11, fully
+Step 11's pre-merge review found two real bypasses, so a review here is not a
+formality. Note that Step 12's own mid-step review already caught three bugs in
+the harness — all written up in `PHASE2_CHECKLIST.md`.
+
+`SPEC.md`, `tasks/plan.md`, and `tasks/todo.md` describe **Step 12, fully
 checked off**. By convention they are archived to
-`docs/archive/phase2-step11-auth-rate-limiting/` when the *next* spec is
+`docs/archive/phase2-step12-store-integration-harness/` when the *next* spec is
 drafted, not before.
 
 ---
 
-## What Step 11 did
+## What Step 12 did
 
-Closed `docs/security-backlog.md` item 1 — the largest remaining gap in the
-auth surface. Per-IP limiting on `/auth/*` and per-account exponential backoff
-on `/auth/login`, both at the gateway. No new module dependency, no migration,
-no change to `services/auth/`. Full write-up in `PHASE2_CHECKLIST.md`.
+`services/auth/internal/store/` had **no tests at all**. Every auth suite ran
+against a Go map, so all 18 test files would have stayed green against a
+completely wrong SQL query — including Step 10's `lower(email)` fix, which
+lives in that layer and was verified only by hand.
 
-**Two things are worth knowing before you touch this code:**
+There are now 14 tests against a real Postgres, in `services/auth/integration/`
+behind the repo's first build tag. Full write-up in `PHASE2_CHECKLIST.md`.
 
-**The backlog was wrong about `X-Forwarded-For`, and the entry is now
-corrected.** It claimed the gateway's `SetXForwarded()` call sanitises the
-inbound header so a limiter could trust it. That call runs on `r.Out` inside
-the proxy's `Rewrite`, after all middleware, and shapes only the upstream
-request. Building to it would have produced a limiter bypassable with one
-forged header per request. If you find yourself reaching for a forwarding
-header anywhere in gateway middleware, that is the trap.
+**Run them:**
 
-**A `429` must never distinguish a throttled account from a wrong password.**
-The limiter keys on the submitted email and consults no database, so unknown
-and real addresses throttle identically. This is what keeps it from undoing
-the uniform-failure property Step 9 §2.12 built deliberately. There is a test
-that fails if it is ever broken, and it is verified by mutation.
+```bash
+make docker-up
+make test-integration
+```
 
-**The two bypasses review caught, both of which passed the suite at the time:**
+With Docker stopped the suite skips and exits 0, so `make test` stays green on
+a laptop with nothing running.
 
-*Trailing data.* The gateway parsed the login body with `json.Unmarshal`,
-which rejects trailing bytes; auth uses `json.NewDecoder().Decode()`, which
-ignores them. Appending one junk byte made the gateway fail to extract an
-account key — skipping per-account backoff entirely — while auth processed the
-login normally. **The rule now written into the code: the gateway must never
-be stricter than the service it protects.** If you add any parsing at the
-gateway, check it against how the backend parses the same bytes.
+### Three things to know before touching this code
 
-*Concurrent bursts.* Counting the failure after the backend replied left the
-counter clean for the whole round-trip, so 60 simultaneous guesses at a
-threshold of 5 all got through. Check-and-count is now atomic and optimistic
-(`Backoff.Attempt`), corrected afterwards by `Succeed` on `200` and `Undo` on
-anything that is not a credential verdict. **If you touch that ordering, the
-regression tests to keep are the two burst tests.**
+**The suite must never touch the dev database, and the environment actively
+misleads.** `POSTGRES_DB=quantsim` is an **empty decoy**; `DATABASE_URL` points
+at `postgres`, which is where the 15 real users live. Both names a careless
+harness would grab are wrong, and one is wrong destructively. The target is
+`quantsim_test`, checked **three times** — when the DSN is derived, after the
+pool connects, and again immediately before every `TRUNCATE` (that one asks the
+server `SELECT current_database()`). **Do not consolidate those into one
+check.**
+
+**Exactly one condition may skip the suite: Postgres unreachable.** Everything
+else fails. This is not fussiness — an earlier version skipped on any setup
+error, migrations turned out not to be idempotent, and the whole suite reported
+a green `ok` while running zero tests. `make test-integration` also runs with
+`-v` for the same reason: without it `go test` hides skipped-test output, so an
+all-skip run looks exactly like an all-pass one.
+
+**Pair any new store test with a mutation check.** Break the query it covers
+and confirm *that* test fails. A store test that passes against a broken query
+is worse than none, because it gets trusted. `docs/TESTING_STRUCTURE.md` §6a
+has the conventions, including why there is no `t.Parallel()` in that package.
 
 ---
 
 ## What to do next, in order
 
-### 1. A store-layer integration harness — unchanged from last time
+### 1. Review or merge `step12-store-integration-harness`
 
-`internal/store/` still has **no tests at all**. Both the service and handler
-suites run against `mock.UserStore`, a Go map — they would stay green with a
-completely wrong SQL query. Step 10's central fix lives in exactly that layer
-and was verified by hand.
-
-Step 11 did not change this, and did not make it worse: the gateway work
-touches no SQL.
-
-`docs/TESTING_STRUCTURE.md` §4 sketches the shape (`services/auth/integration/`,
-`-tags=integration`, a real Postgres). The open decision is the harness:
-testcontainers vs. the existing docker-compose, and how CI gets a database.
-
-**Do this before the trading engine**, which will add far more SQL than auth
-ever had.
+Six commits, each a task with its own verification. Any point is a clean
+rollback.
 
 ### 2. Refresh-token revocation and a real logout
 
-`docs/security-backlog.md` item 2, now the **highest-priority open** security
-item. Refresh tokens live 7 days with no kill switch; "sign out" is
+`docs/security-backlog.md` item 2, and now the **highest-priority open**
+security item. Refresh tokens live 7 days with no kill switch; "sign out" is
 client-side only. With a trading engine, a leaked refresh token is a week of
 authenticated access to someone's positions.
 
-Note the trap recorded there: if you choose rotation with reuse detection, the
-frontend's shared in-flight refresh (`frontend/src/api/client.ts`) stops being
-an efficiency measure and becomes a *correctness requirement* — seven parallel
-refreshes would burn seven tokens and look exactly like token theft.
+It uses Redis rather than Postgres, so it adds no SQL — but the store harness
+now exists either way, and the gateway already has the middleware patterns from
+Step 11.
+
+Note the trap recorded in the backlog: if you choose rotation with reuse
+detection, the frontend's shared in-flight refresh
+(`frontend/src/api/client.ts`) stops being an efficiency measure and becomes a
+*correctness requirement* — seven parallel refreshes would burn seven tokens
+and look exactly like token theft.
 
 ### 3. Phase 2 proper — the trading engine
 
-Order execution, trade history, P/L tracking. Per `agents.md`, start with a
-spec, get it reviewed, then build to checkpoints.
+Order execution, trade history, P/L tracking. The reason Step 12 came first:
+this is where the SQL volume arrives, and it now lands against a working safety
+net. Per `agents.md`, start with a spec, get it reviewed, then build to
+checkpoints.
 
 ---
 
@@ -121,45 +122,57 @@ make run-frontend     # :5173
 
 Each `run-*` target runs in the foreground, so they need separate terminals.
 
-Rate limiting is **on by default** with generous limits (100 requests per 15
-min per IP; backoff after 5 consecutive failed logins). If it gets in the way
-during development, `RATE_LIMIT_ENABLED=false` turns it off — the gateway logs
-a warning at boot whenever it is. All five knobs are documented in
-`.env.example`; none needs setting for the stack to run.
+`make help` now lists the test targets too.
+
+Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff
+after 5 consecutive failed logins). `RATE_LIMIT_ENABLED=false` turns it off if
+it gets in the way during development — the gateway logs a warning at boot
+whenever it is off.
 
 ---
 
 ## Things that will trip you up
 
 **`DATABASE_URL` points at the `postgres` database, not `quantsim`.** An empty
-database named `quantsim` also exists. Running `psql -d quantsim` connects
-successfully and shows no `users` table, which reads like data loss and is
-not. Use `-d postgres`, or better, `"$DATABASE_URL"`. This cost real confusion
-once — a manual `DELETE` appeared to do nothing because it was aimed at the
-wrong database.
+database named `quantsim` also exists. `psql -d quantsim` connects successfully
+and shows no `users` table, which reads like data loss and is not. The user is
+**`quantsim`** and the database is **`postgres`** — that combination catches
+people out:
+
+```bash
+docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
+  "SELECT count(*) FROM users"     # 15
+```
 
 **`migrate` lives at `~/go/bin/migrate` and is not on a non-interactive
 shell's PATH.** Use `make migrate-up` from an interactive shell, or the full
-path.
+path. Note the integration harness does *not* use it — it execs the `.up.sql`
+files directly, which is recorded in `docs/deferred-tuning.md` §7 with the
+trigger that would change it.
 
 **A failed migration leaves the schema dirty.** Recovery is
 `make migrate-force VERSION=<n>` at the last good version, then fix the cause
-and re-run.
+and re-run. This applies to the dev database only; the test database is
+recreated from scratch on every run and cannot be left dirty.
 
 **Restart a service after changing its code.** Everything runs under `go run`,
-so a live instance keeps serving the old binary. This silently happened for an
-entire step once: `:8081` was still accepting one-character passwords while
-three commits of validation sat on disk. If behaviour does not match the code,
-check this first. It applies to the gateway now too.
+so a live instance keeps serving the old binary. This silently burned an entire
+step once: `:8081` was still accepting one-character passwords while three
+commits of validation sat on disk.
 
-**The unit suites cannot see store-layer changes.** See item 1 above. Do not
-read a green suite as coverage of anything in `internal/store/`.
+**A green `go test ./...` still says nothing about SQL.** It no longer says
+*nothing about the store* — `make test-integration` covers that now — but the
+tagged suite is invisible to default tooling. `make vet` includes a
+`-tags=integration` pass so it cannot rot silently; keep it that way.
 
-**Rate-limit counters are per-process.** Correct today, because one gateway
-runs. The moment a second instance serves traffic the effective limit is
-doubled — `docs/deferred-tuning.md` §4, with its trigger named. §5 records the
-related one: `RemoteAddr` keying breaks behind a load balancer, where all
-traffic would collapse onto a single key.
+**Rate-limit counters are per-process.** Correct while one gateway runs. A
+second instance doubles the effective limit — `docs/deferred-tuning.md` §4, and
+§5 for why `RemoteAddr` keying breaks behind a load balancer.
+
+**`gofmt` reports drift in `services/auth/internal/service/interfaces.go` and
+`types.go`.** Pre-existing, untouched by Steps 11–12, and deliberately left
+alone for scope discipline. Worth a one-line cleanup commit before any `fmt`
+check lands in a Makefile target or CI.
 
 ---
 
@@ -168,12 +181,12 @@ traffic would collapse onto a single key.
 | | |
 |---|---|
 | `agents.md` | master context, working agreement, architecture |
-| `PHASE1_CHECKLIST.md` | Phase 1 status, all 9 steps + Step 10 — **closed** |
-| `PHASE2_CHECKLIST.md` | Phase 2 status, starting with Step 11 |
-| `SPEC.md` | the current step's spec (Step 11) |
+| `PHASE1_CHECKLIST.md` | Phase 1, all 9 steps + Step 10 — **closed** |
+| `PHASE2_CHECKLIST.md` | Phase 2 — Steps 11 and 12, and what remains |
+| `SPEC.md` | the current step's spec (Step 12) |
 | `tasks/plan.md`, `tasks/todo.md` | the current step's breakdown and checkpoints |
-| `docs/security-backlog.md` | 8 known gaps — **item 1 now closed**, item 2 is next |
-| `docs/deferred-tuning.md` | performance defaults to revisit, §4/§5 added by Step 11 |
-| `docs/TESTING_STRUCTURE.md` | how tests are meant to be laid out |
-| `docs/archive/phase1-step*/` | every completed step's spec, plan, and todo |
+| `docs/TESTING_STRUCTURE.md` | test layout; **§6a is the integration-test guide** |
+| `docs/security-backlog.md` | 8 known gaps — item 1 closed, **item 2 is next** |
+| `docs/deferred-tuning.md` | deferred decisions with triggers; §6/§7 added by Step 12 |
+| `docs/archive/phase*/` | every completed step's spec, plan, and todo |
 | `docs/intent/quantsim-resume.md` | why the workflow changed in July 2026 |

@@ -120,18 +120,111 @@ backend received the full request body every time.
 
 ---
 
+---
+
+## Step 12: Store-Layer Integration Harness
+
+`services/auth/internal/store/` had **zero tests**. All 18 auth test files ran
+against `mock.UserStore`, a Go map — they would have stayed green against a
+completely wrong SQL query. Step 10's central fix lives in that layer and
+shipped with the caveat recorded in `PHASE1_CHECKLIST.md`: *"the verification
+was manual, which proves the fix today and protects nothing tomorrow."*
+
+- [x] Harness against a real Postgres, in `services/auth/integration/` behind
+      the repo's first build tag
+- [x] Dedicated `quantsim_test` database, dropped and recreated each run
+- [x] 14 tests over all three store methods
+- [x] `make test`, `test-integration`, `test-all`, `test-db-drop`, `vet`
+- [x] `var _ service.UserStore` assertions on both the store and the mock
+- [x] Two `docs/deferred-tuning.md` entries (§6, §7) with named triggers
+
+**Completed 2026-08-17.** Spec at `SPEC.md`, checkpoints in `tasks/plan.md` /
+`tasks/todo.md`. **No query changed, no migration added, no new module
+dependency** — `services/auth/go.mod` is untouched.
+
+### The decisions
+
+**Reuse the compose Postgres, not testcontainers.** There is no CI anywhere in
+this repo, so testcontainers' main advantage — an ephemeral database CI can
+start unaided — is currently an advantage over nothing. Recorded as the upgrade
+path in `docs/deferred-tuning.md` §6 with its trigger: the first CI pipeline.
+
+**Three guards on the target database.** The dev database holds 15 real users
+and this harness runs `TRUNCATE`, while the environment actively misleads:
+`POSTGRES_DB=quantsim` is an *empty decoy* and `DATABASE_URL` points at
+`postgres`, where the real rows live. Both names a careless harness would grab
+are wrong, one destructively. So the name is checked when the DSN is derived,
+after the pool connects, and again immediately before every `TRUNCATE` — the
+last by asking the server `SELECT current_database()` rather than trusting a
+string parsed at startup.
+
+**Rollback forced by numeric overflow.** `accounts.balance` is
+`NUMERIC(20,4)`, so a `startingBalance` of `1e16` fails the accounts insert
+*after* the users insert succeeded. No schema mutation, so unlike a temporary
+`CHECK` constraint there is nothing that can leak into a later test if cleanup
+fails.
+
+### Two bugs found in the harness itself
+
+Both were mine, both were caught mid-step, and both produced a **green `ok`
+while testing nothing** — which is the failure mode this step exists to
+eliminate, arrived at twice by different routes:
+
+1. **Migrations were not idempotent.** `ensureTestDatabase` only created the
+   database when absent, so the second run failed on `CREATE TABLE users`
+   (`42P07`). Combined with (2), the suite reported success having run zero
+   tests. Fixed by dropping and recreating the database each run — which also
+   preserves a property worth having: the schema is rebuilt from `001` every
+   run, so the suite continuously proves the migration chain applies to an
+   empty cluster. The dev database, migrated incrementally over months, has
+   never demonstrated that.
+
+2. **Any setup error skipped the suite.** Now exactly one condition skips —
+   Postgres unreachable — and a guard violation, failed migration, or bad DSN
+   exits non-zero. A harness that cannot tell *"nothing to test against"* from
+   *"the harness is broken"* protects nothing.
+
+3. **`make test-integration` hid the skips.** Without `-v`, `go test` prints
+   only `ok` and suppresses skipped-test output, so an all-skip run looked
+   identical to an all-pass one — the same trap, reintroduced by the command
+   that runs the suite. `-v` is now load-bearing, not cosmetic.
+
+### Mutation checks
+
+Every one confirmed to fail the named test, then reverted:
+
+| Mutation | Result |
+|---|---|
+| `lower(email) = $1` → `email = $1` | mixed-case lookup fails — **the headline check; nothing else in the repo failed on this change** |
+| `tx.Commit` moved before the accounts insert | rollback test reports `users = 1` |
+| `23505` mapping pointed at a SQLSTATE that never fires | all four duplicate cases fail |
+| migration 004's email index commented out | schema assertion **and** the case-differing duplicate fail — this is what proves migrations are genuinely applied, not inherited |
+
+Counted **14 PASS / 0 SKIP / 0 FAIL** rather than trusting `ok`, and confirmed
+the dev database still holds `users=15, accounts=15` after every run.
+
+The first attempt at the `23505` mutation only broke the build via unused
+imports, which proves nothing about the tests — it was redone so the code still
+compiled.
+
+---
+
 ## Still open before the trading engine
 
-- [ ] **Store-layer integration harness** — `internal/store/` has no tests at
-      all. Both existing suites run against a Go map and would stay green with
-      a completely wrong SQL query. `docs/TESTING_STRUCTURE.md` §4 sketches the
-      shape; the open decision is testcontainers vs. the existing
-      docker-compose, and how CI gets a database. **Do this before Phase 2
-      adds far more SQL than auth ever had.**
 - [ ] **Refresh-token revocation and a real logout** —
       `docs/security-backlog.md` item 2, now the highest-priority open item.
       Tokens live 7 days with no kill switch, and "sign out" is client-side
       only.
+- [ ] **market-data's store has the same gap** — `historical_price_store.go`
+      has no tests either, and its idempotent upsert (`UNIQUE(symbol,
+      timeframe, timestamp)`) is exactly the kind of SQL worth covering. Step
+      12's harness is the template; extracting it to `pkg/testutil/` is worth
+      considering at that point, but not before (see
+      `docs/TESTING_STRUCTURE.md` §4).
+- [ ] **Pre-existing `gofmt` drift** in `services/auth/internal/service/`
+      (`interfaces.go`, `types.go`). Untouched by Steps 11–12 and left alone
+      deliberately; worth a one-line cleanup commit before any `fmt` check
+      lands in a Makefile target or CI.
 
 ## Then the engine itself
 
