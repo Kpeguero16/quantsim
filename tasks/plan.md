@@ -60,6 +60,8 @@ The order is: resolve account → fetch price (outside any transaction, it is a 
 
 Consequence, stated so it is not discovered later: the balance/holding *checks* live in the store, not the service. The service still owns everything checkable without a lock — side, quantity, price acquisition, error mapping, and the P/L arithmetic — and the service-layer unit tests drive rejection through the mock store returning `ErrInsufficientBalance`.
 
+**Refinement made while implementing T4.** The weighted-average and realized-P/L *arithmetic* is a pair of pure functions in `internal/service/money.go`, which the store calls from inside its transaction — rather than an `ON CONFLICT ... SET avg_cost = (...)` expression in SQL. Same placement (the formula still runs inside the lock), but one implementation instead of two, and it is unit-testable without a database. Expressing it as SQL would have put the project's most error-prone arithmetic somewhere no test can reach without Postgres, and would have duplicated it the moment anything in Go needed the same number.
+
 ### D3 — A user with no account row is `500`, not a new 4xx
 
 Every user gets an account at registration (`auth`'s `CreateUserWithAccount`). A valid token whose user has no account is a broken invariant, not a client error, and §2.9's error list has no code for it. **Recommendation:** log it and return `500 internal_error`. Inventing a `404 account_not_found` would put a code in the contract that should never be reachable.
