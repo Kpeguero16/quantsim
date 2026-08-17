@@ -120,8 +120,6 @@ backend received the full request body every time.
 
 ---
 
----
-
 ## Step 12: Store-Layer Integration Harness
 
 `services/auth/internal/store/` had **zero tests**. All 18 auth test files ran
