@@ -1,247 +1,207 @@
-# SPEC — QuantSim Store-Layer Integration Harness (Step 12)
+# SPEC — Refresh-Token Revocation and Logout (Step 13)
 
-Status: **Approved 2026-08-14.** Khalil resolved the four design decisions before drafting; §9 records them. Implementation is unblocked.
-Scope: one new test-only package in `services/auth`, two compile-time assertions in production files, Makefile targets. **No change to any query, no migration, no new module dependency.**
+Status: **Approved 2026-08-17.** All six decisions resolved as recommended; §9 records them. Implementation is unblocked.
+Scope: `pkg/auth`, `services/auth` (service, handler, router, store, mock, `go.mod`), `services/auth/integration`, `frontend/src/api/client.ts`, `frontend/src/auth/AuthProvider.tsx`. No gateway code changes — `/auth/*` is already proxied and rate-limited as a wildcard (`services/gateway/internal/handler/router.go`).
 
-Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase2-step11-auth-rate-limiting/`.
+Prior specs archived at `docs/archive/phase1-step4-auth/` through `docs/archive/phase2-step12-store-integration-harness/`.
 
 ---
 
 ## 1. Objective
 
-`services/auth/internal/store/` has **no tests at all**. Every auth suite runs against `mock.UserStore` (`services/auth/internal/service/mock/mock.go`), which is a Go map. All 18 existing test files would stay green against a completely wrong SQL query.
+`docs/security-backlog.md` item 2: refresh tokens are valid for 7 days with no server-side kill switch. `services/auth/internal/service/auth.go:86-88` says it outright — *"refresh tokens are stateless by design; no revocation list exists."* There is no `POST /auth/logout`; the frontend's "sign out" only drops tokens from memory (`AuthProvider.tsx`'s `clearSession`, `AuthProvider.tsx:33-37`), and the token itself stays valid for up to 7 more days in anyone else's hands.
 
-This is not a theoretical gap. Step 10's central fix — changing `GetUserByEmail` to match `WHERE lower(email) = $1` — lives in exactly that layer, and `PHASE1_CHECKLIST.md` records the caveat in its own words:
+**Why now.** This is the highest-priority open item in the security backlog and `docs/NEXT_SESSION.md`, and it is sequenced deliberately ahead of the trading engine: once `/trading/*` executes real orders, a leaked refresh token stops being "read-only access to public market data" and becomes a week of authenticated access to someone's positions.
 
-> *"the verification was manual, which proves the fix today and protects nothing tomorrow."*
+**Objective:** a real logout that actually ends a session — `POST /auth/logout` revokes the presented refresh token so it can never mint another access token again, using Redis (already running via `make docker-up`, already a workspace dependency via `services/market-data`) as the revocation store.
 
-**Why now, before the trading engine.** Phase 2 will add far more SQL than auth ever had — orders, trades, positions, P/L. Building the harness first means that SQL gets written against a working safety net. Building it afterwards means retrofitting one against a much larger surface, at which point the cheap version is no longer available. `docs/NEXT_SESSION.md` has carried this as item 1 across two sessions.
-
-**Objective:** a real-Postgres test suite that **fails when the store's SQL is wrong**, plus the `make test` / `make test-integration` targets the repo has never had.
-
-**Non-goals.** Not market-data's store. Not CI. Not testcontainers. Not a rewrite of any query — if a test finds a bug, that is a separate decision, not silent scope.
+**Non-goals:**
+- **Refresh-token rotation.** Considered and not recommended for this step — §2.1.
+- **Access-token revocation.** Access tokens stay valid on signature and expiry alone. At a 15-minute TTL this is the accepted residual risk already established for the equivalent tradeoff in `docs/security-backlog.md` item 1 — bounded, self-healing, cheaper than adding a second revocation check to `pkg/auth.RequireAuth`, which the gateway also calls and which has no other dependency on any service's internals today (`pkg/auth/jwt.go`'s package comment).
+- **"Log out everywhere" / revoke-all-for-user.** Nothing in the system today models multiple concurrent sessions per user; adding that concept is a bigger feature than this backlog item asks for.
+- **Argon2id, breach-corpus checks, or any other item from `docs/security-backlog.md`.** Item 2 only.
 
 ---
 
 ## 2. Design decisions
 
-### 2.1 Reuse the docker-compose Postgres, not testcontainers
+### 2.1 A `jti` denylist in Redis, not rotation-with-reuse-detection
 
-The harness connects to the Postgres that `make docker-up` already runs.
+Two designs, per the backlog doc's own framing:
 
-Testcontainers was the obvious alternative and is **rejected for now**: there is **no CI anywhere in this repo** (verified — no `.github/`, no `.gitlab-ci.yml`, nothing), so its main advantage, a self-contained ephemeral database that CI can start, is currently hypothetical. It also costs a heavyweight dependency in `services/auth` and container startup on every run.
+**(a) Denylist.** Every token gets a `jti` claim. `POST /auth/logout` writes it to Redis with a TTL equal to the token's remaining lifetime; `Refresh` checks the presented token's `jti` against that set before issuing a new pair. Simple, and the storage question resolves itself: a Redis key with `TTL = time.Until(expiry)` disappears on its own at natural expiry, so there is no cleanup job and no unbounded growth — only ever as many keys as there are refresh tokens revoked in the last 7 days.
 
-**Recorded as the upgrade path with its trigger — CI arriving** — in `docs/deferred-tuning.md`, the same convention Steps 10 and 11 used.
+**(b) Rotation with reuse detection.** Every `Refresh` call also revokes the token it was just handed and issues a new one from the same "family"; presenting an already-rotated token revokes the whole family and signals theft (OAuth 2.0 BCP). Stronger — it can detect theft, not just enable logout — but it is a bigger change with a specific, already-documented trap: `frontend/src/api/client.ts`'s shared in-flight-refresh promise (`client.ts:118-127`) is today an efficiency measure that tolerates duplicate refreshes because they're harmless. Under rotation, duplicate refreshes burn tokens from the same family and look exactly like theft to a reuse detector — the shared promise stops being an optimization and becomes a correctness requirement, and the client would also need a new codepath to distinguish "refresh failed, token expired" from "refresh failed, theft detected, do not silently retry."
 
-### 2.2 A dedicated `quantsim_test` database, and three guards around it
+**Recommendation: (a).** The backlog item's stated problem is "there is no kill switch and logout doesn't work" — a denylist closes that completely. Rotation's marginal benefit is theft *detection*, which is a materially different and larger feature than the one being asked for, and it is the one design in this project explicitly flagged as easy to get wrong in a file this project has otherwise kept simple on purpose. A denylist is also not a dead end: `jti` tracking is the prerequisite either design needs, so choosing (a) now doesn't foreclose (b) later if the threat model changes.
 
-The dev database holds **15 real users**, and this harness runs `TRUNCATE`. "Which database am I connected to" is therefore not a detail; it is the one assumption whose violation is unrecoverable.
+### 2.2 A new module dependency: `github.com/redis/go-redis/v9` in `services/auth/go.mod`
 
-The environment makes this sharper than it looks:
+Per Step 7 §8 / Step 11, any new module dependency is an ask-first decision — Step 11 held itself to zero new dependencies for exactly this reason, and `docs/security-backlog.md` item 1 already corrected itself once on this exact point: *"'Redis is already a dependency, so a shared counter does not add infrastructure.' True of the stack, false of the gateway."* The same scrutiny applies here: true of the workspace (`services/market-data/go.mod` already has it), **false of `services/auth` today.**
+
+The alternative — a TTL-expiring denylist in Postgres — was considered and rejected: Postgres has no native expiring row, so it would need a scheduled cleanup job (`DELETE WHERE expires_at < now()`) that doesn't exist as a concept anywhere in this codebase yet, for a problem Redis solves natively with a key TTL. It would also be the first write path into `services/auth`'s store outside the existing user/account tables, where Step 12's harness has no coverage.
+
+**Recommendation: add the dependency.** It is a one-line `go.mod` change, the client usage pattern already has a working example to follow (`services/market-data/internal/cache/redis_price_cache.go`), and `docker-compose.yml`'s Redis service is already running for anyone with `make docker-up` up.
+
+### 2.3 Fail open on a Redis error at request time
+
+Introducing Redis into `services/auth` raises the fail-open/fail-closed question `docs/security-backlog.md` item 5 deferred for HIBP lookups and says plainly "deserves being made on purpose rather than by default." Two paths touch Redis, and both take an error the same way:
+
+- **`Refresh`**, checking whether the presented `jti` is revoked.
+- **`Logout`**, writing the revoked `jti`.
+
+**Recommendation: fail open, and log.** If Redis is unreachable, `Refresh` treats "cannot confirm revoked" as "not revoked" and proceeds — identical to today's behavior, so a Redis outage does not become a second, unrelated way for every active session in the app to be logged out every 15 minutes. `Logout` returns success to the caller either way: the frontend's "sign out" already clears the local session unconditionally as its primary effect (`AuthProvider.tsx`'s own docstring: "genuinely all it can do"), so a network- or Redis-level failure during the best-effort server call must not surface as a failed sign-out. Both paths `log.Printf` the error so an outage is visible in the service log, matching how `RATE_LIMIT_ENABLED=false` already logs a warning rather than failing silently.
+
+This is a real, bounded tradeoff, not a default: for the duration of a Redis outage, a token revoked moments earlier could still refresh successfully. Same shape as the accepted residual risk in `docs/security-backlog.md` item 1 — bounded to the outage window, self-healing the moment Redis comes back.
+
+### 2.4 `jti` on both token types; the revocation check stays out of `pkg/auth`
+
+`pkg/auth.Claims` embeds `jwt.RegisteredClaims`, which already has an `ID` field for this — just never populated (`pkg/auth/jwt.go`). `GenerateToken` sets `RegisteredClaims.ID = uuid.NewString()` unconditionally, for both access and refresh tokens: one code path, and every token gets a stable identifier for free even though only refresh tokens are ever checked against the denylist.
+
+**The revocation check itself lives in `services/auth/internal/service`, not in `pkg/auth.ValidateToken` / `RequireAuth`.** `pkg/auth/jwt.go`'s own package comment is explicit: *"It has no dependency on any service's internal packages"* — and `RequireAuth` is what the gateway calls to gate `/market-data/*` and `/trading/*`. Pulling a Redis check into that shared, dependency-free package would force the gateway to gain a Redis dependency too, for a check this step doesn't need there (§1 non-goals — access tokens are not revoked). `Service.Refresh` and the new `Service.Logout` call `pkgauth.ValidateToken` exactly as `Refresh` does today, then consult the revocation store themselves.
+
+### 2.5 `POST /auth/logout` is unauthenticated, keyed on the refresh token, and returns `200 {}`
+
+**Request shape mirrors `/auth/refresh` exactly:** `{"refresh_token": "..."}`, no `Authorization` header required. Same reasoning as `Refresh` — by the time a user wants to log out, their 15-minute access token may already be expired, and the refresh token is what's actually being revoked, so it's what authorizes the call.
+
+**Validation reuses `Refresh`'s first two checks** (`pkgauth.ValidateToken`, then `claims.TokenType == TokenTypeRefresh`) before touching the store — a malformed token or an access token presented as a refresh token gets the same `ErrTokenInvalid` → `401 invalid_token` `Refresh` already returns, not a new error vocabulary for one endpoint.
+
+**Response is `200 OK` with an empty JSON object, not `204 No Content`.** This is a deliberate, narrow fix to something that would otherwise break: `frontend/src/api/client.ts`'s generic `request<T>` helper unconditionally does `await response.json()` on any `response.ok` (`client.ts:237`), and a 204 has no body — that call throws, and gets turned into a spurious `invalid_response` `ApiError` on what was actually a successful logout. Every other endpoint in this API already returns a JSON body on success; giving logout one too keeps `request<T>` untouched rather than special-casing one status code across every call site that uses it.
+
+### 2.6 Redis integration tests use a dedicated logical DB, not the guard chain from Step 12
+
+Nothing about this feature is destructive the way Step 12's `TRUNCATE`/`DROP` risk was — `Revoke`/`IsRevoked` only ever touch keys under a `revoked:` prefix, which cannot collide with `services/market-data`'s `price:`/`prices:` keys (`redis_price_cache.go`) even on the same logical DB. But relying on prefix discipline alone to protect the dev cache is the same shape of mistake Step 12's pre-merge review flagged in a different guise: a convention that happens to hold isn't a guard.
+
+**Recommendation:** tests connect to Redis logical DB 15 (the long-standing `redis-cli -n 15` testing convention), which nothing else in this app ever selects — `REDIS_URL` for both `market-data` and `auth` defaults to `/0`. Isolation by construction, no guard chain needed, and it's a plain `FLUSHDB` between tests instead of a truncate-and-reseed cycle.
+
+---
+
+## 3. API
+
+### `POST /auth/logout`
 
 | | |
 |---|---|
-| `POSTGRES_USER` | `quantsim` |
-| `POSTGRES_DB` | `quantsim` — **empty**, the known decoy |
-| `DATABASE_URL` database | `postgres` — **this is where the 15 users actually live** |
+| Request | `{"refresh_token": string}` |
+| `200` | `{}` — the token is revoked (or the request raced a Redis outage and revocation was best-effort — §2.3; the client cannot tell the difference and does not need to) |
+| `401 invalid_token` | malformed, expired, wrong-signature, or an access token presented as a refresh token — identical shape to `Refresh`'s existing 401 |
+| `400 invalid_request` | missing `refresh_token`, mirrors `Refresh`'s existing check (`handler/auth.go:138`) |
 
-So the two names a careless harness would reach for, `postgres` and `quantsim`, are respectively the real data and the decoy. The target is `quantsim_test`, which is neither.
+### `POST /auth/refresh` (behavior change, same contract)
 
-**An absolute denylist, plus a check on every path that can write:**
-
-`assertTestDB` fails closed twice over — first against a hardcoded
-`protectedDatabases` list (`postgres`, `quantsim`, `template0`, `template1`),
-then against an exact match on `quantsim_test`. It is called:
-
-1. When the DSN is derived.
-2. Immediately before `DROP DATABASE`.
-3. After the pool connects — asking the server `SELECT current_database()`.
-4. Immediately before **every** `TRUNCATE` — asking the server again.
-
-Checks 3 and 4 consult the server rather than a string parsed at startup or a
-boolean cached from it, because those are the statements that destroy data.
-
-**The denylist was added in pre-merge review, and the reason matters** *(2026-08-17)*. The first version compared every target against `testDBName` alone. That defended against a wrong **DSN** and against nothing else: editing the constant to `postgres` would have satisfied every check while the harness dropped and truncated the database holding real users. The call that looked most protective — `assertTestDB(testDBName)` just before the `DROP` — was the emptiest of all, being a constant compared with itself, and a check that reads as protective but can never fire is worse than no check because it gets believed.
-
-Checking an absolute list first makes the constant itself subject to the guard rather than the yardstick for it. Verified end to end by poisoning `testDBName` to `quantsim` — the **empty decoy**, chosen deliberately so a guard failure would cost nothing recoverable — and confirming the run aborts with a non-zero exit. The failure being guarded against is unrecoverable, so it is never reproduced against the real database in order to be tested.
-
-### 2.3 Skip, never fail, when Postgres is unavailable
-
-Plain `go test ./...` must stay green on a laptop with Docker stopped. Two mechanisms, and both are wanted:
-
-- The package is behind `//go:build integration`, so a default run does not even compile it.
-- With the tag on but the server unreachable, `TestMain` records a skip reason and every test calls `t.Skip` with it.
-
-The skip reason is printed to stderr naming `make docker-up`. **A permanently-skipping suite otherwise looks identical to a passing one**, which is the failure mode that makes integration suites worthless over time.
-
-### 2.4 Migrations by executing the `.up.sql` files in order — no new dependency
-
-Verified: every migration is plain SQL with **no golang-migrate directives** (no `-- no-transaction`, no `CONCURRENTLY`), 1–5 statements each. The harness globs `infra/migrations/*.up.sql`, sorts by filename, and `Exec`s each in order with the pgx pool it already holds — roughly fifteen lines.
-
-The test database is created once and truncated between tests, so migrate's version tracking and dirty-state recovery buy nothing here.
-
-**`services/auth/go.mod` stays unchanged.** That matters: Step 7 §8 makes any new dependency an ask-first decision, and Step 11 held itself to zero new dependencies. Importing `golang-migrate` as a library would have added it plus its transitive tree to a production module's graph — Go does not mark test-only dependencies differently.
-
-*Side benefit:* the test database is migrated **from zero** every time it is created, whereas the dev database was migrated incrementally over months. This harness is therefore also the first thing in the repo that proves `001`→`005` applies cleanly to an empty cluster.
-
-**Trigger to revisit:** the first migration that needs a golang-migrate directive. `docs/deferred-tuning.md` §3 already flags `CONCURRENTLY` as a live Phase 2 consideration for the orders and trades tables.
-
-### 2.5 `TRUNCATE` between tests, not transaction-per-test
-
-`TRUNCATE TABLE users CASCADE` before each test — cascading through `accounts` → `positions`/`orders`/`trades` via the FK chain.
-
-**Transaction-per-test is not available here, and the reason is the point of the whole step.** `PostgresUserStore` takes a `*pgxpool.Pool` and calls `pool.Begin` itself inside `CreateUserWithAccount`. Wrapping each test in an outer transaction would require reshaping production code to suit tests, and it would make the single most valuable test in the suite — rollback atomicity — untestable, because the rollback under test would degrade into a savepoint release inside the test's own transaction.
-
-Truncating **before** rather than after each test leaves a failing test's rows in place for inspection with `psql`.
-
-**No `t.Parallel()` anywhere in this package.** Every test shares one database and truncates it. Stated in a comment at the top of the harness, because adding `t.Parallel()` is exactly the reflexive change that would make this suite flake mysteriously.
-
-### 2.6 The rollback path is forced with a numeric overflow
-
-Testing that a failed `accounts` insert leaves no orphan `users` row requires making that insert fail **deterministically, after the users insert has already succeeded.**
-
-`accounts.balance` is `NUMERIC(20,4)`. Verified directly against the running server:
-
-```
-SELECT 1e15::NUMERIC(20,4)  ->  1000000000000000.0000
-SELECT 1e16::NUMERIC(20,4)  ->  ERROR: numeric field overflow
-                                DETAIL: ... must round to an absolute value less than 10^16.
-```
-
-So passing `startingBalance = 1e16` fails the accounts insert with SQLSTATE `22003` while the users insert succeeds. **No schema mutation, nothing to clean up, nothing that can leak into a later test.**
-
-A temporary `CHECK (false)` constraint was considered and rejected: it works, but a failed cleanup would silently poison every subsequent test in the package.
-
-The test asserts the error is a `*pgconn.PgError` with code `22003`, so that if the injection ever stops working the test fails loudly rather than passing because something *else* went wrong. It also asserts the error is **not** `ErrDuplicateUser` — the `23505` mapping lives only in the users branch and must not over-reach.
+No change to the request/response shape. New failure mode: a syntactically-valid, unexpired refresh token whose `jti` is in the denylist now returns the same `401 invalid_token` as any other rejected token, rather than silently issuing a fresh pair.
 
 ---
 
-## 3. Project structure
+## 4. Project structure
 
 ```
+pkg/auth/jwt.go                                    # GenerateToken sets RegisteredClaims.ID
+
+services/auth/internal/service/
+  interfaces.go                                     # + RevocationStore interface
+  auth.go                                            # Refresh checks revocation; + Logout method
+  errors.go                                          # no new sentinel -- reuses ErrTokenInvalid
+  mock/
+    mock.go                                          # + in-memory RevocationStore double
+
+services/auth/internal/store/
+  redis_token_store.go                               # RevocationStore over go-redis, mirrors
+                                                       # services/market-data/internal/cache/redis_price_cache.go
+
+services/auth/internal/handler/
+  auth.go                                            # + Logout handler
+  router.go                                           # + POST /auth/logout, public group
+
+services/auth/cmd/server/main.go                     # + REDIS_URL wiring, redis.NewClient
+
 services/auth/integration/
-  harness_test.go          # env resolution, three guards, migrate, truncate, seed helper
-  main_test.go             # TestMain: create DB, migrate, record skip reason
-  user_store_get_test.go   # GetUserByEmail / GetUserByID
-  user_store_create_test.go# CreateUserWithAccount
+  revocation_store_test.go                            # //go:build integration, DB 15 -- §2.6
+
+services/auth/go.mod                                  # + github.com/redis/go-redis/v9
+
+frontend/src/api/client.ts                            # + api.logout(refreshToken)
+frontend/src/auth/AuthProvider.tsx                    # logout: best-effort api.logout, then clearSession
 ```
 
-Every file carries `//go:build integration` and `package integration`. **The repo has no build tags anywhere today** — this is the first.
-
-The directory is a sibling of `internal/`, so `internal/store` and `internal/service` are both importable from it.
-
-Production files touched — two lines total, no behaviour change:
-- `services/auth/internal/store/user_store.go` — `var _ service.UserStore = (*PostgresUserStore)(nil)`
-- `services/auth/internal/service/mock/mock.go` — `var _ service.UserStore = (*UserStore)(nil)`
-
-Neither assertion exists today, so the mock and the real store can drift apart with nothing failing. The mock's is the more valuable of the two.
+`Service.NewService`'s signature changes to accept a `RevocationStore`, which touches every call site: `services/auth/cmd/server/main.go`, and every test that builds a `*service.Service` directly (`handler/auth_test.go`'s `newTestRouter`, any `service`-package unit tests). Mechanical, but not small in file count — flagged so it isn't a surprise mid-implementation.
 
 ---
 
-## 4. Configuration
+## 5. Configuration
 
 | Variable | Meaning |
 |---|---|
-| `TEST_DATABASE_URL` | Explicit override — for a different host or user. **Still guarded**: the override may not change the database *name*. |
-| `DATABASE_URL` | Normal path. Taken, with the path component **replaced** by `/quantsim_test`. Never used as-is. |
+| `REDIS_URL` | **Not new** — `.env.example` already has this for `market-data`, and the Makefile's `-include .env` + `export` (line 1-2) puts it in every `make run-*` target's environment already. `services/auth`'s `main.go` just also reads it, required with boot-time `log.Fatal` if unset — mirrors `services/market-data/cmd/server/main.go`'s existing check on the same variable. Both services connect to the same Redis instance, same logical DB 0; no collision, since keys are namespaced (`price:`/`prices:` vs `revoked:`). |
+| `TEST_REDIS_URL` | Optional override for the integration suite, same convention as `TEST_DATABASE_URL` (§4 of the archived Step 12 spec). Default: `REDIS_URL` with the DB index replaced by `15`. |
 
-If neither is set in the environment, the harness reads `DATABASE_URL` from the repo-root `.env` without exporting it into the process. This exists because `make migrate-up` only works thanks to the Makefile's `-include .env` + `export`; running `go test -tags=integration ./integration/...` by hand from a plain shell would otherwise always skip, and a silently-skipping harness is worse than none.
-
-The repo root is located by walking up to `go.work`, not by a relative path that breaks if the package moves.
+`.env.example`'s existing `REDIS_URL` comment gets a one-line addition noting it's now read by both services — no new variable, no new entry.
 
 ---
 
-## 5. Testing strategy
+## 6. Testing strategy
 
-The suite's whole purpose is to catch what the mock cannot. Each case names that property.
-
-| # | Test | What only a real database proves |
-|---|---|---|
-| 1 | Mixed-case stored row found by lowercase lookup | **Step 10's fix.** Seeded via raw SQL — the store *cannot* create such a row, since the service lowercases first. Reverting to `email = $1` must fail this. |
-| 2 | Returned `Email` is the **stored** form, not the query argument | Currently unasserted anywhere. |
-| 3 | Lookup does not lowercase its own argument | Pins the documented contract, so a later "fix" to `lower($1)` is a visible decision rather than a silent widening. |
-| 4 | Duplicate email differing only in case → `ErrDuplicateUser` | `idx_users_email_lower` from migration 004 + the `23505` mapping. |
-| 5 | Duplicate username, exact and case-differing → `ErrDuplicateUser` | **The mock models no username uniqueness at all**, so every existing suite is blind to this path. |
-| 6 | Failed accounts insert leaves no orphan user | The transaction the doc comment promises. See §2.6. |
-| 7 | `GetUserByID` returns nil `PasswordHash` | The query omits the column; the mock returns the same fully-populated pointer for both lookups, so the asymmetry is invisible today. |
-| 8 | Both lookups miss → `ErrUserNotFound` | `pgx.ErrNoRows` mapping against the real driver. |
-| 9 | Round-trip of UUID, `timestamptz`, and the hash | No encode/decode ever happens in the mock. |
-| 10 | Exactly one account, `currency` defaulting to `USD` | Nothing in Go sets `currency` — an untested column default. |
-| 11 | `StartingBalance` persists exactly in `NUMERIC(20,4)` | Documents the `float64` → numeric conversion. **Observe the real behaviour first, then assert it** — do not guess an expected string and bend the test to it. |
-
-**Mutation checks are mandatory, not optional** — the standard Step 11's review established. At minimum:
-
-| Mutation | Must fail |
+**Unit (mock `RevocationStore`, no Docker):**
+| Test | What it proves |
 |---|---|
-| `lower(email) = $1` → `email = $1` | Test 1 — **the headline check. If this does not fail, the harness is worthless.** |
-| Delete the `23505` branch | Tests 4 and 5 |
-| Move `tx.Commit` to just after the users insert | Test 6 |
-| Comment out `idx_users_email_lower` in migration 004, drop the test DB, rerun | Test 4 — proves migrations are genuinely applied, not inherited from a stale database |
+| `Refresh` with a `jti` the mock reports as revoked → `ErrTokenInvalid` | the check actually gates the flow |
+| `Refresh` with an unrevoked `jti` → succeeds, unchanged from today | no regression on the common path |
+| `Logout` with a valid refresh token → mock's `Revoke` called with that `jti` and a positive TTL | the write happens with the right key and a bounded lifetime |
+| `Logout` with an access token → `ErrTokenInvalid`, mock's `Revoke` never called | mirrors `Refresh`'s existing `TokenTypeRefresh` check |
+| `Logout` with a garbage token → `ErrTokenInvalid` | same as `Refresh`'s existing garbage-token case |
+| Handler: `POST /auth/logout` success → `200`, body `{}` | §2.5's response-shape decision, pinned so it can't regress to `204` |
+| Handler: missing `refresh_token` → `400 invalid_request` | mirrors the existing `Refresh` handler test |
+
+**Integration (`//go:build integration`, real Redis, DB 15 — §2.6):**
+| Test | What only a real Redis proves |
+|---|---|
+| `Revoke` then `IsRevoked` → `true` | the actual `SET`/`EXISTS` round-trip |
+| `Revoke` with a 1-second TTL, `IsRevoked` after 2 seconds → `false` | Redis's TTL expiry actually fires — nothing about this is exercised by the mock |
+| Two different `jti`s don't collide | key construction is correct |
+
+**Mutation check**, following Step 12's standard: temporarily make `Refresh` skip the revocation check entirely, confirm the "revoked token still refreshes" unit test fails, then revert.
+
+**Manual, end to end** (this step touches the frontend, and `agents.md` treats UI changes as needing a real run, not just green tests): `make docker-up && make run-auth && make run-gateway && make run-frontend`, log in, click sign out, confirm the network tab shows `POST /auth/logout` returning `200`, then manually replay the old refresh token with `curl` against `:8080/auth/refresh` and confirm `401`.
 
 ---
 
-## 6. Code style
+## 7. Code style
 
-- Follows the existing suites: external test package conventions, failure messages that explain **why** a property matters rather than restating the assertion.
-- Comments explain why, per the house standard set by `proxy.go` and `identity.go`.
-- No new module dependency (§2.4).
-- Errors compared with `errors.Is`, never string matching.
+- `RevocationStore` mirrors `UserStore`'s existing shape: a small interface in `service/interfaces.go`, a real (here Redis-backed, not Postgres) implementation in `internal/store`, an in-memory double in `service/mock`, and a compile-time `var _ service.RevocationStore = (*store.RedisTokenStore)(nil)` assertion (Step 12 §3 established why this specific assertion matters — mock and real store drift apart silently without it).
+- Errors compared with `errors.Is`, never string matching — house convention.
+- No new sentinel error; `Logout` reuses `ErrTokenInvalid` for every rejection, matching `Refresh`'s existing "one failure vocabulary" comment in `errors.go`.
+- Comments explain why, not what — house standard.
 
 ---
 
-## 7. Commands
+## 8. Commands
 
 ```bash
 make docker-up          # Postgres + Redis
-make test               # unit tests, all four modules, no Docker needed
-make test-integration   # this suite; skips cleanly if Postgres is down
-make test-db-drop       # drop quantsim_test after editing a migration
-make vet                # includes a -tags=integration pass
+make test                # unit tests, all four modules, no Docker needed
+make test-integration    # extends to cover services/auth/integration/revocation_store_test.go
+make vet                 # includes the -tags=integration pass
 ```
 
-`test-integration` uses `-count=1`: results depend on database state and must never be cached.
-
-`vet` must include the tagged pass. Tagged files are otherwise **never type-checked by any default command**, which is precisely how a tagged test file rots unnoticed.
+No new Makefile target — the new integration test file lives in the package `make test-integration` already runs.
 
 ---
 
-## 8. Boundaries
+## 9. Decisions resolved before implementation
 
-**Always do:**
-- Target `quantsim_test`, verified by all three guards (§2.2)
-- Ask the *server* which database it is on before any `TRUNCATE`
-- Skip, never fail, when Postgres is unreachable — and print why
-- Seed mixed-case rows with raw SQL, since the store cannot produce them
-- Run the §5 mutation checks before flagging the step done
-
-**Ask first:**
-- Any new module dependency — §2.4 is specifically what keeps this at zero
-- Any change to a query in `user_store.go`, including one a test appears to justify
-- Extending the harness to market-data's store
-- Adding CI
-
-**Never do:**
-- Point the harness at `postgres` or `quantsim`
-- Use `DATABASE_URL` unmodified
-- Add `t.Parallel()` in this package (§2.5)
-- Reshape production code to make a test easier (§2.5)
-- Commit `.env`
-
----
-
-## 9. Decisions resolved before drafting
-
-Resolved 2026-08-14, all as recommended:
+Resolved 2026-08-17, all as recommended:
 
 | # | Decision | Resolution |
 |---|---|---|
-| 1 | Next step | **The store harness**, ahead of refresh-token revocation and the trading engine |
-| 2 | Postgres source | **Reuse docker-compose** + a dedicated `quantsim_test` — §2.1, §2.2 |
-| 3 | Scope | **auth store only** |
-| 4 | Migrations | **Exec the `.up.sql` files in order**, no new dependency — §2.4 |
+| 1 | Revocation design | **Denylist**, not rotation-with-reuse-detection — §2.1 |
+| 2 | New dependency `go-redis` in `services/auth` | **Add it** — §2.2 |
+| 3 | Redis unreachable at request time | **Fail open, log the error** — §2.3 |
+| 4 | `jti` scope and where the check lives | **Both token types get one; only `services/auth` checks it, not `pkg/auth`** — §2.4 |
+| 5 | Logout response | **`200 {}`, not `204`** — avoids a real bug in `client.ts`'s generic response handling — §2.5 |
+| 6 | Redis test isolation | **Logical DB 15**, no guard chain — §2.6 |
 
 ---
 
 ## 10. Implementation
 
-`tasks/plan.md` holds the breakdown, acceptance criteria, and risks; `tasks/todo.md` is the checkpoint list. Four checkpoints: **(1)** harness connects, creates, and migrates, with the guards proven and the dev database demonstrably untouched; **(2)** Step 10's fix protected, verified by mutation; **(3)** the rest of the surface plus the interface assertions; **(4)** Makefile, docs, handoff.
+Not started. `tasks/plan.md` and `tasks/todo.md` get created once this spec is approved, per the gated workflow (`agents.md`: spec reviewed → plan → checkpoints).

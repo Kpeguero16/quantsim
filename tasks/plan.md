@@ -1,148 +1,221 @@
-# Implementation Plan — QuantSim Store-Layer Integration Harness (Step 12)
+# Implementation Plan — Refresh-Token Revocation and Logout (Step 13)
 
 ## Overview
 
-`SPEC.md` is **approved**; §9 records the four decisions. Build a real-Postgres test suite for `services/auth/internal/store/`, which today has no tests at all — every auth suite runs against a Go map and would stay green against a completely wrong query.
+`SPEC.md` is **approved**; §9 records the six decisions. Build a real logout: `POST /auth/logout` revokes the presented refresh token via a Redis `jti` denylist, and `Refresh` rejects a revoked `jti` before issuing a new pair.
 
-The step adds one test-only package, two compile-time assertions, and four Makefile targets. **No query changes, no migration, no new module dependency.**
+The step adds one new module dependency (`go-redis` in `services/auth`), one new store type, one new service method, one new endpoint, and a small frontend change. **No gateway changes, no rotation, no access-token revocation.**
 
-**The single dangerous thing in this step is pointing the harness at the wrong database.** The dev database holds 15 real users, this harness runs `TRUNCATE`, and the environment is actively misleading: `POSTGRES_DB=quantsim` is an *empty decoy* while `DATABASE_URL` points at `postgres`, where the real rows live. Task ordering is built around proving the guards work **before** anything destructive runs.
-
-Recorded baseline, measured 2026-08-14 against the dev database: **`users=15`, `accounts=15`.** Verification re-checks this number.
+**Nothing here is destructive the way Step 12's `TRUNCATE`/`DROP` risk was** (SPEC.md §2.6) — the main way this step can go wrong is quieter: shipping a revocation check that never actually fires (the exact failure shape Step 12's pre-merge review found once already, in a different guard), or a `NewService` signature change that leaves a call site silently uncompiled. Task ordering and the mutation check in Task 2 exist to rule both out.
 
 ## Architecture decisions
 
-Restated from `SPEC.md` §2:
+Restated from `SPEC.md` §2/§9, all resolved as recommended:
 
-- **Reuse the docker-compose Postgres**, not testcontainers — no CI exists, so its advantage is hypothetical — §2.1
-- **Target `quantsim_test`, behind three independent guards**, the last of which asks the server itself immediately before every `TRUNCATE` — §2.2
-- **Skip, never fail, when Postgres is down** — and print the reason, because a permanently-skipping suite looks exactly like a passing one — §2.3
-- **Migrations by exec'ing `.up.sql` in filename order** — no new dependency; verified that no migration uses a golang-migrate directive — §2.4
-- **`TRUNCATE` between tests, not transaction-per-test** — the store calls `pool.Begin` itself, so an outer transaction would make the rollback test meaningless — §2.5
-- **Rollback forced with `startingBalance = 1e16`**, which overflows `NUMERIC(20,4)` after the users insert succeeds — no schema mutation, nothing to leak — §2.6
+- **A `jti` denylist in Redis**, not rotation-with-reuse-detection — §2.1
+- **`go-redis` is a new dependency in `services/auth/go.mod`**, approved — §2.2
+- **Fail open on a Redis error at request time, and log it** — §2.3
+- **Every token gets a `jti`; only `services/auth` checks it, never `pkg/auth`** — §2.4
+- **`POST /auth/logout` is unauthenticated, keyed on the refresh token, returns `200 {}`** — §2.5
+- **Redis integration tests use logical DB 15**, no guard chain — §2.6
 
 ## Dependency order
 
 ```
-Task 1 (harness + guards) ──> Task 2 (SMOKE + guard proof) ──┬─> Task 3 (Step 10 tests) ──┬─> Task 5 (Makefile)
-                                                              └─> Task 4 (rest + asserts) ─┘        │
-                                                                                                    v
-                                                                                              Task 6 (docs)
+Task 1 (store layer: jti, interface, Redis impl, mock, integration tests)
+   │
+   v
+Task 2 (service layer: Refresh check, Logout, NewService rewiring, mutation check)
+   │
+   v
+Task 3 (handler + router: POST /auth/logout)
+   │
+   v
+Task 4 (frontend: client.ts, AuthProvider)
+   │
+   v
+Task 5 (docs + backlog closeout + full verification)
 ```
 
-**Task 2 gates everything.** No test that truncates may be written until the guards are proven.
+Linear on purpose. Each task's contract is defined in `SPEC.md` §3-§4, so Task 4 could in principle start against the documented API before Task 3 lands — but sequential keeps every checkpoint runnable end to end, which matters more than parallelism at this step's size.
 
 ---
 
-## Phase 1 — The harness
+## Phase 1 — The store layer
 
-### Task 1 — Connection, guards, migration, truncation
+### Task 1 — `jti`, `RevocationStore`, the Redis implementation, the mock, and its integration tests
 
-**Files:** `services/auth/integration/harness_test.go`, `main_test.go`
+**Files:**
+- `pkg/auth/jwt.go` — `GenerateToken` sets `RegisteredClaims.ID = uuid.NewString()`
+- `pkg/auth/jwt_test.go` — new file; no such test exists today
+- `services/auth/internal/service/interfaces.go` — `+ RevocationStore` interface
+- `services/auth/internal/store/redis_token_store.go` — new file, `RedisTokenStore`
+- `services/auth/internal/service/mock/revocation_store.go` — new file, in-memory double
+- `services/auth/integration/main_test.go` — extended to also attempt a Redis connection
+- `services/auth/integration/revocation_store_test.go` — new file, `//go:build integration`
+- `services/auth/go.mod` — `+ github.com/redis/go-redis/v9`
 
-Every file starts `//go:build integration` + `package integration`.
+**`RevocationStore` interface** (`interfaces.go`, alongside `UserStore`):
+```go
+type RevocationStore interface {
+    Revoke(ctx context.Context, jti string, ttl time.Duration) error
+    IsRevoked(ctx context.Context, jti string) (bool, error)
+}
+```
 
-Pieces:
-- `repoRoot` — walk up to the directory containing `go.work`. Not a relative path, which breaks if the package moves.
-- `dotenv` — read `DATABASE_URL` from the repo-root `.env` **without exporting** into the process environment, so other tests in the binary cannot observe a different environment depending on whether `.env` exists.
-- `resolveDSNs` — `TEST_DATABASE_URL`, else `DATABASE_URL`, else `.env`. Replace the path with `/quantsim_test`. Return an admin DSN pointing at `postgres` (`CREATE DATABASE` cannot run from inside its target).
-- `assertTestDB` — **guard 1.** Fail closed: anything not exactly `quantsim_test` is rejected, `postgres` and `quantsim` explicitly included.
-- `ensureTestDatabase` — `SELECT EXISTS(... pg_database ...)`, then `CREATE DATABASE`. Short connect timeout (~3s) so "Docker is off" costs seconds, not a minute.
-- `applyMigrations` — glob `infra/migrations/*.up.sql`, sort, `Exec` each, wrapping failures with the file's basename so a broken migration is *named*.
-- `truncateAll` — **guard 3**: `SELECT current_database()` then `assertTestDB`, then `TRUNCATE TABLE users CASCADE`.
-- `insertUserRaw` — seed a row bypassing the store. Required for the mixed-case case, which the store cannot produce.
-- `TestMain` + `newStore(t)` — **guard 2** after the pool connects; records `skipReason`, prints it to stderr.
+**`RedisTokenStore`** mirrors `services/market-data/internal/cache/redis_price_cache.go`'s shape: a thin wrapper over `*redis.Client`, key prefix `revoked:` + jti (parallel to that file's `price:`/`prices:` prefixes so the two services can never collide on the same Redis instance). `Revoke` is `SET key "1" EX ttl`; `IsRevoked` is `EXISTS key`.
+
+**`mock.RevocationStore`**: an in-memory `map[string]bool` (TTL is not modeled — real expiry is what Task 1's integration test proves, not the mock; see `SPEC.md` §6's unit/integration split). Exported `RevokeErr` / `IsRevokedErr` fields, set-to-simulate-an-error, the way `mock.UserStore` already has `GetByEmailErr` / `GetByIDErr` — Task 2 needs these to test the fail-open path (§2.3) without a real Redis outage.
+
+**Extending `services/auth/integration/main_test.go`:** the package's one `TestMain` currently gates only on Postgres. Add a second, independent skip category — `redisSkipReason` alongside the existing `skipReason` — so a Redis-only test skips on "Redis unreachable" without requiring Postgres tests to also pass, and vice versa. This is a real, if small, change to shared test infra; called out explicitly rather than folded in silently.
+
+`TEST_REDIS_URL` resolution mirrors `TEST_DATABASE_URL` (`SPEC.md` §5): explicit override if set, else `REDIS_URL` with the DB index replaced by `15`. No admin connection needed — Redis has no `CREATE DATABASE` step, just `SELECT 15` (or the DSN's path segment) and a `FLUSHDB` before each test.
 
 **Acceptance criteria:**
-- `go test ./...` in `services/auth` does **not** compile this package and does not error
-- Guards are three separate checks, not one shared helper called once
-- No `t.Parallel()` anywhere; a comment at the top of the harness says why
-- `services/auth/go.mod` **unchanged** — verify with `git diff --exit-code services/auth/go.mod`
+- `pkg/auth/jwt_test.go`: two calls to `GenerateToken` produce different, non-empty `jti`s; `ValidateToken` round-trips the claim
+- `RevocationStore` defined; both `RedisTokenStore` and `mock.RevocationStore` satisfy it, proven by `var _ service.RevocationStore = (*store.RedisTokenStore)(nil)` and the mock equivalent
+- `services/auth/go.mod` diff is the `go-redis` require block and nothing else
+- `go build ./...` in `services/auth` succeeds — `RedisTokenStore` compiles but is not wired into `main.go` yet, so this task changes no running behavior
+- Integration: `Revoke` + `IsRevoked` round-trips true; a 1-second-TTL key reads `false` after 2 seconds (real expiry — the mock cannot prove this); two different `jti`s don't collide; the suite skips (not fails) when Redis is down, matching Postgres's existing skip behavior
+- Every Redis integration test verifiably targets DB 15 — assert on the resolved DSN in a setup check, the same spirit as `assertTestDB` in Step 12, scaled to the actual (much lower) risk here
+
+**Verify:**
+```bash
+cd pkg && go test ./...
+cd services/auth && go build ./...
+make test-integration   # new PASS lines for the Redis tests; still skips cleanly with Docker down
+```
+
+**Checkpoint — stop for review.** The store layer exists, compiles, and is proven against a real Redis. Nothing in the running service behaves differently yet.
 
 ---
 
-### Task 2 — 🔴 SMOKE: prove the guards before anything truncates
+## Phase 2 — Wiring the service
 
-**Files:** `services/auth/integration/harness_test.go` (temporary test)
+### Task 2 — `Refresh` checks revocation, `Logout` is added, `NewService` is rewired
 
-**This task exists to be paranoid and is not optional.**
+**Files:**
+- `services/auth/internal/service/auth.go` — `Refresh` gains the check; `+ Logout`
+- `services/auth/internal/service/auth_test.go` — new test cases; **20 existing `NewService(users, testSecret)` call sites** need the new parameter
+- `services/auth/internal/handler/auth_test.go` — `newTestRouter`'s one call site, same change
+- `services/auth/cmd/server/main.go` — `REDIS_URL` read + `log.Fatal` if unset (mirrors `services/market-data/cmd/server/main.go`'s existing check on the same variable — this is not a new env var, `SPEC.md` §5), `redis.ParseURL` + `redis.NewClient`, `store.NewRedisTokenStore(...)`, passed into `NewService`
 
-Write one trivial test that connects and asserts `SELECT 1`, plus a test that `assertTestDB` rejects `postgres`, `quantsim`, and `""`. Then, by hand:
+**This sounds bigger than it is.** Every existing call site is the identical literal string `service.NewService(users, testSecret)` (verified: 20 occurrences in `auth_test.go`, 1 in `handler/auth_test.go`). Updating it to `service.NewService(users, mock.NewRevocationStore(), testSecret)` is one find-and-replace across two files, not 21 separate edits. `main.go`'s call site is textually different (`userStore`, not `users`) and gets its own one-line change alongside the Redis client setup.
 
-1. `make test-integration` → passes, `quantsim_test` now exists
-2. `\dt` in `quantsim_test` → 5 app tables present
-3. **`SELECT count(*) FROM users` in `postgres` → still 15** ← the check that matters
-4. Temporarily force the DSN to `postgres` and confirm the run **refuses** rather than truncating
+**`NewService` new signature:** `NewService(users UserStore, revocations RevocationStore, jwtSecret []byte) *Service` — inserted between the two existing parameters rather than appended, so the token-related parameters (`revocations`, `jwtSecret`) sit together.
 
-**Checkpoint — stop for review.** The harness is proven safe; nothing destructive has run against real data.
+**`Refresh` change:** after the existing `ValidateToken` + `TokenTypeRefresh` check and before the user-existence lookup (cheaper to reject on a Redis hit than to round-trip Postgres for a token that's about to fail anyway) —
+```go
+revoked, err := s.revocations.IsRevoked(ctx, claims.ID)
+if err != nil {
+    log.Printf("auth: revocation check unavailable, failing open: %v", err)
+} else if revoked {
+    return nil, ErrTokenInvalid
+}
+```
+`log.Printf` inside `internal/service` has a precedent: `services/market-data/internal/service/live.go` already logs directly from that layer, so this isn't a new pattern for the codebase, just a new call site for it in `services/auth`.
 
----
-
-## Phase 2 — The tests that justify the step
-
-### Task 3 — `GetUserByEmail` / `GetUserByID`
-
-**Files:** `services/auth/integration/user_store_get_test.go`
-**Depends on:** Task 2
-
-Cases 1, 2, 3, 7, 8, 9 from `SPEC.md` §5. **Case 1 first** — the mixed-case row seeded via `insertUserRaw`, since the store cannot create one.
+**`Logout` method:** validates exactly like `Refresh`'s first two checks (`pkgauth.ValidateToken`, then `TokenTypeRefresh`), then:
+```go
+ttl := time.Until(claims.ExpiresAt.Time)
+if ttl > 0 {
+    if err := s.revocations.Revoke(ctx, claims.ID, ttl); err != nil {
+        log.Printf("auth: revocation write failed: %v", err)
+    }
+}
+return nil
+```
+An already-expired token is not revoked — there's nothing to protect, and a zero-or-negative TTL would be a malformed Redis call anyway. Errors are logged, never returned — §2.3's fail-open applies to the write path too, matching the frontend's own "genuinely all it can do" framing for sign-out.
 
 **Acceptance criteria:**
-- Case 1 asserts the row is found **and** that the returned `Email` is the stored mixed-case form
-- Case 3 pins that the store does *not* lowercase its own argument
-- Case 7 asserts `PasswordHash == nil` from `GetUserByID`
-- `errors.Is` throughout, never string matching
+- `Refresh` with a `jti` the mock reports revoked → `ErrTokenInvalid`; with the mock's `IsRevokedErr` set → still succeeds (fail-open, proven directly rather than assumed)
+- `Refresh` with an unrevoked `jti` → unchanged from today (regression guard)
+- `Logout` with a valid refresh token → mock's `Revoke` called with that exact `jti` and a `ttl` between 0 and `RefreshTokenTTL`
+- `Logout` with an access token → `ErrTokenInvalid`, `Revoke` never called
+- `Logout` with a garbage token → `ErrTokenInvalid`
+- `Logout` with the mock's `RevokeErr` set → still returns `nil` (fail-open on the write path)
+- `services/auth/go.mod` and `main.go` both compile with a real `REDIS_URL`; `go build ./...` succeeds
 
-**Verification — the point of the entire step:** revert `GetUserByEmail` to `WHERE email = $1`, confirm case 1 fails with `ErrUserNotFound`, restore. **A harness that passes against the pre-Step-10 query proves nothing.**
+**Verification — the point of the task, mirroring Step 12's standard:** comment out the `IsRevoked` check in `Refresh` (leave `Logout` untouched), confirm the "revoked token still refreshes" test now fails, then restore. **A revocation check that can't be shown to matter is exactly the failure Step 12's pre-merge review found once already, in a different guard.**
 
-**Checkpoint — stop for review.** Step 10's fix is protected by something other than a memory of having tested it once.
-
----
-
-### Task 4 — `CreateUserWithAccount`, and the interface assertions
-
-**Files:** `services/auth/integration/user_store_create_test.go`, plus two production one-liners
-**Depends on:** Task 2
-
-Cases 4, 5, 6, 10, 11 from `SPEC.md` §5.
-
-**Acceptance criteria:**
-- Duplicate email **and** duplicate username, each in exact and case-differing form → `ErrDuplicateUser`
-- Rollback test uses `startingBalance = 1e16`; asserts `users` and `accounts` are both empty afterwards, that the error is a `*pgconn.PgError` with code `22003`, and that it is **not** `ErrDuplicateUser`
-- Balance precision read back as `balance::text`, not as a float — **run it, observe, then assert what Postgres actually stores**, with the observed value recorded in a comment
-- `currency` defaults to `USD` without Go setting it
-- `var _ service.UserStore = ...` added to both `store` and `mock`, in the production files — not in the tagged package, where they would only be checked under the tag
-
-**Verification:** mutate `tx.Commit` to run immediately after the users insert; the rollback test must fail. Delete the `23505` branch; the duplicate tests must fail.
+**Checkpoint — stop for review.** Refresh actually rejects a revoked token; Logout actually revokes one; both proven, not assumed.
 
 ---
 
-## Phase 3 — Wiring and close-out
+## Phase 3 — The endpoint
 
-### Task 5 — Makefile
+### Task 3 — `POST /auth/logout`
 
-**Files:** `Makefile`
-**Depends on:** Tasks 3, 4
+**Files:**
+- `services/auth/internal/handler/auth.go` — `+ Logout`
+- `services/auth/internal/handler/auth_test.go` — new test cases
+- `services/auth/internal/handler/router.go` — `+ r.Post("/logout", auth.Logout)`, same unauthenticated group as `/refresh` and `/login`
 
-`test`, `test-integration` (with `-count=1`), `test-all`, `test-db-drop`, `vet` (including a `-tags=integration` pass). Extend `.PHONY` and the `help` block, which lists every target.
+**Handler shape**, deliberately identical to `Refresh`'s: `decodeJSON` into `service.RefreshTokenRequest` (no new request type — same `{"refresh_token": ...}` shape), the existing `req.RefreshToken == ""` → `400 invalid_request` check, then `h.service.Logout`; `ErrTokenInvalid` → `401 invalid_token`; success → `WriteJSON(w, http.StatusOK, struct{}{})`, which encodes as `{}` (`SPEC.md` §2.5 — this exact shape is what keeps `client.ts`'s generic `request<T>` helper from breaking on an empty body).
 
 **Acceptance criteria:**
-- `make test` green across all four modules with Docker **stopped**
-- `make test-integration` skips cleanly with Docker stopped, passes with it running
-- `make vet` type-checks the tagged package — otherwise it rots unnoticed
+- `POST /auth/logout` with a valid refresh token → `200`, body `{}`
+- Missing `refresh_token` → `400 invalid_request`
+- Access token presented as `refresh_token` → `401 invalid_token`
+- Garbage token → `401 invalid_token`
+- End-to-end through the handler: register → capture refresh token → logout → `POST /auth/refresh` with the same token → `401` (this is the test that proves the whole feature works, not just its parts in isolation)
+
+**Verify:**
+```bash
+cd services/auth && go test ./...
+```
+
+**Checkpoint — stop for review.** The endpoint exists, is reachable, and a logged-out token demonstrably cannot refresh.
 
 ---
 
-### Task 6 — Documentation
+## Phase 4 — Frontend
 
-**Files:** `docs/TESTING_STRUCTURE.md`, `docs/deferred-tuning.md`, `PHASE2_CHECKLIST.md`, `docs/NEXT_SESSION.md`
-**Depends on:** Task 5
+### Task 4 — `api.logout` and a real "sign out"
+
+**Files:**
+- `frontend/src/api/client.ts` — `+ api.logout(refreshToken: string)`
+- `frontend/src/auth/AuthProvider.tsx` — `logout` becomes best-effort-revoke-then-clear
+
+**`client.ts`**: `logout: (refreshToken: string) => request<Record<string, never>>('/auth/logout', { method: 'POST', body: { refresh_token: refreshToken }, authenticated: false })` — same shape as `login`/`register`/`refresh`'s calls, `authenticated: false` for the same reason `Refresh` is unauthenticated (§2.5: the access token may already be expired by the time someone signs out).
+
+**`AuthProvider.tsx`**: capture `refreshToken.current` **before** calling `clearSession` (which nulls it), clear the session immediately so the UI reacts instantly regardless of network timing, then fire `api.logout` best-effort with errors swallowed — a failed revocation call must never block or visibly fail the sign-out button, matching the module's own existing docstring ("genuinely all it can do"). `AuthContextValue.logout`'s type stays `() => void`; no caller needs to await it.
 
 **Acceptance criteria:**
-- `docs/TESTING_STRUCTURE.md` gains a real "Integration tests" section: the workflow, the `TEST_DATABASE_URL` override, `make test-db-drop`, and the never-the-dev-database rule. Its §4/§6 currently describe this as hypothetical
-- `docs/deferred-tuning.md` gains **two entries with named triggers**: testcontainers ← *CI arriving*; golang-migrate library ← *the first migration needing a directive*
-- Step 12 written up in `PHASE2_CHECKLIST.md`, including the mutation-check results
-- `docs/NEXT_SESSION.md` rewritten per its own convention, with refresh-token revocation promoted to next
+- `npm run build` / `tsc` clean in `frontend/`
+- No change to `AuthContextValue`'s shape — `LoginPage.tsx` and any other consumer need zero changes
+
+**Verify (manual, real browser — `agents.md` treats UI changes as needing a run, not just a type-check):**
+```bash
+make docker-up && make run-auth && make run-gateway && make run-frontend
+```
+Log in, open the network tab, click sign out: confirm `POST /auth/logout` fires and returns `200`, confirm the UI returns to the login screen immediately (not gated on that response). Then, with the old refresh token copied from the network tab, `curl -X POST localhost:8080/auth/refresh -d '{"refresh_token":"<token>"}'` and confirm `401`.
+
+**Checkpoint — stop for review.** Sign-out is real, verified against a running system, not just against tests.
+
+---
+
+## Phase 5 — Close-out
+
+### Task 5 — Docs and backlog
+
+**Files:** `.env.example`, `docs/security-backlog.md`, `docs/deferred-tuning.md`, `PHASE2_CHECKLIST.md`, `docs/NEXT_SESSION.md`
+
+**Acceptance criteria:**
+- `.env.example`'s existing `REDIS_URL` comment gets one line noting it's now also read by `services/auth` — no new variable (`SPEC.md` §5)
+- `docs/security-backlog.md` item 2 marked **CLOSED**, in the same style item 1 already uses: what changed, and the two things worth correcting if anything in the original write-up turned out wrong in practice
+- `docs/deferred-tuning.md` gains one entry: rotation-with-reuse-detection, rejected for now (§2.1), trigger = *the threat model needs theft detection, not just logout* — the same "decision + named trigger" convention Step 12 used for testcontainers and golang-migrate
+- Step 13 written up in `PHASE2_CHECKLIST.md`, including the mutation-check result from Task 2
+- `docs/NEXT_SESSION.md` rewritten per its own convention — with this closed, the trading engine becomes the sole next item
+
+**Final verification pass:**
+```bash
+make test              # green, Docker down
+make test-integration  # green, Docker up -- new Redis tests included
+make vet                # tagged pass included
+```
+
+**Checkpoint — stop for review. Step 13 complete.**
 
 ---
 
@@ -150,15 +223,13 @@ Cases 4, 5, 6, 10, 11 from `SPEC.md` §5.
 
 | Risk | Mitigation |
 |---|---|
-| **Harness truncates the dev database — 15 real users gone** | Three independent guards; Task 2 proves them before any destructive statement; the baseline (`users=15`) is re-checked at every checkpoint |
-| Misleading env: `POSTGRES_DB=quantsim` is empty, real data is in `postgres` | Target name is neither; `assertTestDB` names both as rejected |
-| Suite silently skips forever and looks like it passes | Skip reason printed to stderr; `make test-integration` after `make docker-up` must show real `PASS` lines, and Task 2 checks this by hand |
-| Tagged package never type-checked, rots | `make vet` includes `-tags=integration` |
-| Tests pass without proving anything | Mutation checks in Tasks 3 and 4 are acceptance criteria, not suggestions |
-| Repo path contains a space (`Personal projects`) | Paths built with `filepath`, never a `file://` URL — a real trap avoided for free by §2.4's glob approach |
-| A future migration needs a golang-migrate directive | None today (verified). Trigger recorded in Task 6 |
-| Accidental `t.Parallel()` makes the suite flake | Prohibition stated in a comment at the top of the harness |
+| A revocation check that compiles but never actually rejects anything (Step 12's pre-merge review found exactly this shape once, in a different guard) | Task 2's mutation check is an acceptance criterion, not optional |
+| `NewService`'s signature change leaves a call site uncompiled | All 21 existing call sites are the identical literal string — a single find-and-replace, verified by `go build ./...` after |
+| Redis unreachable in dev breaks `make run-auth` entirely | Boot-time `REDIS_URL` check fails loudly and immediately (§2.3 is about *request-time* errors after a successful boot, a different failure mode) |
+| Fail-open silently masks a real outage | Both fail-open paths `log.Printf`; Task 2's tests assert the fail-open behavior directly rather than only checking the happy path |
+| Frontend's sign-out button appears to hang on a slow/failed revocation call | `clearSession` runs before the network call, not after — Task 4 acceptance criteria pin the ordering |
+| `main_test.go`'s new Redis skip category breaks the existing Postgres skip behavior | Independent variables (`skipReason`, `redisSkipReason`); Task 1's verification re-runs the Step 12 Postgres tests to confirm no regression |
 
 ## Out of scope
 
-market-data's `historical_price_store.go`; CI; testcontainers; any change to a query in `user_store.go`, including one a failing test appears to justify — that would be a finding to raise, not a fix to fold in.
+Refresh-token rotation; access-token revocation; "log out everywhere"; any other `docs/security-backlog.md` item; any gateway code change; extending Step 12's Postgres guard-chain pattern to Redis (§2.6 — the risk profile doesn't call for it).
