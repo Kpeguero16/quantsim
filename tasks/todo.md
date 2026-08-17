@@ -70,7 +70,7 @@ confirm the "revoked token still refreshes" test fails, then restore.
       demonstrably cannot refresh**
 
 ### Phase 4: Frontend
-- [ ] **Task 4** — `frontend/src/api/client.ts`: `+ api.logout(refreshToken)`,
+- [x] **Task 4** — `frontend/src/api/client.ts`: `+ api.logout(refreshToken)`,
       unauthenticated, same shape as `login`/`register`/`refresh`.
       `frontend/src/auth/AuthProvider.tsx`: `logout` captures the refresh
       token **before** `clearSession`, clears immediately, then calls
@@ -78,13 +78,17 @@ confirm the "revoked token still refreshes" test fails, then restore.
       wait on or fail from the network call. `AuthContextValue`'s shape is
       unchanged
 
-- [ ] Manual browser check (`agents.md` — UI changes need a real run):
+- [x] Manual browser check (`agents.md` — UI changes need a real run):
       `make docker-up && make run-auth && make run-gateway && make run-frontend`,
       log in, sign out, confirm `POST /auth/logout` → `200` in the network
       tab and the UI returns to login instantly; then replay the old refresh
-      token with `curl` against the gateway and confirm `401`
+      token with `curl` against the gateway and confirm `401`. Both verified
+      2026-08-17: registered + signed out in a real Chrome tab (network tab
+      showed `POST /auth/logout` → 200, UI returned to login instantly, no
+      console errors), and a separate curl-only run confirmed the replayed
+      refresh token gets `401 invalid_token`
 
-- [ ] ⏸️ **Checkpoint: sign-out is real, verified against a running system**
+- [x] ⏸️ **Checkpoint: sign-out is real, verified against a running system**
 
 ### Phase 5: Close-out
 - [ ] **Task 5** — `.env.example`: one line on `REDIS_URL` now being read by

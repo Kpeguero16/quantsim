@@ -264,6 +264,17 @@ export const api = {
       authenticated: false,
     }),
 
+  // Unauthenticated for the same reason refresh is: by the time someone
+  // signs out, the access token may already be expired. The refresh token
+  // in the body is what's actually being revoked, and what authorizes the
+  // call (SPEC.md Step 13, 2.5).
+  logout: (refreshToken: string) =>
+    request<Record<string, never>>('/auth/logout', {
+      method: 'POST',
+      body: { refresh_token: refreshToken },
+      authenticated: false,
+    }),
+
   // Proxied publicly by the gateway, but the auth service enforces its own
   // middleware on this route -- so it needs the bearer token.
   me: () => request<MeResponse>('/auth/me'),

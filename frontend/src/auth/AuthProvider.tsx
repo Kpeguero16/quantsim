@@ -89,9 +89,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [establish],
   )
 
+  // Captures the refresh token before clearSession nulls it, then clears
+  // immediately so the UI reacts instantly regardless of network timing.
+  // Revocation is best-effort after that: a failed or slow server call must
+  // never block or visibly fail the sign-out button -- clearing local state
+  // is genuinely all this can promise either way (SPEC.md Step 13, 2.3).
+  const logout = useCallback(() => {
+    const token = refreshToken.current
+    clearSession()
+    if (token) {
+      void api.logout(token).catch(() => {
+        // Best-effort. The local session is already cleared.
+      })
+    }
+  }, [clearSession])
+
   const value = useMemo<AuthContextValue>(
-    () => ({ user, login, register, logout: clearSession }),
-    [user, login, register, clearSession],
+    () => ({ user, login, register, logout }),
+    [user, login, register, logout],
   )
 
   return <AuthContext value={value}>{children}</AuthContext>
