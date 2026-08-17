@@ -67,13 +67,13 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 - [ ] ⏸️ **Checkpoint B: A buy works end to end** — both mutations run and reverted, manual fill verified, `market-data`-down rejection verified, dev DB at 20
 
 ### Phase 3: Sell, and the read endpoints
-- [ ] **Task 10** — Sell path. `avg_cost` is **read, never recomputed**; `realized_pl = (price − avg_cost) × qty` captured at execution. Test: buy 100, buy 200, sell, buy again — the earlier sell's stored `realized_pl` must be unchanged. Position at qty 0 keeps its row
+- [x] **Task 10** — Sell path. `avg_cost` is **read, never recomputed**; `realized_pl = (price − avg_cost) × qty` captured at execution. Test: buy 100, buy 200, sell, buy again — the earlier sell's stored `realized_pl` must be unchanged. Position at qty 0 keeps its row
 
-- [ ] **Task 11** — `GET /trading/orders`, newest first, **rejected orders included**. Cross-account isolation proven by a two-account test, not by reading the `WHERE` clause
+- [x] **Task 11** — `GET /trading/orders`, newest first, **rejected orders included**. Cross-account isolation proven by a two-account test, not by reading the `WHERE` clause
 
-- [ ] **Task 12** — 🔴 `GET /trading/positions`, **the fail-open path**. `market-data` down ⇒ `200`, `latest_price: null` (a `*float64` — `0` is a plausible price and would read as "worthless"), `unrealized_pl: 0`. One unpriceable symbol must not blank the others
+- [x] **Task 12** — 🔴 `GET /trading/positions`, **the fail-open path**. `market-data` down ⇒ `200`, `latest_price: null` (a `*float64` — `0` is a plausible price and would read as "worthless"), `unrealized_pl: 0`. One unpriceable symbol must not blank the others
 
-- [ ] **Task 13** — `GET /trading/portfolio` rollup. Unpriceable positions valued at `avg_cost` — never dropped, never zeroed. Reuses the positions path rather than a second divergent query
+- [x] **Task 13** — `GET /trading/portfolio` rollup. Unpriceable positions valued at `avg_cost` — never dropped, never zeroed. Reuses the positions path rather than a second divergent query
 
 - [ ] ⏸️ **Checkpoint C: The API is complete** — all four endpoints work; write-closed/read-open demonstrated **in the same session**; dev DB at 20
 
