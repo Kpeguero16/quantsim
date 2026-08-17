@@ -1,246 +1,231 @@
-# SPEC — QuantSim Auth Rate Limiting (Step 11)
+# SPEC — QuantSim Store-Layer Integration Harness (Step 12)
 
-Status: **Approved 2026-08-14.** Khalil resolved the three design decisions before drafting (§9) and approved both open findings as recommended (§10). Implementation is unblocked.
-Scope: one new package in the gateway, one middleware wiring change, unit tests. No database, no migration, no change to the auth service.
+Status: **Approved 2026-08-14.** Khalil resolved the four design decisions before drafting; §9 records them. Implementation is unblocked.
+Scope: one new test-only package in `services/auth`, two compile-time assertions in production files, Makefile targets. **No change to any query, no migration, no new module dependency.**
 
-Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase1-step10-identity-lookup/` — all complete. **Phase 1 is closed;** this is the first item of the Phase 2 security work.
+Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase2-step11-auth-rate-limiting/`.
 
 ---
 
 ## 1. Objective
 
-Close `docs/security-backlog.md` item 1 — **the largest remaining gap in the auth surface**. Nothing throttles authentication attempts today. An attacker can submit credentials against `/auth/login` as fast as the network allows: no per-IP limit, no per-account limit, no backoff.
+`services/auth/internal/store/` has **no tests at all**. Every auth suite runs against `mock.UserStore` (`services/auth/internal/service/mock/mock.go`), which is a Go map. All 18 existing test files would stay green against a completely wrong SQL query.
 
-Step 9 added a 15-character minimum, a blocklist, and bcrypt. Every one of those raises the cost **per guess**. None bounds the **number** of guesses, which is what actually defeats credential stuffing against reused passwords.
+This is not a theoretical gap. Step 10's central fix — changing `GetUserByEmail` to match `WHERE lower(email) = $1` — lives in exactly that layer, and `PHASE1_CHECKLIST.md` records the caveat in its own words:
 
-**Why now, ahead of the trading engine.** Today account takeover buys a read-only view of public market data. Once `/trading/*` executes orders against a $100k simulated balance, the same weakness lets someone trade as another user. The auth surface does not get weaker in Phase 2 — the consequences of its existing gaps get materially worse. This is cheap now and expensive to retrofit under a live order path.
+> *"the verification was manual, which proves the fix today and protects nothing tomorrow."*
 
-**Non-goals.** Not a general-purpose gateway rate limiter for `/market-data/*` or `/trading/*`. Not the refresh-token revocation work (backlog item 2). Not the full gateway-wide body cap (item 4) — see §10.2 for the sliver this step does pull in.
+**Why now, before the trading engine.** Phase 2 will add far more SQL than auth ever had — orders, trades, positions, P/L. Building the harness first means that SQL gets written against a working safety net. Building it afterwards means retrofitting one against a much larger surface, at which point the cheap version is no longer available. `docs/NEXT_SESSION.md` has carried this as item 1 across two sessions.
+
+**Objective:** a real-Postgres test suite that **fails when the store's SQL is wrong**, plus the `make test` / `make test-integration` targets the repo has never had.
+
+**Non-goals.** Not market-data's store. Not CI. Not testcontainers. Not a rewrite of any query — if a test finds a bug, that is a separate decision, not silent scope.
 
 ---
 
 ## 2. Design decisions
 
-### 2.1 Counters live in memory, in the gateway process
+### 2.1 Reuse the docker-compose Postgres, not testcontainers
 
-A sharded map with periodic eviction, behind a `limiter.Store` interface. **No new module dependency.**
+The harness connects to the Postgres that `make docker-up` already runs.
 
-The backlog suggested Redis on the grounds that *"Redis is already a dependency, so a shared counter does not add infrastructure."* That is true of the **stack** and false of the **gateway**: `services/gateway/go.mod` requires only `chi` and `pkg`. Only market-data imports `go-redis`. Step 7 §8 lists *"any dependency beyond `go-chi/chi/v5`"* under **Ask first** — so this was a decision, not a detail.
+Testcontainers was the obvious alternative and is **rejected for now**: there is **no CI anywhere in this repo** (verified — no `.github/`, no `.gitlab-ci.yml`, nothing), so its main advantage, a self-contained ephemeral database that CI can start, is currently hypothetical. It also costs a heavyweight dependency in `services/auth` and container startup on every run.
 
-In-memory is correct while exactly one gateway instance runs, which is true today and stays true under Phase 4's single-EC2 docker-compose plan. It also has a property Redis does not: **it cannot be unavailable**, which removes the fail-open/fail-closed question entirely. Fail-closed on a shared store means a Redis outage locks every user out of login; fail-open means the limiter silently stops limiting. Neither is a good answer, and this design does not have to pick one.
+**Recorded as the upgrade path with its trigger — CI arriving** — in `docs/deferred-tuning.md`, the same convention Steps 10 and 11 used.
 
-**The trade, stated plainly:** two gateway instances would each hold their own counters, doubling the effective limit. The `Store` interface exists so a Redis implementation drops in without touching middleware or handlers. Recorded in `docs/deferred-tuning.md` on completion, with the trigger — *more than one gateway instance* — named explicitly.
+### 2.2 A dedicated `quantsim_test` database, and three guards around it
 
-### 2.2 Two dimensions: per-IP on all `/auth/*`, per-account backoff on `/auth/login`
+The dev database holds **15 real users**, and this harness runs `TRUNCATE`. "Which database am I connected to" is therefore not a detail; it is the one assumption whose violation is unrecoverable.
 
-Neither alone is sufficient:
+The environment makes this sharper than it looks:
 
-- **Per-IP alone** does not stop credential stuffing from a botnet, since each bot IP gets a fresh budget. That is the exact attack the backlog calls the highest-priority gap.
-- **Per-account alone** does not stop one host spraying many accounts.
-
-| Dimension | Applies to | Limit |
-|---|---|---|
-| Per-IP | all `/auth/*` | 100 requests / 15 min, fixed window |
-| Per-account | `/auth/login` only | exponential backoff on consecutive failures |
-
-Backoff schedule, keyed by submitted email. The delay is a function of the **consecutive-failure count already recorded**, so a window opens once the Nth failure has happened — all five attempts that produce failures 1–5 are themselves allowed to proceed, and the sixth is the first refused:
-
-| Failures recorded | Delay before the next attempt |
+| | |
 |---|---|
-| 0–4 | none |
-| 5 | 1 min |
-| 6 | 2 min |
-| 7 | 4 min |
-| 8 | 8 min |
-| 9+ | 15 min (ceiling) |
+| `POSTGRES_USER` | `quantsim` |
+| `POSTGRES_DB` | `quantsim` — **empty**, the known decoy |
+| `DATABASE_URL` database | `postgres` — **this is where the 15 users actually live** |
 
-**Every window decays on its own**, and a full idle gap of `MaxDelay` clears the count entirely so failures never compound across unrelated sessions.
+So the two names a careless harness would reach for, `postgres` and `quantsim`, are respectively the real data and the decoy. The target is `quantsim_test`, which is neither.
 
-`/auth/register` and `/auth/refresh` get per-IP only. Register has no account to key on yet; refresh would require decoding the token, which puts token parsing in the gateway for no gain the per-IP limit does not already provide.
+**An absolute denylist, plus a check on every path that can write:**
 
-### 2.3 No hard lockout — deliberately
+`assertTestDB` fails closed twice over — first against a hardcoded
+`protectedDatabases` list (`postgres`, `quantsim`, `template0`, `template1`),
+then against an exact match on `quantsim_test`. It is called:
 
-A hard lockout is the stronger control against guessing and is **rejected**. Anyone who knows a user's email could freeze that account at will, converting an auth control into a denial-of-service primitive against named users. It also needs an unlock path — an email flow or an admin tool — and neither exists.
+1. When the DSN is derived.
+2. Immediately before `DROP DATABASE`.
+3. After the pool connects — asking the server `SELECT current_database()`.
+4. Immediately before **every** `TRUNCATE` — asking the server again.
 
-Exponential backoff keeps the useful property (guessing gets exponentially slower) without permanent state. **An attacker can still degrade a known victim's login for up to ~15 minutes.** That is the accepted cost of the trade and it is bounded, self-healing, and requires sustained effort to maintain.
+Checks 3 and 4 consult the server rather than a string parsed at startup or a
+boolean cached from it, because those are the statements that destroy data.
 
-### 2.4 Per-account counts only failures; per-IP counts every request
+**The denylist was added in pre-merge review, and the reason matters** *(2026-08-17)*. The first version compared every target against `testDBName` alone. That defended against a wrong **DSN** and against nothing else: editing the constant to `postgres` would have satisfied every check while the harness dropped and truncated the database holding real users. The call that looked most protective — `assertTestDB(testDBName)` just before the `DROP` — was the emptiest of all, being a constant compared with itself, and a check that reads as protective but can never fire is worse than no check because it gets believed.
 
-Per-IP is checked **before** the proxy runs — cheap, and it blocks floods without any knowledge of what auth decided.
+Checking an absolute list first makes the constant itself subject to the guard rather than the yardstick for it. Verified end to end by poisoning `testDBName` to `quantsim` — the **empty decoy**, chosen deliberately so a guard failure would cost nothing recoverable — and confirming the run aborts with a non-zero exit. The failure being guarded against is unrecoverable, so it is never reproduced against the real database in order to be tested.
 
-Per-account is counted **optimistically, before the proxy runs and atomically with the check**, then corrected once the outcome is known:
+### 2.3 Skip, never fail, when Postgres is unavailable
 
-| Upstream status | Action |
-|---|---|
-| `401` | the optimistic count was right — leave it |
-| `200` | `Succeed` — clear the counter entirely |
-| anything else (`502`, `400`, …) | `Undo` — roll the count back |
+Plain `go test ./...` must stay green on a laptop with Docker stopped. Two mechanisms, and both are wanted:
 
-A legitimate user typing the right password is therefore never throttled however often they log in, and a downed auth service returning `502` cannot throttle its own users — only genuine credential rejections accumulate.
+- The package is behind `//go:build integration`, so a default run does not even compile it.
+- With the tag on but the server unreachable, `TestMain` records a skip reason and every test calls `t.Skip` with it.
 
-**Why optimistic, rather than counting after the response** *(revised 2026-08-14 during pre-merge review)*: the obvious design checks the counter, proxies, and counts the failure afterwards. That leaves the counter untouched for the entire backend round-trip, so every request arriving in the meantime sees a clean slate. Measured through the full gateway: **60 concurrent guesses against one account at a threshold of 5 — all 60 reached the backend, none refused.** Backoff bounded *sequential* guessing and did nothing about *concurrent* guessing, which is the easy case for the distributed attack per-account limiting exists to stop.
+The skip reason is printed to stderr naming `make docker-up`. **A permanently-skipping suite otherwise looks identical to a passing one**, which is the failure mode that makes integration suites worthless over time.
 
-Counting first, under the same lock as the check, inverts that: the Nth concurrent request finds the count already at N−1, so a burst is bounded by the threshold instead of by how fast the backend answers. The same measurement now yields 5 of 60.
+### 2.4 Migrations by executing the `.up.sql` files in order — no new dependency
 
-A refused attempt does **not** extend the window. Counting rejections would let an attacker keep their own victim throttled indefinitely just by continuing to knock.
+Verified: every migration is plain SQL with **no golang-migrate directives** (no `-- no-transaction`, no `CONCURRENTLY`), 1–5 statements each. The harness globs `infra/migrations/*.up.sql`, sorts by filename, and `Exec`s each in order with the pgx pool it already holds — roughly fifteen lines.
 
-Cost: the gateway must observe the upstream response status, which needs a `ResponseWriter` wrapper capturing the code the proxy wrote. This is the one piece of real machinery in the step.
+The test database is created once and truncated between tests, so migrate's version tracking and dirty-state recovery buy nothing here.
 
-### 2.5 The per-IP key is `r.RemoteAddr` — **not** `X-Forwarded-For`
+**`services/auth/go.mod` stays unchanged.** That matters: Step 7 §8 makes any new dependency an ask-first decision, and Step 11 held itself to zero new dependencies. Importing `golang-migrate` as a library would have added it plus its transitive tree to a production module's graph — Go does not mark test-only dependencies differently.
 
-**The backlog's stated premise is wrong, and following it would produce a bypassable limiter.**
+*Side benefit:* the test database is migrated **from zero** every time it is created, whereas the dev database was migrated incrementally over months. This harness is therefore also the first thing in the repo that proves `001`→`005` applies cleanly to an empty cluster.
 
-It claims the gateway's `r.SetXForwarded()` call *"replaces any inbound `X-Forwarded-For`, so a per-IP limiter can trust that header."* Verified against the code: `SetXForwarded()` is called on `r.Out` inside `proxy.New`'s `Rewrite` (`services/gateway/internal/proxy/proxy.go:59`). `Rewrite` runs **after** every gateway middleware and builds only the **upstream** request. The inbound `r.Header["X-Forwarded-For"]` that a middleware sees is never sanitized — it is whatever the client sent.
+**Trigger to revisit:** the first migration that needs a golang-migrate directive. `docs/deferred-tuning.md` §3 already flags `CONCURRENTLY` as a live Phase 2 consideration for the orders and trades tables.
 
-A limiter keying on that header could be bypassed with one line of `curl`: a fresh forged `X-Forwarded-For` per request buys an unlimited budget. The limiter keys on `r.RemoteAddr` with the port stripped, which is the real TCP peer and unforgeable at this hop.
+### 2.5 `TRUNCATE` between tests, not transaction-per-test
 
-**The backlog entry gets corrected as part of this step** so the wrong premise is not rediscovered and believed by the next reader.
+`TRUNCATE TABLE users CASCADE` before each test — cascading through `accounts` → `positions`/`orders`/`trades` via the FK chain.
 
-*When the gateway later sits behind an ALB (Phase 4), the real client IP will arrive in a header from a trusted proxy and this decision must be revisited deliberately.* Noted in `docs/deferred-tuning.md`, not designed for now.
+**Transaction-per-test is not available here, and the reason is the point of the whole step.** `PostgresUserStore` takes a `*pgxpool.Pool` and calls `pool.Begin` itself inside `CreateUserWithAccount`. Wrapping each test in an outer transaction would require reshaping production code to suit tests, and it would make the single most valuable test in the suite — rollback atomicity — untestable, because the rollback under test would degrade into a savepoint release inside the test's own transaction.
 
-### 2.6 A `429` must not become an enumeration oracle
+Truncating **before** rather than after each test leaves a failing test's rows in place for inspection with `psql`.
 
-Step 9 §2.12 deliberately made login's failure uniform: unknown-email and wrong-password return the identical `401`, backed by a dummy-hash timing defence. A rate limiter is an easy way to undo that.
+**No `t.Parallel()` anywhere in this package.** Every test shares one database and truncates it. Stated in a comment at the top of the harness, because adding `t.Parallel()` is exactly the reflexive change that would make this suite flake mysteriously.
 
-**Invariant: throttle on the submitted email whether or not the account exists.** The counter keys on the normalized email string, and nothing consults the database. Since a nonexistent email also returns `401`, both cases accumulate failures identically and throttle identically. A `429` therefore reveals only that *this email has recent failed attempts* — attempts the attacker made themselves, so they learn nothing they did not already know.
+### 2.6 The rollback path is forced with a numeric overflow
 
-Concretely forbidden: skipping the counter when the user is unknown, or any distinct code/message/timing between the two.
+Testing that a failed `accounts` insert leaves no orphan `users` row requires making that insert fail **deterministically, after the users insert has already succeeded.**
 
-Email normalization for the key is `strings.ToLower(strings.TrimSpace(email))` — the same rule Steps 9 and 10 made structural, so `Foo@x.test` and `foo@x.test` share one counter rather than getting a fresh budget per capitalization.
-
-### 2.7 Response shape
-
-Standard JSON error via `httperr.Write`, matching every other gateway response:
-
-```json
-{ "code": "rate_limited", "message": "too many requests, please try again later" }
-```
-
-`429 Too Many Requests`, plus a `Retry-After` header in seconds. One code and one message for both dimensions — a per-IP block and a per-account block are indistinguishable to the client, which keeps §2.6 intact.
-
-### 2.8 Middleware order
+`accounts.balance` is `NUMERIC(20,4)`. Verified directly against the running server:
 
 ```
-StripUserID -> CORS -> RateLimitByIP -> [route group] -> proxy
+SELECT 1e15::NUMERIC(20,4)  ->  1000000000000000.0000
+SELECT 1e16::NUMERIC(20,4)  ->  ERROR: numeric field overflow
+                                DETAIL: ... must round to an absolute value less than 10^16.
 ```
 
-`RateLimitByIP` sits **inside** CORS for the reason Step 7 put `RequireAuth` there: a `429` without CORS headers surfaces in a browser as an opaque network error, and you debug the wrong layer. It stays **outside** the route group so it applies before any per-route work.
+So passing `startingBalance = 1e16` fails the accounts insert with SQLSTATE `22003` while the users insert succeeds. **No schema mutation, nothing to clean up, nothing that can leak into a later test.**
 
-Per-account accounting wraps the `/auth/login` route specifically, since it is the only route that needs the response-status wrapper.
+A temporary `CHECK (false)` constraint was considered and rejected: it works, but a failed cleanup would silently poison every subsequent test in the package.
+
+The test asserts the error is a `*pgconn.PgError` with code `22003`, so that if the injection ever stops working the test fails loudly rather than passing because something *else* went wrong. It also asserts the error is **not** `ErrDuplicateUser` — the `23505` mapping lives only in the users branch and must not over-reach.
 
 ---
 
 ## 3. Project structure
 
 ```
-services/gateway/internal/limiter/
-  limiter.go        # Store interface, Limit/Result types
-  memory.go         # sharded in-memory Store + eviction loop
-  memory_test.go
-  backoff.go        # exponential schedule, failure counters
-  backoff_test.go
-services/gateway/internal/middleware/
-  ratelimit.go      # RateLimitByIP + RateLimitLoginByAccount
-  ratelimit_test.go
+services/auth/integration/
+  harness_test.go          # env resolution, three guards, migrate, truncate, seed helper
+  main_test.go             # TestMain: create DB, migrate, record skip reason
+  user_store_get_test.go   # GetUserByEmail / GetUserByID
+  user_store_create_test.go# CreateUserWithAccount
 ```
 
-Existing files touched: `handler/router.go` (wiring), `cmd/server/main.go` (construct the store, start eviction), `.env.example` (new knobs), `docs/security-backlog.md` (§2.5 correction), `docs/deferred-tuning.md` (§2.1 and §2.5 triggers).
+Every file carries `//go:build integration` and `package integration`. **The repo has no build tags anywhere today** — this is the first.
 
-**Not touched:** `services/auth/` entirely. This is a gateway-layer control.
+The directory is a sibling of `internal/`, so `internal/store` and `internal/service` are both importable from it.
+
+Production files touched — two lines total, no behaviour change:
+- `services/auth/internal/store/user_store.go` — `var _ service.UserStore = (*PostgresUserStore)(nil)`
+- `services/auth/internal/service/mock/mock.go` — `var _ service.UserStore = (*UserStore)(nil)`
+
+Neither assertion exists today, so the mock and the real store can drift apart with nothing failing. The mock's is the more valuable of the two.
 
 ---
 
 ## 4. Configuration
 
-Follows the existing `envOrDefault` pattern in `main.go`. Every knob has a working default so nothing new is required in `.env` to run the stack.
+| Variable | Meaning |
+|---|---|
+| `TEST_DATABASE_URL` | Explicit override — for a different host or user. **Still guarded**: the override may not change the database *name*. |
+| `DATABASE_URL` | Normal path. Taken, with the path component **replaced** by `/quantsim_test`. Never used as-is. |
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `RATE_LIMIT_IP_REQUESTS` | `100` | requests per window per IP |
-| `RATE_LIMIT_IP_WINDOW` | `15m` | per-IP window |
-| `RATE_LIMIT_LOGIN_FAILURES` | `5` | consecutive failures before backoff |
-| `RATE_LIMIT_LOGIN_MAX_BACKOFF` | `15m` | backoff ceiling |
-| `RATE_LIMIT_ENABLED` | `true` | escape hatch; `false` disables both dimensions |
+If neither is set in the environment, the harness reads `DATABASE_URL` from the repo-root `.env` without exporting it into the process. This exists because `make migrate-up` only works thanks to the Makefile's `-include .env` + `export`; running `go test -tags=integration ./integration/...` by hand from a plain shell would otherwise always skip, and a silently-skipping harness is worse than none.
 
-`RATE_LIMIT_ENABLED=false` exists so a limiter bug cannot become an outage with no way out. It logs loudly at boot when off.
+The repo root is located by walking up to `go.work`, not by a relative path that breaks if the package moves.
 
 ---
 
 ## 5. Testing strategy
 
-Per `agents.md`, Phase 1 allowed manual verification. This step is Phase 2 security work with real logic worth pinning, so it gets **unit tests, TDD, RED before GREEN** — consistent with how Steps 9 and 10 were closed.
+The suite's whole purpose is to catch what the mock cannot. Each case names that property.
 
-Every test runs against the in-memory store with an **injected clock**, so no test sleeps. `limiter.Store` takes a `now func() time.Time`.
-
-| # | Test | Proves |
+| # | Test | What only a real database proves |
 |---|---|---|
-| 1 | under-limit requests pass, N+1 gets `429` | the per-IP limit binds |
-| 2 | window expiry restores the budget | counters decay, no permanent state |
-| 3 | two IPs have independent budgets | key isolation |
-| 4 | **forged `X-Forwarded-For` does not create a new budget** | §2.5 — the bypass is closed |
-| 5 | 4 failures pass; 5th throttles | the backoff schedule binds |
-| 6 | delays double and cap at the ceiling | schedule correctness |
-| 7 | a `200` resets the failure counter | §2.4 — success is not penalized |
-| 8 | **unknown and known emails throttle identically** | §2.6 — no enumeration oracle |
-| 9 | `Foo@x.test` and `foo@x.test` share a counter | §2.6 — normalization |
-| 10 | `429` body matches `{code, message}` and carries `Retry-After` | §2.7 contract |
-| 11 | a `429` carries CORS headers | §2.8 — order is correct |
-| 12 | eviction reclaims stale entries | unbounded growth is bounded |
+| 1 | Mixed-case stored row found by lowercase lookup | **Step 10's fix.** Seeded via raw SQL — the store *cannot* create such a row, since the service lowercases first. Reverting to `email = $1` must fail this. |
+| 2 | Returned `Email` is the **stored** form, not the query argument | Currently unasserted anywhere. |
+| 3 | Lookup does not lowercase its own argument | Pins the documented contract, so a later "fix" to `lower($1)` is a visible decision rather than a silent widening. |
+| 4 | Duplicate email differing only in case → `ErrDuplicateUser` | `idx_users_email_lower` from migration 004 + the `23505` mapping. |
+| 5 | Duplicate username, exact and case-differing → `ErrDuplicateUser` | **The mock models no username uniqueness at all**, so every existing suite is blind to this path. |
+| 6 | Failed accounts insert leaves no orphan user | The transaction the doc comment promises. See §2.6. |
+| 7 | `GetUserByID` returns nil `PasswordHash` | The query omits the column; the mock returns the same fully-populated pointer for both lookups, so the asymmetry is invisible today. |
+| 8 | Both lookups miss → `ErrUserNotFound` | `pgx.ErrNoRows` mapping against the real driver. |
+| 9 | Round-trip of UUID, `timestamptz`, and the hash | No encode/decode ever happens in the mock. |
+| 10 | Exactly one account, `currency` defaulting to `USD` | Nothing in Go sets `currency` — an untested column default. |
+| 11 | `StartingBalance` persists exactly in `NUMERIC(20,4)` | Documents the `float64` → numeric conversion. **Observe the real behaviour first, then assert it** — do not guess an expected string and bend the test to it. |
 
-Tests 4 and 8 are the two that would catch a silently broken security property, and both are written first.
+**Mutation checks are mandatory, not optional** — the standard Step 11's review established. At minimum:
 
-**Manual verification at the checkpoint:** a real login loop against the running stack confirming `429` after the threshold, recovery after the window, and that a correct password still succeeds mid-backoff from a different IP.
+| Mutation | Must fail |
+|---|---|
+| `lower(email) = $1` → `email = $1` | Test 1 — **the headline check. If this does not fail, the harness is worthless.** |
+| Delete the `23505` branch | Tests 4 and 5 |
+| Move `tx.Commit` to just after the users insert | Test 6 |
+| Comment out `idx_users_email_lower` in migration 004, drop the test DB, rerun | Test 4 — proves migrations are genuinely applied, not inherited from a stale database |
 
 ---
 
 ## 6. Code style
 
-Follows what the gateway already does, which is more specific than "idiomatic Go":
-
-- Comments explain **why**, not what — the existing gateway comments are the reference (`proxy.go` on `SetXForwarded`, `identity.go` on `StripUserID` being outermost). Every non-obvious security decision above carries its reasoning into the code.
-- Constructors return concrete types; consumers depend on interfaces (`limiter.Store`), per `docs/TESTING_STRUCTURE.md`.
-- No new dependency. Standard library plus `chi`.
-- `httperr.Write` for every error response — never a bare `http.Error`.
-- Config read in `main.go` only; packages take values, not `os.Getenv`.
+- Follows the existing suites: external test package conventions, failure messages that explain **why** a property matters rather than restating the assertion.
+- Comments explain why, per the house standard set by `proxy.go` and `identity.go`.
+- No new module dependency (§2.4).
+- Errors compared with `errors.Is`, never string matching.
 
 ---
 
 ## 7. Commands
 
 ```bash
-make docker-up                          # Postgres + Redis
-make run-auth                           # :8081
-make run-gateway                        # :8080  (restart after any code change)
-cd services/gateway && go test ./...     # the suite for this step
-go build ./...                           # compile check
+make docker-up          # Postgres + Redis
+make test               # unit tests, all four modules, no Docker needed
+make test-integration   # this suite; skips cleanly if Postgres is down
+make test-db-drop       # drop quantsim_test after editing a migration
+make vet                # includes a -tags=integration pass
 ```
 
-**Restart the gateway after every change.** It runs under `go run`; a live instance keeps serving the old binary. `NEXT_SESSION.md` records this silently costing an entire step once — three commits of validation sat on disk while `:8081` kept accepting one-character passwords.
+`test-integration` uses `-count=1`: results depend on database state and must never be cached.
+
+`vet` must include the tagged pass. Tagged files are otherwise **never type-checked by any default command**, which is precisely how a tagged test file rots unnoticed.
 
 ---
 
 ## 8. Boundaries
 
 **Always do:**
-- Key the per-IP limit on `r.RemoteAddr`, never on a client-supplied header (§2.5)
-- Throttle on the submitted email whether or not the account exists (§2.6)
-- Return one identical `429` code and message for both dimensions (§2.7)
-- Keep the limiter inside CORS so `429`s carry CORS headers (§2.8)
-- Normalize the email key with the Step 9/10 rule (§2.6)
-- Run `go test ./...` before flagging a checkpoint done
+- Target `quantsim_test`, verified by all three guards (§2.2)
+- Ask the *server* which database it is on before any `TRUNCATE`
+- Skip, never fail, when Postgres is unreachable — and print why
+- Seed mixed-case rows with raw SQL, since the store cannot produce them
+- Run the §5 mutation checks before flagging the step done
 
 **Ask first:**
-- Any new module dependency — the §2.1 decision is specifically what keeps this at zero
-- Extending rate limiting to `/market-data/*` or `/trading/*`
-- Changing the uniform-failure behaviour of login in any way
-- Any change inside `services/auth/`
+- Any new module dependency — §2.4 is specifically what keeps this at zero
+- Any change to a query in `user_store.go`, including one a test appears to justify
+- Extending the harness to market-data's store
+- Adding CI
 
 **Never do:**
-- Implement a hard account lockout (§2.3)
-- Let the limiter distinguish "throttled" from "wrong password" in code, message, or timing (§2.6)
-- Trust inbound `X-Forwarded-For` or `X-Real-IP` for limiting (§2.5)
-- Log a password, a token, or a full email at any level
-- Skip the counter for unknown accounts
+- Point the harness at `postgres` or `quantsim`
+- Use `DATABASE_URL` unmodified
+- Add `t.Parallel()` in this package (§2.5)
+- Reshape production code to make a test easier (§2.5)
+- Commit `.env`
 
 ---
 
@@ -250,34 +235,13 @@ Resolved 2026-08-14, all as recommended:
 
 | # | Decision | Resolution |
 |---|---|---|
-| 1 | Counter store | **In-memory**, behind a `Store` interface — §2.1 |
-| 2 | Per-account policy | **Per-IP + per-account throttle**, no hard lockout — §2.2, §2.3 |
-| 3 | What to count | **Failures only** for per-account; all requests for per-IP — §2.4 |
+| 1 | Next step | **The store harness**, ahead of refresh-token revocation and the trading engine |
+| 2 | Postgres source | **Reuse docker-compose** + a dedicated `quantsim_test` — §2.1, §2.2 |
+| 3 | Scope | **auth store only** |
+| 4 | Migrations | **Exec the `.up.sql` files in order**, no new dependency — §2.4 |
 
 ---
 
-## 10. Findings raised during drafting — **both approved 2026-08-14**
+## 10. Implementation
 
-### 10.1 The backlog's `X-Forwarded-For` premise is wrong (§2.5) — **approved**
-
-Not a question so much as a correction to confirm: the limiter keys on `r.RemoteAddr`, and I amend `docs/security-backlog.md` item 1 in this step so the wrong premise does not get rediscovered. **Recommend: yes, correct it here** — the entry is the first thing the next reader will trust.
-
-### 10.2 Per-account keying requires reading the request body — a scope question — **approved**
-
-This one genuinely expands the step and I do not want to absorb it silently.
-
-To key on the submitted email, the gateway must **read the JSON body of `/auth/login`**, which it has never done — it is a pure proxy that streams the body upstream untouched. That pulls in three things:
-
-1. Buffering the body and replaying it to the proxy (`io.NopCloser` over the buffered bytes).
-2. **A size cap on that read**, because buffering an unbounded body is a memory-exhaustion vector. This is a narrow slice of backlog **item 4** (the gateway-wide body cap) arriving early — scoped here to `/auth/login` only, at 64KB.
-3. The gateway parsing an auth-specific payload shape, which is a small but real layering leak. It currently knows only path prefixes.
-
-**Recommend: accept it, scoped to `/auth/login`.** Per-account limiting is what stops distributed credential stuffing, and there is no way to key on an account without reading the account identifier. The 64KB cap is strictly an improvement and item 4 gets easier, not harder. The layering cost is one route and one field, documented.
-
-**The alternative is dropping per-account limiting entirely** and shipping per-IP only — smaller, cleaner, no body handling — but it leaves the headline attack from §1 substantially open.
-
----
-
-## 11. Implementation
-
-Approved. `tasks/plan.md` holds the task breakdown, acceptance criteria, dependency order, and risks; `tasks/todo.md` is the checkpoint list. Four checkpoint-sized slices: **(1)** the store and backoff schedule with their tests, **(2)** the per-IP middleware wired into the router, **(3)** the per-account middleware and body handling, **(4)** documentation and backlog corrections.
+`tasks/plan.md` holds the breakdown, acceptance criteria, and risks; `tasks/todo.md` is the checkpoint list. Four checkpoints: **(1)** harness connects, creates, and migrates, with the guards proven and the dev database demonstrably untouched; **(2)** Step 10's fix protected, verified by mutation; **(3)** the rest of the surface plus the interface assertions; **(4)** Makefile, docs, handoff.
