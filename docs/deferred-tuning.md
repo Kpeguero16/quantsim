@@ -238,6 +238,90 @@ prerequisite either design needs, so this is additive later, not a rewrite.
 
 ---
 
+## 9. `orders` has no index on `account_id`
+
+**Where:** `infra/migrations/006_*.up.sql` — Step 14's migration, and the
+`ListOrders` query in
+`services/trading-engine/internal/store/postgres_trading_store.go`.
+
+**Now:** `GET /trading/orders` runs `WHERE account_id = $1 ORDER BY created_at
+DESC, id DESC` against an unindexed column, so it is a sequential scan of the
+whole table filtered down to one account's rows. Every rejected order is persisted
+too (that is deliberate — the audit trail is worth more than a small table),
+so the table grows faster than the fill rate alone suggests: Step 14's own
+adversarial review wrote 103 orders in an afternoon, of which only 73 were
+fills. (Those rows were deleted before the merge, so the table is empty today
+— the number is the growth rate, not the current size.)
+
+**Why it was left out:** the spec scoped migration 006 to exactly four columns,
+and the plan treats anything beyond that scope as an "ask first" boundary
+(`docs/archive/phase2-step14-trading-engine-mvp/plan.md`, decision D4). Adding
+an index nobody had measured a need for would have been the plan quietly
+widening its own mandate. At current row counts the scan is unmeasurable.
+
+**When it changes:** whichever comes first —
+- `orders` passes ~10k rows, or
+- `GET /trading/orders` shows up as slow with a real user's history behind it.
+
+**Likely fix:** `CREATE INDEX CONCURRENTLY idx_orders_account_id_created_at ON
+orders (account_id, created_at DESC, id DESC)` — composite and in that order,
+so it serves the filter and the sort together rather than forcing a sort after
+the lookup. `CONCURRENTLY` for the reason item 3 in this file already
+documents. The same question applies to `trades(account_id)`, which is
+unindexed for the same reason; `positions` needs nothing, since its
+`UNIQUE(account_id, symbol)` constraint already provides the index its lookups
+use.
+
+---
+
+## 10. Money is `float64` in Go and `NUMERIC(20,4)` in Postgres
+
+**Where:** every money and quantity field in `services/trading-engine` —
+`Balance`, `Price`, `Quantity`, `AvgCost`, `RealizedPL`, `TotalEquity`.
+
+**Now:** Postgres is the authority and stores exact decimals; Go computes in
+binary floating point and hands back a value that is rounded to 4dp on write.
+The two disagree by less than half a tick per operation, and the store's
+integration tests read money as `::text` precisely so that any real precision
+loss becomes visible instead of being rounded away by the assertion.
+
+**The measured consequences**, both from Step 14's adversarial review:
+
+1. **A derived response field can show the artifact.** A portfolio whose parts
+   are exactly 100000 reported `"total_equity": 99999.99999999999`. Nothing
+   stored is wrong — the sum is computed in Go across positions and cash — but
+   it is visible in the API, and a frontend that formats it naively will show
+   it to a user.
+2. **A sub-tick residual on the cash leg of every fill.** Measured at
+   **+0.0000345 per fill** across 30 tick-sized sells at 305.655: the proceeds
+   `0.0305655` cannot be represented at 4dp, so the account is credited
+   `0.0306`. It is bounded by half a tick, it is not reliably one-directional
+   across prices, and it is not profitable to farm — the caller gives up
+   0.0306 of stock to gain 0.0000345 of cash.
+
+**What is *not* deferred:** the same review found a far worse version of this,
+where a quantity below the ledger's tick was charged for in full and then
+rounded to **zero shares** — the cash leg landing while the share leg vanished,
+which minted money on the sell side. That was a bug, not a tuning question, and
+it was fixed in Step 14 (`00cb7ba`) by making `0.0001` the minimum quantity and
+snapping finer ones to the tick. See `PHASE2_CHECKLIST.md` Step 14. **The
+distinction matters:** a bounded rounding residual is a trade-off; an entire
+leg of a transaction disappearing is not, and no amount of "money is float64"
+context makes the second one acceptable.
+
+**When it changes:** whichever comes first —
+- a user-visible number is wrong by more than a cent, or
+- P/L has to reconcile against anything external, or
+- fractional-share quantities finer than 0.0001 are wanted.
+
+**Likely fix:** integer minor units (store cents/ten-thousandths as `int64`) or
+a decimal type such as `shopspring/decimal`, applied at the service boundary so
+Postgres stays the authority it already is. Both are a wide change — every
+struct field, every JSON contract, and both test suites — which is exactly why
+it wants its own step rather than a corner of one.
+
+---
+
 ## Related decisions recorded elsewhere
 
 - **Graceful shutdown** — none of the three services drain on SIGTERM

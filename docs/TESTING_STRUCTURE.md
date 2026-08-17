@@ -140,6 +140,26 @@ Two details in there are load-bearing and should not be "tidied away":
 
 Implemented in Step 12 for `services/auth/internal/store`, which previously had no tests at all. See `SPEC.md` (Step 12) for the full reasoning.
 
+**As of Step 14 the harness exists in two modules**, `services/auth/integration/` and `services/trading-engine/integration/`, as a near-verbatim copy. Everything in this section describes both.
+
+### Why it was copied rather than shared
+
+The obvious move was to extract it to `pkg/testutil/` (§5) at the moment of the second use. It was copied instead, deliberately:
+
+- **`pkg` has no test-only dependencies today, and this would have added them for every module.** Each service's `go.mod` requires `pkg`; a `testutil` that imports `pgx` puts that in the dependency graph of services that never touch Postgres. Keeping it out of `pkg` keeps that cost where it is actually paid.
+- **Two copies is not yet evidence of the right abstraction.** The auth copy truncates `users CASCADE`; the trading-engine copy has to seed accounts and positions that no store method can create. A shared harness written against exactly two call sites tends to encode the first one's assumptions and then grow parameters for the second.
+- **The one part that must not drift was verified rather than shared.** `assertTestDB`, its `protectedDatabases` denylist, and `resolveDSNs` are byte-identical in both copies, and both were mutation-checked — the guard is the whole reason this file says *"do not simplify that to a single comparison"*. A divergence there is the failure mode worth caring about, and `diff` is enough to catch it.
+
+What legitimately *does* differ between the copies is the seeding (`insertUserRaw` vs `seedAccount`/`seedPosition`/`numeric`) and the post-migration schema assertions — auth checks migrations 004 and 005, trading-engine checks 006's columns and that `positions.avg_cost` is `NOT NULL`. Those are per-service by definition and would be parameters, not shared code, in any extraction.
+
+### The trigger for extracting it
+
+**A third service needing it.** At three call sites the shape is demonstrated rather than guessed, and the duplication stops being a copy and starts being a policy nobody owns. `services/market-data`'s `historical_price_store.go` is the likely third — it has no store tests either, and its idempotent upsert on `UNIQUE(symbol, timeframe, timestamp)` is exactly the kind of SQL that needs a real database.
+
+At that point extract to `pkg/testutil/` under §5's constraint (test files only, so the dependency never reaches a service binary), and port all three call sites in the same change — an extraction that leaves one copy behind is worse than three copies, because now there are four things and one of them lies.
+
+Until then: **when you change the harness, change both copies, and diff them.**
+
 ### Running them
 
 ```bash
@@ -199,6 +219,8 @@ func TestSomething(t *testing.T) {
 ```
 
 Use `insertUserRaw` when a row needs a shape the store cannot produce — a mixed-case stored email, for instance, since `service.Register` lowercases before the store ever sees it.
+
+The trading-engine copy has the same `newStore(t)` entry point and three helpers of its own: `seedAccount` and `seedPosition` write rows the store cannot create (a sell must be testable without first trusting the buy path), and **`numeric` reads a money column as `::text` and parses it** rather than scanning into a `float64`. That last one is not a style preference — the columns are `NUMERIC(20,4)` and Postgres is the authority on what was stored. Scanning straight into a `float64` lets a value that lost precision on the way in come back looking exactly like the number the test expected, so the assertion ends up checking Go's arithmetic against itself.
 
 **Pair every new test with a mutation check.** Break the query it covers and confirm *that* test fails. A store test that passes against a broken query is worse than no test, because it is trusted.
 

@@ -10,6 +10,12 @@ simulated balance, the same weakness lets someone trade as another user. The
 auth surface does not get weaker in Phase 2; the consequences of its existing
 gaps get materially worse. Reasoning in `docs/security-backlog.md`.
 
+**The security work landed first, and then the engine did.** Steps 11, 13 and
+14 closed backlog items 1, 2 and 4; Step 14 shipped `/trading/*` itself. The
+paragraph above is no longer a forecast — orders execute against real balances
+today, and they did not before the three gaps that made that consequential were
+closed.
+
 ---
 
 ## Step 11: Auth Rate Limiting
@@ -322,25 +328,251 @@ the gateway that replaying the same (now revoked) refresh token against
 
 ---
 
-## Still open before the trading engine
+## Step 14: Trading Engine MVP
+
+`agents.md` §2's "Simulated Trading Engine" — the last major system before
+Phase 3, and `docs/security-backlog.md` item 4 (a gateway-wide request-body
+cap), which was explicitly tied to `/trading/*` going live rather than
+returning its `501` placeholder.
+
+- [x] Spec drafted and reviewed — eleven design decisions resolved (`SPEC.md`
+      §8)
+- [x] Step 13's spec archived to
+      `docs/archive/phase2-step13-refresh-token-revocation/`
+- [x] Feature branch `step14-trading-engine-mvp` created and pushed
+- [x] Plan (`tasks/plan.md`, `tasks/todo.md`) — 17 tasks, 5 checkpoints
+- [x] Migration 006: `positions.avg_cost`, `orders.filled_price` /
+      `rejection_reason`, `trades.realized_pl`
+- [x] Fourth Go module `services/trading-engine`, added to `go.work`,
+      `GO_MODULES`, and the Makefile's run/test/vet targets
+- [x] `POST /trading/orders` — market buy and sell, filled at
+      `market-data`'s live price, inside one transaction holding
+      `SELECT ... FOR UPDATE` on the account row
+- [x] `GET /trading/orders` / `/positions` / `/portfolio` — the read side,
+      fail-open
+- [x] Store integration tests against a real Postgres, including two
+      concurrency proofs
+- [x] `docs/security-backlog.md` item 4 **closed**: a gateway-wide 64 KiB
+      body cap on every route, not just login
+- [x] The gateway's `/trading/*` `501` replaced by a real proxy to
+      `TRADING_ENGINE_SERVICE_URL`
+- [x] Adversarial review found and fixed a real money-minting bug — see
+      below
+
+**Completed 2026-08-17.** Spec, plan and todo archived to
+`docs/archive/phase2-step14-trading-engine-mvp/`. Backend only: the trading
+UI is its own step (`SPEC.md` §1 non-goals).
+
+### The decisions
+
+**Backend only.** Order execution, positions, trade history, P/L, and the
+gateway's body cap — no frontend UI. Mirrors how Step 11 shipped the entire
+auth backend before Step 13 was the first step to touch `frontend/` at all;
+the trading UI is sized as its own step once this API exists to build
+against.
+
+**Price fetched over HTTP from `market-data`, not read from its Redis cache
+directly.** Keeps the cache format a private implementation detail behind
+`market-data`'s own API — the same boundary every other cross-service call in
+the project already respects — and costs `trading-engine` zero new
+infrastructure.
+
+**The order-write path fails closed; every read path fails open.** The
+opposite split from Step 13's revocation check, deliberately: filling an
+order at an unknown price is a correctness violation this project's fintech
+premise doesn't tolerate, where a read degrading to "no live P/L available"
+is not. Getting this reversed is called out in the spec as the easiest way to
+violate its intent.
+
+**`trading-engine` writes `accounts.balance`, a table `auth` also writes.**
+First cross-service table write in the project. Deliberate — the schema has
+supported it since migration 002 — but flagged rather than left implicit.
+
+**New migration (006): `positions.avg_cost`, `orders.filled_price` /
+`rejection_reason`, `trades.realized_pl`.** Rejected orders are persisted,
+not discarded, for the same audit-trail reasoning that's driven every other
+schema decision in this project.
+
+**`SELECT ... FOR UPDATE` on the account row for the whole order
+transaction**, so concurrent orders on one account can't both read the same
+pre-trade balance and double-spend it. The spec calls for a dedicated
+concurrency integration test proving this serializes in practice, not just
+reading correct.
+
+**No separate symbol whitelist** — `market-data`'s existing `404
+price_not_cached` becomes the order's rejection reason directly, so there's
+one source of truth for "is this symbol tradeable," not two that can drift.
+
+**Long-only.** Selling more than a position holds is rejected
+(`insufficient_position`), never shorted — `agents.md` never scopes
+short-selling in.
+
+**`trading-engine` revalidates the JWT itself**, matching the precedent
+`auth`'s own `/me` route already set (revalidating rather than trusting the
+gateway's injected `X-User-ID` header) — the trading surface is at least as
+sensitive.
+
+Full reasoning for all eleven, including the two options weighed for each,
+is in `SPEC.md` §2.
+
+### Four the plan decided, because the spec didn't
+
+1. **A rejected order COMMITs; it does not roll back.** §2.3 says "rollback,
+   reject" and §2.5 says rejected orders are persisted — a rollback would
+   erase the row §2.5 wants. Only infrastructure failure rolls back.
+2. **Validation lives in the store, not the service.** It has to read the
+   balance *inside* the lock, and the service cannot hold a transaction
+   without leaking `pgx` across the layer boundary.
+3. **A user with no account row is `500`**, not a new 4xx code that should be
+   unreachable. Every registered user gets an account; this is a broken
+   invariant, not caller error.
+4. **No `orders(account_id)` index in migration 006** — beyond the scoped
+   migration, which is an "ask first" boundary. Deferred with a recorded
+   trigger (`docs/deferred-tuning.md`).
+
+### What review found
+
+**A quantity below the ledger's tick minted money** (`00cb7ba`). Found by
+Task 16's adversarial review, against the running stack — invisible to the
+whole test suite, which was green before and after the discovery.
+
+`quantity` was validated as `> 0` and nothing else, while `orders`, `trades`
+and `positions` all store it as `NUMERIC(20,4)`. A quantity of `0.00001`
+therefore passed validation, was charged for at the full price, and then
+rounded to `0.0000` shares on the way into the database. **The cash leg
+landed and the share leg vanished.**
+
+On a buy that destroys money. On a sell it mints it, which is the direction
+an attacker picks. Thirty dust sells through the gateway against a live
+300-share AAPL position:
+
+```
+balance   8303.4969 -> 8303.5899   (+0.0930)
+position   300.0000 ->  300.0000   (unchanged)
+```
+
+Free money at roughly a third of a cent per request, with nothing bounding
+how often it could be repeated. It also left thirty `"quantity": 0,
+"status": "filled"` rows in the order history — a filled sell of zero shares
+at 305.655.
+
+*The rule it produced:* **a bound on one end of a range is a question about
+the other end.** `maxQuantity` already existed, and its comment already
+reasoned explicitly about `NUMERIC(20,4)` — the same reasoning had simply
+never been applied downward. Wherever code justifies an upper limit by the
+storage format, the lower limit is owed the same justification.
+
+Fixed by making the ledger's own tick the floor: `minQuantity = 0.0001`,
+with anything finer *above* the floor snapped to the tick before the balance
+is touched, so the quantity charged for is the quantity recorded rather than
+the two disagreeing by whatever Postgres rounded away.
+
+**The residual, stated honestly.** After the fix, the share leg is exact and
+a sub-tick residual remains on the cash leg alone: measured at **+0.0000345
+per fill** over 30 tick-sized sells at 305.655. That is intrinsic to
+`float64` money stored at 4dp (see `docs/deferred-tuning.md`), not closable
+by validation, and no longer worth farming — the caller now gives up 0.0306
+of stock to gain 0.0000345 of cash.
+
+**A diagnosis-quality issue, left unfixed as out of scope.** `market-data`
+collapses *any* cache error — including a Redis-layer failure — into
+`ErrPriceNotCached` → `404`
+(`services/market-data/internal/service/market_data.go:162`). So a Redis
+blip makes an order reject as `404 symbol_unavailable` instead of `502
+upstream_unavailable`. Fail-closed still holds; only the reason recorded in
+the order history is less precise.
+
+### Mutation checks
+
+Green tests are not evidence. Every control below was broken deliberately
+and the suite re-run; all mutations were reverted.
+
+| mutation | result |
+|---|---|
+| Delete `FOR UPDATE` from the account-row lock | Both concurrency tests failed on **10 of 10** runs |
+| Rejection path `ROLLBACK` instead of `COMMIT` | 4 tests red across 3 concerns: buy rejection, sell rejection, order history |
+| Restore `quantity > 0` in place of the tick floor | The 3 dust tests go red |
+| Drop the tick-snapping of quantity | The snapping test goes red |
+| Remove the gateway's `Content-Length` check | The 413 test goes red, chunked test still passes |
+| Remove the gateway's `MaxBytesReader` | The chunked-truncation test goes red, 413 test still passes |
+| Return `0` instead of `null` for an unpriceable position | 3 tests red across **both** the service and handler suites |
+
+The `FOR UPDATE` mutation is worth recording in detail, because **the
+balance is not what goes wrong.** Two concurrent orders of 600 against a
+balance of 1000 both filled — and the balance still read exactly `400`. Two
+trade rows, two filled orders, a position of 2. The account received 1200 of
+stock for 600 of cash. A concurrency test asserting only the final balance
+would have passed while the ledger was broken; the test asserts trade and
+order counts for exactly that reason. The lower-contention test landed at
+9900 in nine runs and 9800 in one, against a correct 9000 — eight or nine of
+ten fills silently discarded.
+
+### Verification
+
+**Adversarial, against the full stack running** (auth, market-data,
+trading-engine, and a gateway on `:8090` so the dev instance on `:8080` was
+left alone):
+
+- **20 concurrent orders on one account** — 3 filled, 17 rejected, balance
+  exactly `100000 − Σtrades` = 8303.50, all 17 rejections persisted with a
+  reason, and zero negative balances anywhere in the database
+- **Selling into a short** — sell 500 holding 300; sell holding nothing; sell
+  a never-bought symbol; sell 300.0001 holding 300. All four `400
+  insufficient_position` with no state change. The last is the one a sloppy
+  float comparison would have leaked
+- **Garbage input** — quantity `0`, `-5`, `-0.0`, `1e308`, `null`, absent →
+  `400 invalid_request`; `1e400`, `"10"`, a bare `NaN` → `400 malformed JSON
+  body`; side `SELL`, `short`, `""`, `null`, absent → `400`; symbol absent,
+  empty, 5000 chars, `AAPL'; DROP TABLE trades;--` → `400`; empty body,
+  `null`, non-JSON, a JSON array → `400`
+- **Cross-user isolation** — a valid token plus a forged `X-User-ID` naming
+  the other account served the token holder's own data on all three reads,
+  and debited the token holder on a buy. Repeated **against `:8083`
+  directly, bypassing the gateway entirely**: still the token holder's data,
+  which is what proves the engine's own `RequireAuth` defends independently
+  of the gateway's `StripUserID`
+- **Token forgery** — tampered signature, an `alg:none` token naming another
+  user, and a refresh token presented as an access token: `401` at both the
+  gateway and the engine
+- **`market-data` killed mid-session** — write path `502
+  upstream_unavailable` on buy *and* sell with the rejection persisted; read
+  path `200` with `latest_price: null`, positions intact, portfolio valued
+  at cost. The posture split holds on the final build
+
+**Body cap, end to end:** a 100 KiB `POST /auth/login` returned `413
+payload_too_large` and never reached auth; the same body sent chunked was
+truncated at 64 KiB, and auth rejected the cut JSON with its own `400`; a
+small chunked body reached auth intact. `payload_too_large` appears in no
+other service, which is what confirms the 413 came from the gateway.
+
+**First trade through the real edge:** register → login → buy 3 AAPL through
+the gateway, filled at 305.6550, balance 99083.035, row confirmed in
+Postgres.
+
+`make test` green with Docker down, `make test-integration` **43 PASS / 0
+FAIL** with it up, `make vet` clean, `gofmt -l` clean across the new module
+and the gateway, migrations at version 6.
+
+---
+
+## Still open
 
 - [ ] **market-data's store has the same gap** — `historical_price_store.go`
       has no tests either, and its idempotent upsert (`UNIQUE(symbol,
-      timeframe, timestamp)`) is exactly the kind of SQL worth covering. Step
-      12's harness is the template; extracting it to `pkg/testutil/` is worth
-      considering at that point, but not before (see
-      `docs/TESTING_STRUCTURE.md` §4).
+      timeframe, timestamp)`) is exactly the kind of SQL worth covering. It is
+      now also **the recorded trigger for extracting the harness**: Step 14
+      copied it a second time rather than sharing it, and a third use is where
+      that stops being defensible (`docs/TESTING_STRUCTURE.md` §6a).
 - [ ] **Pre-existing `gofmt` drift** in `services/auth/internal/service/`
-      (`interfaces.go`, `types.go`). Untouched by Steps 11–12; Step 13 added
-      to `interfaces.go` but matched its existing (unformatted) style rather
-      than fixing it as a drive-by. Still worth a one-line cleanup commit
-      before any `fmt` check
-      lands in a Makefile target or CI.
-
-## Then the engine itself
-
-- [ ] Order execution (market buy/sell)
-- [ ] Trade storage and history
-- [ ] Position tracking and P/L
-- [ ] `/trading/*` stops returning `501` — the natural moment for the
-      gateway-wide body cap (`docs/security-backlog.md` item 4)
+      (`interfaces.go`, `types.go`). Untouched by Steps 11–14. Still worth a
+      one-line cleanup commit before any `fmt` check lands in a Makefile
+      target or CI.
+- [x] ~~**Dev-database rows from Step 14's verification.**~~ **Resolved
+      2026-08-17.** The four throwaway users (`step14manual`, `step14gateway`,
+      `step14adva`, `step14advb`) and their rows were deleted before the merge,
+      on Khalil's approval — including the 31 `quantity = 0, status = filled`
+      rows left by the bug the review found, which documented a defect that no
+      longer exists. All 103 orders, 73 trades and 4 positions in the dev
+      database belonged to those four accounts, so the trading tables are now
+      empty and the database is back to `users=20, accounts=20` — the plan's
+      own criterion, unamended.

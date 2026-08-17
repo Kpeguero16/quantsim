@@ -43,9 +43,26 @@ func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
 
 func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall) {
 	t.Helper()
+	gw, authCall, mdCall, _ := newGatewayBackends(t, rateLimit)
+	return gw, authCall, mdCall
+}
+
+// newTradingGateway is the same wiring, returning the trading backend's
+// recorder instead. Separate rather than a fourth return value everywhere, so
+// the routing, CORS and rate-limit tests that predate the trading engine keep
+// their existing call shape.
+func newTradingGateway(t *testing.T) (http.Handler, *backendCall) {
+	t.Helper()
+	gw, _, _, tradingCall := newGatewayBackends(t, noRateLimit)
+	return gw, tradingCall
+}
+
+func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall, *backendCall) {
+	t.Helper()
 
 	authCall := &backendCall{}
 	mdCall := &backendCall{}
+	tradingCall := &backendCall{}
 
 	record := func(c *backendCall) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +79,8 @@ func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (h
 	t.Cleanup(authBackend.Close)
 	mdBackend := httptest.NewServer(record(mdCall))
 	t.Cleanup(mdBackend.Close)
+	tradingBackend := httptest.NewServer(record(tradingCall))
+	t.Cleanup(tradingBackend.Close)
 
 	authURL, err := url.Parse(authBackend.URL)
 	if err != nil {
@@ -71,16 +90,21 @@ func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (h
 	if err != nil {
 		t.Fatalf("parsing market-data backend URL: %v", err)
 	}
+	tradingURL, err := url.Parse(tradingBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing trading backend URL: %v", err)
+	}
 
 	transport := proxy.NewTransport()
 	r := handler.NewRouter(
 		proxy.New(authURL, transport, "auth"),
 		proxy.New(mdURL, transport, "market-data"),
+		proxy.New(tradingURL, transport, "trading-engine"),
 		testSecret,
 		testOrigin,
 		rateLimit,
 	)
-	return r, authCall, mdCall
+	return r, authCall, mdCall, tradingCall
 }
 
 // noRateLimit leaves the limiter out of the chain, so the existing routing,
@@ -228,24 +252,107 @@ func TestSpoofedUserIDNeverReachesBackend(t *testing.T) {
 	})
 }
 
-func TestTradingReturns501(t *testing.T) {
-	gw, _, _ := newGateway(t)
+// Replaces the 501 placeholder assertion this file carried from Step 9 until
+// Step 14: /trading/* now reaches the trading engine, with the path intact and
+// the identity injected from the token.
+func TestTradingReachesTheTradingEngine(t *testing.T) {
+	gw, tradingCall := newTradingGateway(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/trading/orders", nil)
+	req := httptest.NewRequest(http.MethodPost, "/trading/orders",
+		strings.NewReader(`{"symbol":"AAPL","side":"buy","quantity":1}`))
 	req.Header.Set("Authorization", "Bearer "+accessToken(t))
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("got status %d, want 501", rec.Code)
+	if !tradingCall.hit {
+		t.Fatal("/trading/orders did not reach the trading engine")
 	}
+	if tradingCall.path != "/trading/orders" {
+		t.Errorf("backend saw path %q, want /trading/orders unchanged", tradingCall.path)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want the backend's 200", rec.Code)
+	}
+	if tradingCall.userID != testUserID {
+		t.Errorf("backend saw X-User-ID %q, want the token subject %q", tradingCall.userID, testUserID)
+	}
+	// The engine revalidates the token itself (SPEC.md §2.11), so the header
+	// has to survive the hop -- stripping it would break every /trading route.
+	if tradingCall.auth == "" {
+		t.Error("the Authorization header did not survive the proxy hop")
+	}
+}
 
+// The gateway rejects before the engine ever sees the request. Both layers
+// check, and this pins the outer one.
+func TestTradingWithoutATokenNeverReachesTheEngine(t *testing.T) {
+	for _, path := range []string{"/trading/orders", "/trading/positions", "/trading/portfolio"} {
+		t.Run(path, func(t *testing.T) {
+			gw, tradingCall := newTradingGateway(t)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			gw.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("got status %d, want 401", rec.Code)
+			}
+			if tradingCall.hit {
+				t.Error("an unauthenticated trading request reached the engine")
+			}
+		})
+	}
+}
+
+// A client-set X-User-ID must not survive: StripUserID runs outermost, and the
+// only identity the engine can see is the one derived from the token.
+func TestTradingIgnoresAClientSuppliedUserID(t *testing.T) {
+	gw, tradingCall := newTradingGateway(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/trading/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	req.Header.Set("X-User-ID", "99999999-9999-9999-9999-999999999999")
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if tradingCall.userID != testUserID {
+		t.Errorf("backend saw X-User-ID %q, want the token subject %q -- a forged header survived",
+			tradingCall.userID, testUserID)
+	}
+}
+
+// trading-engine down is the proxy's 502 upstream_unavailable -- the same code
+// the engine itself returns when market-data is down, which reads coherently
+// from the outside rather than as two different failures.
+func TestTradingEngineDownIs502(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("parsing backend URL: %v", err)
+	}
+	backend.Close() // nothing is listening there now
+
+	gw := handler.NewRouter(
+		proxy.New(backendURL, proxy.NewTransport(), "auth"),
+		proxy.New(backendURL, proxy.NewTransport(), "market-data"),
+		proxy.New(backendURL, proxy.NewTransport(), "trading-engine"),
+		testSecret, testOrigin, noRateLimit,
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/trading/positions", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("got status %d, want 502", rec.Code)
+	}
 	var body httperr.ErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("501 body is not the JSON error shape: %v", err)
+		t.Fatalf("502 body is not the JSON error shape: %v", err)
 	}
-	if body.Code != "not_implemented" {
-		t.Errorf("got code %q, want not_implemented", body.Code)
+	if body.Code != "upstream_unavailable" {
+		t.Errorf("got code %q, want upstream_unavailable", body.Code)
 	}
 }
 
@@ -440,6 +547,10 @@ func gatewayWithLimits(t *testing.T, ipLimit, failures int) http.Handler {
 	return handler.NewRouter(
 		proxy.New(authURL, transport, "auth"),
 		proxy.New(mdURL, transport, "market-data"),
+		// This suite only exercises the login limiter; the trading backend is
+		// never reached, so it points at market-data's stub rather than
+		// standing up a third server for nothing.
+		proxy.New(mdURL, transport, "trading-engine"),
 		testSecret,
 		testOrigin,
 		handler.RateLimitConfig{
@@ -583,4 +694,75 @@ func TestConcurrentBurstIsBoundedByTheAccountThreshold(t *testing.T) {
 			reached, burst, threshold)
 	}
 	t.Logf("burst of %d concurrent guesses: %d reached the backend, %d refused", burst, reached, burst-reached)
+}
+
+// The body cap applies to every prefix, not just the login route it started
+// on (docs/security-backlog.md item 4). Asserted per-prefix because "a service
+// added later inherits it" is the property the backlog item asks for, and only
+// a per-prefix test can show it.
+func TestOversizedBodyIsRejectedOnEveryPrefix(t *testing.T) {
+	paths := []string{"/auth/login", "/auth/register", "/market-data/prices/AAPL", "/trading/orders"}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			gw, authCall, mdCall := newGateway(t)
+
+			body := strings.Repeat("x", 128<<10)
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+accessToken(t))
+			rec := httptest.NewRecorder()
+			gw.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("got %d, want 413", rec.Code)
+			}
+			var errBody httperr.ErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+				t.Fatalf("413 body is not the JSON error shape: %v", err)
+			}
+			if errBody.Code != "payload_too_large" {
+				t.Errorf("got code %q, want payload_too_large", errBody.Code)
+			}
+			if authCall.hit || mdCall.hit {
+				t.Error("an oversized body reached a backend")
+			}
+		})
+	}
+}
+
+// The 413 has to carry CORS headers, or a browser reports an opaque network
+// error and the caller debugs the wrong layer. This is why LimitBody sits
+// inside CORS rather than outside it.
+func TestOversizedBodyStillCarriesCORSHeaders(t *testing.T) {
+	gw, _, _ := newGateway(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(strings.Repeat("x", 128<<10)))
+	req.Header.Set("Origin", testOrigin)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got %d, want 413", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != testOrigin {
+		t.Errorf("got Allow-Origin %q, want %q", got, testOrigin)
+	}
+}
+
+// A normal login is unaffected: the cap must not change the behaviour of the
+// requests it exists to let through.
+func TestNormalBodyStillReachesTheBackend(t *testing.T) {
+	gw, authCall, _ := newGateway(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/login",
+		strings.NewReader(`{"email":"a@example.test","password":"hunter2hunter2"}`))
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want the backend's 200", rec.Code)
+	}
+	if !authCall.hit {
+		t.Error("a normal login body did not reach auth")
+	}
 }

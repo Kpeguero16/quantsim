@@ -42,8 +42,8 @@ type RateLimitConfig struct {
 //
 // Middleware order is load-bearing, not stylistic:
 //
-//	StripUserID -> CORS -> [/auth/*: RateLimitByIP] -> proxy
-//	StripUserID -> CORS -> [route group: RequireAuth -> InjectUserID] -> proxy
+//	StripUserID -> CORS -> LimitBody -> [/auth/*: RateLimitByIP] -> proxy
+//	StripUserID -> CORS -> LimitBody -> [group: RequireAuth -> InjectUserID] -> proxy
 //
 // StripUserID is outermost so no route -- public ones included -- can receive
 // a client-set identity header. CORS sits outside RequireAuth so that a 401
@@ -52,11 +52,15 @@ type RateLimitConfig struct {
 // RateLimitByIP is inside CORS for exactly the same reason, and scoped to
 // /auth/* because that is the surface worth protecting -- /healthz must stay
 // answerable to a load balancer no matter how busy the box is.
-func NewRouter(authProxy, marketDataProxy http.Handler, jwtSecret []byte, allowedOrigin string, rateLimit RateLimitConfig) *chi.Mux {
+func NewRouter(authProxy, marketDataProxy, tradingProxy http.Handler, jwtSecret []byte, allowedOrigin string, rateLimit RateLimitConfig) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Use(middleware.StripUserID())
 	r.Use(middleware.CORS(allowedOrigin))
+	// Inside CORS, for the same reason RequireAuth and RateLimitByIP are: a
+	// 413 without CORS headers reaches a browser as an opaque network error,
+	// and you go looking for the bug in the wrong layer.
+	r.Use(middleware.LimitBody(middleware.MaxBodyBytes))
 
 	// chi's defaults answer these in plain text, which breaks the JSON error
 	// contract every other QuantSim endpoint honours -- a frontend that calls
@@ -103,13 +107,12 @@ func NewRouter(authProxy, marketDataProxy http.Handler, jwtSecret []byte, allowe
 
 		r.Handle("/market-data/*", marketDataProxy)
 
-		// Placeholder for the Phase 2 trading engine. It sits inside the
-		// authenticated group deliberately: the auth wiring is real and
-		// tested today, so swapping in a proxy later is a one-line change.
-		r.Handle("/trading/*", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			httperr.Write(w, http.StatusNotImplemented, "not_implemented",
-				"trading engine is not available until Phase 2")
-		}))
+		// The trading engine, live since Step 14 -- the placeholder that stood
+		// here returned 501 from inside this same group, so this is the
+		// one-line swap it was left as. trading-engine revalidates the token
+		// itself as well (SPEC.md §2.11); the X-User-ID injected here is a
+		// convenience for the backend, never the thing it trusts.
+		r.Handle("/trading/*", tradingProxy)
 	})
 
 	return r

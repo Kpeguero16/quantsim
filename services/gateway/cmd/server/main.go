@@ -12,6 +12,7 @@ import (
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
 	"github.com/kpeguero/quantsim/services/gateway/internal/handler"
 	"github.com/kpeguero/quantsim/services/gateway/internal/limiter"
+	"github.com/kpeguero/quantsim/services/gateway/internal/middleware"
 	"github.com/kpeguero/quantsim/services/gateway/internal/proxy"
 )
 
@@ -32,13 +33,16 @@ const readHeaderTimeout = 10 * time.Second
 const loginBackoffBase = time.Minute
 
 // maxLoginBodyBytes caps how much of a login body is buffered to read the
-// email. Generous next to a real login payload of a couple hundred bytes, and
-// small enough that buffering it cannot be turned into memory pressure.
+// email. It is the gateway-wide cap itself rather than a second number: the
+// body-limit middleware already refuses anything larger, so a separate value
+// here could only ever be wrong in one of two directions -- lower, and login
+// silently loses its account key on bodies the gateway accepted; higher, and
+// it is dead configuration.
 //
-// This is a narrow slice of docs/security-backlog.md item 4 (a gateway-wide
-// body cap) arriving early, scoped to the one route that needs it. See
-// SPEC.md §10.2.
-const maxLoginBodyBytes = 64 << 10
+// This started as a narrow slice of docs/security-backlog.md item 4 scoped to
+// the one route that needed it. The full item landed in Step 14; the
+// gateway-wide cap now lives in middleware.LimitBody.
+const maxLoginBodyBytes = middleware.MaxBodyBytes
 
 // evictInterval is how often the per-account sweep runs. Entries age out
 // after RATE_LIMIT_LOGIN_MAX_BACKOFF, so sweeping more often than that only
@@ -57,17 +61,19 @@ func main() {
 	}
 	authURL := mustParseURL("AUTH_SERVICE_URL", envOrDefault("AUTH_SERVICE_URL", "http://localhost:8081"))
 	marketDataURL := mustParseURL("MARKET_DATA_SERVICE_URL", envOrDefault("MARKET_DATA_SERVICE_URL", "http://localhost:8082"))
+	tradingURL := mustParseURL("TRADING_ENGINE_SERVICE_URL", envOrDefault("TRADING_ENGINE_SERVICE_URL", "http://localhost:8083"))
 	port := envOrDefault("PORT", "8080")
 	// Loopback by default. In Phase 1 the frontend runs on the same machine,
 	// so nothing needs to reach the gateway from off-box; set BIND_ADDR
 	// explicitly when deploying it somewhere that does.
 	bindAddr := envOrDefault("BIND_ADDR", "127.0.0.1")
 
-	// One transport shared by both proxies, so connections to the backends
-	// are pooled rather than reopened per request.
+	// One transport shared by every proxy, so connections to the backends are
+	// pooled rather than reopened per request.
 	transport := proxy.NewTransport()
 	authProxy := proxy.New(authURL, transport, "auth")
 	marketDataProxy := proxy.New(marketDataURL, transport, "market-data")
+	tradingProxy := proxy.New(tradingURL, transport, "trading-engine")
 
 	rateLimit := rateLimitConfig()
 
@@ -84,7 +90,7 @@ func main() {
 		go rateLimit.Backoff.Run(ctx, evictInterval)
 	}
 
-	router := handler.NewRouter(authProxy, marketDataProxy, []byte(jwtSecret), allowedOrigin, rateLimit)
+	router := handler.NewRouter(authProxy, marketDataProxy, tradingProxy, []byte(jwtSecret), allowedOrigin, rateLimit)
 
 	addr := bindAddr + ":" + port
 	srv := &http.Server{
@@ -93,7 +99,8 @@ func main() {
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	log.Printf("gateway listening on %s (auth=%s, market-data=%s)", addr, authURL, marketDataURL)
+	log.Printf("gateway listening on %s (auth=%s, market-data=%s, trading-engine=%s)",
+		addr, authURL, marketDataURL, tradingURL)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

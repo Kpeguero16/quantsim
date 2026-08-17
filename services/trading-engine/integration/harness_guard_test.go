@@ -158,34 +158,41 @@ func TestMigrationsAppliedToTestDatabase(t *testing.T) {
 		}
 	}
 
-	// Migration 004's indexes are what make the case-insensitive duplicate
-	// tests meaningful. Their absence would make those tests pass for the
-	// wrong reason, so it is checked directly.
-	for _, index := range []string{"idx_users_email_lower", "idx_users_username_lower"} {
+	// Migration 006's columns carry every number this service exists to get
+	// right. Without them the store's statements fail outright, so checking
+	// them here turns "006 did not apply" into one legible failure instead of
+	// a column-does-not-exist error inside every other test.
+	for _, col := range []struct{ table, column string }{
+		{"positions", "avg_cost"},
+		{"orders", "filled_price"},
+		{"orders", "rejection_reason"},
+		{"trades", "realized_pl"},
+	} {
 		var exists bool
 		err := testPool.QueryRow(t.Context(),
-			`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname=$1)`,
-			index).Scan(&exists)
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			 WHERE table_schema='public' AND table_name=$1 AND column_name=$2)`,
+			col.table, col.column).Scan(&exists)
 		if err != nil {
-			t.Fatalf("checking index %s: %v", index, err)
+			t.Fatalf("checking %s.%s: %v", col.table, col.column, err)
 		}
 		if !exists {
-			t.Errorf("index %q missing; migration 004 did not apply", index)
+			t.Errorf("column %s.%s missing; migration 006 did not apply", col.table, col.column)
 		}
 	}
 
-	// Migration 005 drops these. If they are still here, 005 did not run and
-	// the schema is not what the dev database has.
-	for _, constraint := range []string{"users_email_key", "users_username_key"} {
-		var exists bool
-		err := testPool.QueryRow(t.Context(),
-			`SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname=$1)`,
-			constraint).Scan(&exists)
-		if err != nil {
-			t.Fatalf("checking constraint %s: %v", constraint, err)
-		}
-		if exists {
-			t.Errorf("constraint %q still present; migration 005 did not apply", constraint)
-		}
+	// avg_cost must be NOT NULL: the store writes it on every buy and reads it
+	// on every sell without a nil check, because the schema promises it is
+	// always there.
+	var nullable string
+	err := testPool.QueryRow(t.Context(),
+		`SELECT is_nullable FROM information_schema.columns
+		 WHERE table_schema='public' AND table_name='positions' AND column_name='avg_cost'`).
+		Scan(&nullable)
+	if err != nil {
+		t.Fatalf("checking positions.avg_cost nullability: %v", err)
+	}
+	if nullable != "NO" {
+		t.Errorf("positions.avg_cost is nullable; the store reads it as a plain float64")
 	}
 }
