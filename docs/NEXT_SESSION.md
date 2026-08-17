@@ -16,7 +16,7 @@ Step 12 is reviewed, merged, and pushed. There is no work to recover.
 | Migrations | schema at version **5**, not dirty — Step 12 added none |
 | Tests | `make test` 10 packages ok; `make test-integration` **15 PASS / 0 SKIP** |
 | Dev database | verified `users=15`, `accounts=15` — unchanged throughout |
-| Stale branch | `step12-store-integration-harness` exists locally and on `origin`, fully merged — safe to delete |
+| Local branches | only `main` — Steps 11 and 12 merged and their branches deleted |
 
 **Pre-merge review found a guard that read as protective but could never
 fire**, fixed on the branch before it merged (`dfe6ba3`). Together with three problems found
