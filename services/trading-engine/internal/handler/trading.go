@@ -87,6 +87,30 @@ func (h *TradingHandler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, service.OrdersResponse{Orders: orders})
 }
 
+// ListPositions returns the caller's open holdings, priced where possible.
+//
+// A symbol market-data cannot price still appears, with latest_price null --
+// this endpoint degrades rather than failing (SPEC.md §2.9). The only thing
+// that produces a non-200 here is being unable to read the holdings at all.
+func (h *TradingHandler) ListPositions(w http.ResponseWriter, r *http.Request) {
+	userID, ok := userID(r)
+	if !ok {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return
+	}
+
+	positions, err := h.service.Positions(r.Context(), userID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if positions == nil {
+		positions = []service.Position{}
+	}
+
+	WriteJSON(w, http.StatusOK, service.PositionsResponse{Positions: positions})
+}
+
 // userID reads the subject RequireAuth put on the context and parses it.
 //
 // A token whose subject is not a UUID fails here rather than being passed

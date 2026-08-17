@@ -118,6 +118,12 @@ type OrdersResponse struct {
 	Orders []Order `json:"orders"`
 }
 
+// PositionsResponse is GET /trading/positions, wrapped for the same reason
+// OrdersResponse is.
+type PositionsResponse struct {
+	Positions []Position `json:"positions"`
+}
+
 // PortfolioResponse is GET /trading/portfolio: one call for a dashboard that
 // would otherwise compose three.
 type PortfolioResponse struct {

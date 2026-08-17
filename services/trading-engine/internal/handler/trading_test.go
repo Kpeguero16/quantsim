@@ -421,3 +421,90 @@ func TestListOrders_StoreFailureIs500(t *testing.T) {
 		t.Errorf("got code %q, want internal_error", got)
 	}
 }
+
+// 🔴 The read path degrades instead of failing. With market-data unreachable
+// this endpoint is still 200, and latest_price is JSON null rather than 0 --
+// 0 is a plausible price and would render as "this is worthless".
+func TestListPositions_UpstreamDownIs200WithNullPrices(t *testing.T) {
+	h, trading, prices, _ := newHandler(t)
+	prices.Err = service.ErrUpstreamUnavailable
+	trading.Holdings = []service.Holding{{Symbol: "AAPL", Quantity: 10, AvgCost: 100}}
+
+	rec := get(t, h, "/trading/positions", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 -- the read path must fail open: %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"latest_price":null`) {
+		t.Errorf("got %s, want latest_price null", body)
+	}
+
+	var got service.PositionsResponse
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(got.Positions) != 1 || got.Positions[0].Quantity != 10 || got.Positions[0].AvgCost != 100 {
+		t.Errorf("the holding itself did not survive the outage: %+v", got.Positions)
+	}
+	if got.Positions[0].UnrealizedPL != 0 {
+		t.Errorf("unrealized_pl = %v, want 0", got.Positions[0].UnrealizedPL)
+	}
+}
+
+func TestListPositions_PricedHoldingsCarryTheirValuation(t *testing.T) {
+	h, trading, _, _ := newHandler(t)
+	trading.Holdings = []service.Holding{{Symbol: "AAPL", Quantity: 10, AvgCost: 100}}
+
+	rec := get(t, h, "/trading/positions", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var got service.PositionsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(got.Positions) != 1 {
+		t.Fatalf("got %d positions, want 1", len(got.Positions))
+	}
+	if got.Positions[0].LatestPrice == nil || *got.Positions[0].LatestPrice != 150 {
+		t.Fatalf("latest_price = %v, want 150", got.Positions[0].LatestPrice)
+	}
+	if got.Positions[0].UnrealizedPL != 500 {
+		t.Errorf("unrealized_pl = %v, want 500", got.Positions[0].UnrealizedPL)
+	}
+}
+
+func TestListPositions_NoHoldingsIsAnEmptyArray(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+
+	rec := get(t, h, "/trading/positions", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); !strings.Contains(body, `"positions":[]`) {
+		t.Errorf("got %s, want an empty array", body)
+	}
+}
+
+func TestListPositions_RequiresAuthentication(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+
+	if rec := get(t, h, "/trading/positions", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401 -- GET /trading/positions is not behind RequireAuth", rec.Code)
+	}
+}
+
+// Fail-open covers the price lookup, not the database behind it.
+func TestListPositions_StoreFailureIs500(t *testing.T) {
+	h, trading, _, _ := newHandler(t)
+	trading.HoldingsErr = errors.New("connection reset")
+
+	rec := get(t, h, "/trading/positions", uuid.NewString())
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("got %d, want 500", rec.Code)
+	}
+}

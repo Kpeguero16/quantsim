@@ -642,3 +642,24 @@ func TestListOrders_EmptyHistoryIsAnEmptySliceNotNil(t *testing.T) {
 		t.Errorf("got %d orders for an account that never traded", len(orders))
 	}
 }
+
+func TestListHoldings_ExcludesSoldOutPositionsAndOtherAccounts(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, mine := seedAccount(t, ctx, pool, 10000)
+	_, theirs := seedAccount(t, ctx, pool, 10000)
+
+	seedPosition(t, ctx, pool, mine, "AAPL", 10, 100)
+	seedPosition(t, ctx, pool, mine, "ZERO", 0, 50) // sold out, row kept
+	seedPosition(t, ctx, pool, theirs, "MSFT", 5, 200)
+
+	holdings, err := s.ListHoldings(ctx, mine)
+	if err != nil {
+		t.Fatalf("ListHoldings: %v", err)
+	}
+	if len(holdings) != 1 {
+		t.Fatalf("got %+v, want only the open AAPL holding", holdings)
+	}
+	if holdings[0].Symbol != "AAPL" || holdings[0].Quantity != 10 || holdings[0].AvgCost != 100 {
+		t.Errorf("holding did not survive: %+v", holdings[0])
+	}
+}

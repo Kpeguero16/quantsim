@@ -93,6 +93,65 @@ func (s *Service) Orders(ctx context.Context, userID uuid.UUID) ([]Order, error)
 	return s.trading.ListOrders(ctx, account.ID)
 }
 
+// Positions returns the caller's open holdings priced at the current market.
+//
+// This is the fail-OPEN path, and it is deliberately the opposite posture from
+// PlaceOrder (SPEC.md §2.9). If market-data cannot price a symbol, the position
+// is still returned with latest_price null and unrealized_pl 0 -- the caller
+// learns what they hold and at what cost, and only loses the live valuation.
+//
+// The two postures are not inconsistent: a write at a guessed price moves money
+// against a number nobody verified, while a read that degrades to "no live P/L"
+// is a smaller answer, not a wrong one. Reversing them is the single easiest
+// way to violate this spec's intent.
+func (s *Service) Positions(ctx context.Context, userID uuid.UUID) ([]Position, error) {
+	account, err := s.accounts.AccountForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	holdings, err := s.trading.ListHoldings(ctx, account.ID)
+	if err != nil {
+		// The store failing is not the same as market-data failing. There is
+		// no degraded answer here: without the holdings there is nothing to
+		// return, so this one does propagate.
+		return nil, err
+	}
+
+	return s.price(ctx, holdings), nil
+}
+
+// price values each holding independently.
+//
+// Independently is the point: one symbol market-data cannot price must not
+// blank the others. A single failed lookup that aborted the loop, or that set
+// a shared "prices unavailable" flag, would turn one missing quote into a
+// portfolio that reports every position as unvalued.
+func (s *Service) price(ctx context.Context, holdings []Holding) []Position {
+	positions := make([]Position, 0, len(holdings))
+	for _, h := range holdings {
+		p := Position{Symbol: h.Symbol, Quantity: h.Quantity, AvgCost: h.AvgCost}
+
+		latest, err := s.prices.LatestPrice(ctx, h.Symbol)
+		if err != nil {
+			// Logged rather than silent: a portfolio quietly reporting no P/L
+			// is exactly the kind of degradation nobody notices until someone
+			// asks why their numbers look wrong.
+			log.Printf("trading-engine: pricing %s failed, returning it unpriced: %v", h.Symbol, err)
+			positions = append(positions, p)
+			continue
+		}
+
+		// Taking the address of the loop-local copy, so every position points
+		// at its own price.
+		price := latest
+		p.LatestPrice = &price
+		p.UnrealizedPL = (latest - h.AvgCost) * h.Quantity
+		positions = append(positions, p)
+	}
+	return positions
+}
+
 // recordRejection persists an order that failed before any transaction opened.
 //
 // Its own failure is logged and swallowed on purpose. The caller is already

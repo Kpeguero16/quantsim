@@ -239,3 +239,115 @@ func TestPlaceOrder_MissingAccountIsAnInvariantBreak(t *testing.T) {
 		t.Error("recorded a rejection against an account that does not exist")
 	}
 }
+
+func TestPositions_PricesEachHoldingAndComputesUnrealisedPL(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+	prices.Prices = map[string]float64{"AAPL": 150, "MSFT": 90}
+	trading.Holdings = []service.Holding{
+		{Symbol: "AAPL", Quantity: 10, AvgCost: 100},
+		{Symbol: "MSFT", Quantity: 5, AvgCost: 120},
+	}
+
+	positions, err := svc.Positions(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if len(positions) != 2 {
+		t.Fatalf("got %d positions, want 2", len(positions))
+	}
+
+	// (150 - 100) * 10
+	if positions[0].LatestPrice == nil || *positions[0].LatestPrice != 150 {
+		t.Fatalf("AAPL price = %v, want 150", positions[0].LatestPrice)
+	}
+	if positions[0].UnrealizedPL != 500 {
+		t.Errorf("AAPL unrealized P/L = %v, want 500", positions[0].UnrealizedPL)
+	}
+	// A position under water reports a loss, not a zero.
+	if positions[1].UnrealizedPL != -150 {
+		t.Errorf("MSFT unrealized P/L = %v, want -150", positions[1].UnrealizedPL)
+	}
+}
+
+// 🔴 Fail OPEN. The mirror of TestPlaceOrder_UpstreamDownRejectsAndNeverExecutes,
+// and the pair of them is the point: the same outage must reject a write and
+// still answer a read.
+func TestPositions_UpstreamDownStillReturnsThePositionsUnpriced(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+	prices.Err = service.ErrUpstreamUnavailable
+	trading.Holdings = []service.Holding{{Symbol: "AAPL", Quantity: 10, AvgCost: 100}}
+
+	positions, err := svc.Positions(context.Background(), userID)
+
+	if err != nil {
+		t.Fatalf("a price outage failed the whole read: %v -- this path fails open", err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("got %d positions, want the holding returned unpriced", len(positions))
+	}
+	if positions[0].LatestPrice != nil {
+		t.Errorf("latest_price = %v, want nil -- 0 is a plausible price and would read as worthless",
+			*positions[0].LatestPrice)
+	}
+	if positions[0].UnrealizedPL != 0 {
+		t.Errorf("unrealized P/L = %v, want 0 for an unpriceable position", positions[0].UnrealizedPL)
+	}
+	// What the caller does still get: what they hold and what it cost.
+	if positions[0].Quantity != 10 || positions[0].AvgCost != 100 {
+		t.Errorf("the holding itself was degraded too: %+v", positions[0])
+	}
+}
+
+// One symbol nobody can price must not blank the ones that priced fine.
+func TestPositions_OneUnpriceableSymbolDoesNotAffectTheOthers(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+	prices.Prices = map[string]float64{"AAPL": 150, "TSLA": 200}
+	trading.Holdings = []service.Holding{
+		{Symbol: "AAPL", Quantity: 10, AvgCost: 100},
+		{Symbol: "DELISTED", Quantity: 3, AvgCost: 50},
+		{Symbol: "TSLA", Quantity: 2, AvgCost: 180},
+	}
+
+	positions, err := svc.Positions(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if len(positions) != 3 {
+		t.Fatalf("got %d positions, want all 3 -- an unpriceable holding was dropped", len(positions))
+	}
+	if positions[1].LatestPrice != nil {
+		t.Errorf("DELISTED was priced at %v", *positions[1].LatestPrice)
+	}
+	if positions[0].LatestPrice == nil || positions[2].LatestPrice == nil {
+		t.Fatalf("one bad symbol blanked the others: %+v", positions)
+	}
+	if positions[0].UnrealizedPL != 500 || positions[2].UnrealizedPL != 40 {
+		t.Errorf("P/L of the priced positions is wrong: %v, %v", positions[0].UnrealizedPL, positions[2].UnrealizedPL)
+	}
+}
+
+// The store failing is a different failure from market-data failing: there is
+// no degraded answer to give, so this one propagates.
+func TestPositions_StoreFailurePropagates(t *testing.T) {
+	svc, _, trading, _, userID := newService(t)
+	trading.HoldingsErr = errors.New("connection reset")
+
+	if _, err := svc.Positions(context.Background(), userID); err == nil {
+		t.Fatal("a store failure was swallowed; fail-open covers the price lookup, not the holdings")
+	}
+}
+
+func TestPositions_NoHoldingsIsAnEmptySliceNotAnError(t *testing.T) {
+	svc, _, _, prices, userID := newService(t)
+
+	positions, err := svc.Positions(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if positions == nil || len(positions) != 0 {
+		t.Errorf("got %v, want an empty slice", positions)
+	}
+	if len(prices.Calls) != 0 {
+		t.Error("priced a portfolio with nothing in it")
+	}
+}
