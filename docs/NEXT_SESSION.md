@@ -6,26 +6,24 @@ This file answers three questions on picking the project back up: *is anything h
 
 ---
 
-## One thing is in flight
+## Nothing is in flight
 
-**Step 12 is complete and committed, but sits on a branch that has not been merged or pushed.**
+Step 12 is reviewed, merged, and pushed. There is no work to recover.
 
 | | |
 |---|---|
-| Branch | `step12-store-integration-harness`, clean, **6 commits ahead of `main`** |
-| `main` | unchanged at `61738e4` (Step 11's merge and docs) |
+| Branch | `main`, clean, in sync with `origin/main` |
 | Migrations | schema at version **5**, not dirty — Step 12 added none |
-| Tests | `make test` green (4 modules); `make test-integration` **15 PASS / 0 SKIP** |
+| Tests | `make test` 10 packages ok; `make test-integration` **15 PASS / 0 SKIP** |
 | Dev database | verified `users=15`, `accounts=15` — unchanged throughout |
-| Not pushed | the branch is local only |
+| Stale branch | `step12-store-integration-harness` exists locally and on `origin`, fully merged — safe to delete |
 
-**The decision waiting for you: review it, or merge it.** Nothing depends on
-the branch and `main` has not moved, so there is no rush and no conflict risk.
-
-Step 11's pre-merge review found two real bypasses, so a review here is not a
-formality. Note that Step 12's own reviews already caught four problems in the harness,
-including a guard that read as protective but could never fire — all written up
-in `PHASE2_CHECKLIST.md`.
+**Pre-merge review found a guard that read as protective but could never
+fire**, fixed on the branch before it merged (`dfe6ba3`). Together with three problems found
+while building, that makes four, and all four had the same symptom: a green
+`ok` while testing nothing. All are written up in `PHASE2_CHECKLIST.md`,
+and they are the reason to distrust `ok` from this suite without counting
+`--- PASS` lines.
 
 `SPEC.md`, `tasks/plan.md`, and `tasks/todo.md` describe **Step 12, fully
 checked off**. By convention they are archived to
@@ -87,12 +85,7 @@ has the conventions, including why there is no `t.Parallel()` in that package.
 
 ## What to do next, in order
 
-### 1. Review or merge `step12-store-integration-harness`
-
-Six commits, each a task with its own verification. Any point is a clean
-rollback.
-
-### 2. Refresh-token revocation and a real logout
+### 1. Refresh-token revocation and a real logout
 
 `docs/security-backlog.md` item 2, and now the **highest-priority open**
 security item. Refresh tokens live 7 days with no kill switch; "sign out" is
@@ -109,7 +102,7 @@ detection, the frontend's shared in-flight refresh
 *correctness requirement* — seven parallel refreshes would burn seven tokens
 and look exactly like token theft.
 
-### 3. Phase 2 proper — the trading engine
+### 2. Phase 2 proper — the trading engine
 
 Order execution, trade history, P/L tracking. The reason Step 12 came first:
 this is where the SQL volume arrives, and it now lands against a working safety
