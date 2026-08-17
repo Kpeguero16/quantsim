@@ -5,4 +5,5 @@ use (
 	./services/auth
 	./services/gateway
 	./services/market-data
+	./services/trading-engine
 )

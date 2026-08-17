@@ -1,11 +1,11 @@
 -include .env
 export
 
-.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway run-frontend test test-integration test-all test-db-drop vet
+.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway run-trading-engine run-frontend test test-integration test-all test-db-drop vet
 
 # GO_MODULES is every module in the workspace. Kept in one place so a new
 # service is added to test and vet by editing a single line.
-GO_MODULES := pkg services/auth services/gateway services/market-data
+GO_MODULES := pkg services/auth services/gateway services/market-data services/trading-engine
 
 help:
 	@echo "QuantSim targets:"
@@ -18,6 +18,7 @@ help:
 	@echo "  make run-auth        - Run auth service"
 	@echo "  make run-market-data - Run market-data service"
 	@echo "  make run-gateway     - Run API gateway"
+	@echo "  make run-trading-engine - Run trading engine"
 	@echo "  make run-frontend    - Run the Vite dev server (localhost:5173)"
 	@echo ""
 	@echo "  make test            - Unit tests, all modules. No Docker needed"
@@ -52,6 +53,9 @@ run-market-data:
 
 run-gateway:
 	cd services/gateway && go run ./cmd/server
+
+run-trading-engine:
+	cd services/trading-engine && go run ./cmd/server
 
 run-frontend:
 	cd frontend && npm run dev
