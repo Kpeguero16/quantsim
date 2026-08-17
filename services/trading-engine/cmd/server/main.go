@@ -10,7 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
+	"github.com/kpeguero/quantsim/services/trading-engine/internal/client"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/handler"
+	"github.com/kpeguero/quantsim/services/trading-engine/internal/service"
+	"github.com/kpeguero/quantsim/services/trading-engine/internal/store"
 )
 
 // dbPingTimeout bounds the one connection attempt made at boot. Short, because
@@ -35,6 +38,14 @@ func main() {
 	}
 	if err := pkgauth.ValidateSecret([]byte(jwtSecret)); err != nil {
 		log.Fatal(err)
+	}
+
+	// Reused as-is, the same value the gateway already uses to reach the same
+	// service. The trading engine calls market-data directly rather than
+	// through the gateway (SPEC.md §2.2).
+	marketDataURL := os.Getenv("MARKET_DATA_SERVICE_URL")
+	if marketDataURL == "" {
+		marketDataURL = "http://localhost:8082"
 	}
 
 	port := os.Getenv("PORT")
@@ -64,10 +75,14 @@ func main() {
 		log.Fatalf("database unreachable: %v", err)
 	}
 
-	router := handler.NewRouter()
+	tradingStore := store.NewPostgresTradingStore(pool)
+	priceClient := client.NewMarketDataClient(marketDataURL)
+	svc := service.NewService(tradingStore, tradingStore, priceClient)
+	tradingHandler := handler.NewTradingHandler(svc)
+	router := handler.NewRouter(tradingHandler, []byte(jwtSecret))
 
 	addr := bindAddr + ":" + port
-	log.Printf("trading-engine service listening on %s", addr)
+	log.Printf("trading-engine service listening on %s (market-data=%s)", addr, marketDataURL)
 	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Fatal(err)
 	}
