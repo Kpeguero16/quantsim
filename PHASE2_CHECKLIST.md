@@ -246,6 +246,8 @@ kill switch, and `services/auth/internal/service/auth.go` said outright:
       no key collision — independent of the existing Postgres skip path
 - [x] Frontend: `api.logout`, `AuthProvider`'s `logout` clears the session
       immediately and revokes best-effort
+- [x] Pre-push adversarial review found and fixed a real cross-user
+      collision bug at the deploy boundary — see below
 
 **Completed 2026-08-17.** Spec at `SPEC.md` (archived alongside prior steps
 once the next spec is drafted). No gateway changes — `/auth/*` was already
@@ -275,11 +277,42 @@ guarantee "sign out" makes. Both paths log so an outage stays visible.
 `client.ts`'s generic response handling calls `response.json()`
 unconditionally on success, which throws on an empty 204 body.
 
+### What review found
+
+**Invisible to a green test suite**, the same pattern Step 11's review found
+twice: every test written test-first exercised revocation with a real,
+unique `jti` — nothing probed what happens at the actual deploy boundary,
+where every token minted by the *previous* binary has no `jti` at all (the
+zero value, since the claim didn't exist yet).
+
+**`Logout` would revoke the empty string** (`8107f94`). Since every
+pre-deploy token shares that same empty `jti`, they'd all resolve to the
+identical revocation key. Confirmed directly: two fabricated tokens for two
+different users, both `jti`-less — logging out token A made token B's
+`Refresh` fail with `ErrTokenInvalid`, for a user who never logged out.
+Bounded in practice (a token only collides until its first post-deploy
+refresh, which mints a real `jti`), but real: one stale session logging out
+could have silently broken refresh for every other stale session, for every
+user, right at this step's own deploy.
+
+*The rule it produced:* **never let a security-sensitive lookup key on a
+zero value.** An empty string is a valid map/Redis key, not a signal that
+nothing was found — treating it as an identity here is what let unrelated
+tokens collide.
+
+Fixed by rejecting a `jti`-less token in `Logout` outright rather than
+revoking it. `Refresh` is deliberately left permissive for `jti`-less tokens
+— rejecting them there too would force-log-out every session open across a
+routine deploy, and the collision could only ever be *created* by the write
+path, so closing `Logout` closes it completely.
+
 ### Verification
 
 **Mutation check:** commented out the `IsRevoked` call in `Refresh` —
 `TestRefresh_RevokedTokenRejected` and `TestLogout_RevokesTheToken` both
-failed, as they should. Reverted.
+failed, as they should. Reverted. Same done for the `jti`-less guard itself:
+removing it made `TestLogout_RejectsTokenWithoutJTI` fail, as it should.
+Reverted.
 
 **Manual, end to end:** registered and signed out in a real Chrome tab —
 network tab showed `POST /auth/logout` → `200`, the UI returned to the login

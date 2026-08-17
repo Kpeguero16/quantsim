@@ -75,6 +75,18 @@ success — a `204` has no body and that call throws. This was caught before it
 shipped (`SPEC.md` §2.5); don't "clean up" the response shape to a 204 later
 without checking that helper first.
 
+**A token with an empty `jti` is rejected by `Logout`, not revoked — found by
+adversarial review, not by any test written test-first (`8107f94`).** Every
+token minted before this step's deploy has `jti == ""`, and revoking an empty
+string would have collided every such legacy token onto the same store key —
+one stale session logging out would have silently broken refresh for every
+*other* stale session, for every user. `Refresh` stays deliberately permissive
+for `jti`-less tokens (a legacy session must still work until it naturally
+refreshes into a real `jti`); only `Logout`, the one path that writes to the
+store, needed the guard. If you ever add a second thing that writes to
+`RevocationStore`, it needs the same `claims.ID == ""` check — this is not a
+one-off patch, it's an invariant the whole store depends on.
+
 ---
 
 ## What to do next
