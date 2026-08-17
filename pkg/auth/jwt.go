@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 const (
@@ -28,12 +29,16 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// GenerateToken signs a new HS256 JWT for userID, valid for ttl.
+// GenerateToken signs a new HS256 JWT for userID, valid for ttl. Every token
+// gets a unique jti (RegisteredClaims.ID), access and refresh alike -- one
+// code path, even though only a refresh token's jti is ever checked against
+// the revocation store (SPEC.md Step 13, 2.4).
 func GenerateToken(secret []byte, userID, tokenType string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        uuid.NewString(),
 			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),

@@ -56,10 +56,30 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	// Independent of the Postgres setup above: a Redis-only test should skip
+	// on its own, not be blocked by (or block) the Postgres harness.
+	redisCtx, redisCancel := context.WithTimeout(context.Background(), setupTimeout)
+	if err := setupRedis(redisCtx); err != nil {
+		if errors.Is(err, ErrRedisUnavailable) {
+			redisSkipReason = fmt.Sprintf("auth redis integration tests unavailable: %v", err)
+			fmt.Fprintf(os.Stderr,
+				"\n%s\n  start Redis with `make docker-up`, or set TEST_REDIS_URL\n\n",
+				redisSkipReason)
+		} else {
+			fmt.Fprintf(os.Stderr, "\nFATAL: redis integration harness setup failed: %v\n\n", err)
+			redisCancel()
+			os.Exit(1)
+		}
+	}
+	redisCancel()
+
 	code := m.Run()
 
 	if testPool != nil {
 		testPool.Close()
+	}
+	if testRedisClient != nil {
+		testRedisClient.Close()
 	}
 	os.Exit(code)
 }
