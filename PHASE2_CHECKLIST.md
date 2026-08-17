@@ -322,7 +322,82 @@ the gateway that replaying the same (now revoked) refresh token against
 
 ---
 
-## Still open before the trading engine
+## Step 14: Trading Engine MVP — Spec
+
+`agents.md` §2's "Simulated Trading Engine" — the last major system before
+Phase 3, and `docs/security-backlog.md` item 4 (a gateway-wide request-body
+cap), which is explicitly tied to `/trading/*` going live rather than
+returning its `501` placeholder.
+
+- [x] Spec drafted and reviewed — eleven design decisions resolved (`SPEC.md`
+      §8)
+- [x] Step 13's spec archived to
+      `docs/archive/phase2-step13-refresh-token-revocation/`
+- [x] Feature branch `step14-trading-engine-mvp` created and pushed
+- [ ] Plan (`tasks/plan.md`, `tasks/todo.md`) — not started
+- [ ] Implementation — not started
+
+**Spec approved 2026-08-17**, on `step14-trading-engine-mvp` (not merged to
+`main`). Plan and implementation are deliberately deferred to a future
+session under a different model, per Khalil — nothing below this point has
+been built or verified yet, unlike the "What review found" / "Verification"
+sections in Steps 11–13.
+
+### The decisions
+
+**Backend only.** Order execution, positions, trade history, P/L, and the
+gateway's body cap — no frontend UI. Mirrors how Step 11 shipped the entire
+auth backend before Step 13 was the first step to touch `frontend/` at all;
+the trading UI is sized as its own step once this API exists to build
+against.
+
+**Price fetched over HTTP from `market-data`, not read from its Redis cache
+directly.** Keeps the cache format a private implementation detail behind
+`market-data`'s own API — the same boundary every other cross-service call in
+the project already respects — and costs `trading-engine` zero new
+infrastructure.
+
+**The order-write path fails closed; every read path fails open.** The
+opposite split from Step 13's revocation check, deliberately: filling an
+order at an unknown price is a correctness violation this project's fintech
+premise doesn't tolerate, where a read degrading to "no live P/L available"
+is not. Getting this reversed is called out in the spec as the easiest way to
+violate its intent.
+
+**`trading-engine` writes `accounts.balance`, a table `auth` also writes.**
+First cross-service table write in the project. Deliberate — the schema has
+supported it since migration 002 — but flagged rather than left implicit.
+
+**New migration (006): `positions.avg_cost`, `orders.filled_price` /
+`rejection_reason`, `trades.realized_pl`.** Rejected orders are persisted,
+not discarded, for the same audit-trail reasoning that's driven every other
+schema decision in this project.
+
+**`SELECT ... FOR UPDATE` on the account row for the whole order
+transaction**, so concurrent orders on one account can't both read the same
+pre-trade balance and double-spend it. The spec calls for a dedicated
+concurrency integration test proving this serializes in practice, not just
+reading correct.
+
+**No separate symbol whitelist** — `market-data`'s existing `404
+price_not_cached` becomes the order's rejection reason directly, so there's
+one source of truth for "is this symbol tradeable," not two that can drift.
+
+**Long-only.** Selling more than a position holds is rejected
+(`insufficient_position`), never shorted — `agents.md` never scopes
+short-selling in.
+
+**`trading-engine` revalidates the JWT itself**, matching the precedent
+`auth`'s own `/me` route already set (revalidating rather than trusting the
+gateway's injected `X-User-ID` header) — the trading surface is at least as
+sensitive.
+
+Full reasoning for all eleven, including the two options weighed for each,
+is in `SPEC.md` §2.
+
+---
+
+## Still open
 
 - [ ] **market-data's store has the same gap** — `historical_price_store.go`
       has no tests either, and its idempotent upsert (`UNIQUE(symbol,
@@ -331,16 +406,6 @@ the gateway that replaying the same (now revoked) refresh token against
       considering at that point, but not before (see
       `docs/TESTING_STRUCTURE.md` §4).
 - [ ] **Pre-existing `gofmt` drift** in `services/auth/internal/service/`
-      (`interfaces.go`, `types.go`). Untouched by Steps 11–12; Step 13 added
-      to `interfaces.go` but matched its existing (unformatted) style rather
-      than fixing it as a drive-by. Still worth a one-line cleanup commit
-      before any `fmt` check
-      lands in a Makefile target or CI.
-
-## Then the engine itself
-
-- [ ] Order execution (market buy/sell)
-- [ ] Trade storage and history
-- [ ] Position tracking and P/L
-- [ ] `/trading/*` stops returning `501` — the natural moment for the
-      gateway-wide body cap (`docs/security-backlog.md` item 4)
+      (`interfaces.go`, `types.go`). Untouched by Steps 11–13. Still worth a
+      one-line cleanup commit before any `fmt` check lands in a Makefile
+      target or CI.
