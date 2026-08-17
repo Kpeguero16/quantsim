@@ -78,9 +78,9 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 - [ ] ⏸️ **Checkpoint C: The API is complete** — all four endpoints work; write-closed/read-open demonstrated **in the same session**; dev DB at 20
 
 ### Phase 4: Gateway, review, close-out
-- [ ] **Task 14** — Gateway-wide 64 KiB body cap (`security-backlog` item 4, waiting since Step 9). `ContentLength` check → `413 payload_too_large`, plus `MaxBytesReader` for chunked bodies. Inside CORS. Covers `/auth/*`, `/market-data/*`, `/trading/*` — tested per prefix. Independent of everything else in this step
+- [x] **Task 14** — Gateway-wide 64 KiB body cap (`security-backlog` item 4, waiting since Step 9). `ContentLength` check → `413 payload_too_large`, plus `MaxBytesReader` for chunked bodies. Inside CORS. Covers `/auth/*`, `/market-data/*`, `/trading/*` — tested per prefix. Independent of everything else in this step
 
-- [ ] **Task 15** — Replace the gateway's `501` with a real proxy to `TRADING_ENGINE_SERVICE_URL` (`:8083`), inside the existing auth group. `router_test.go:234`'s `not_implemented` assertion gets **replaced, not deleted**. **Manual: trade through `:8080` for the first time**
+- [x] **Task 15** — Replace the gateway's `501` with a real proxy to `TRADING_ENGINE_SERVICE_URL` (`:8083`), inside the existing auth group. `router_test.go:234`'s `not_implemented` assertion gets **replaced, not deleted**. **Manual: trade through `:8080` for the first time**
 
 - [ ] ⏸️ **Checkpoint D: Wired to the edge** — a trade placed through the gateway lands in Postgres
 
