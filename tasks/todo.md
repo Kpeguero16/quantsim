@@ -50,19 +50,19 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 - [ ] ⏸️ **Checkpoint A: Foundation** — 4 modules build/test/vet clean, service answers `/healthz`, migration reversible, dev DB at 20
 
 ### Phase 2: The first vertical slice — a market buy, end to end
-- [ ] **Task 3** — Service contract only, no behaviour: `types.go`, `interfaces.go` (`AccountStore`, `TradingStore`, `PriceClient`), `errors.go` (each error's doc comment names its HTTP status), `mock/` with compile-time interface assertions
+- [x] **Task 3** — Service contract only, no behaviour: `types.go`, `interfaces.go` (`AccountStore`, `TradingStore`, `PriceClient`), `errors.go` (each error's doc comment names its HTTP status), `mock/` with compile-time interface assertions
 
-- [ ] **Task 4** — `PlaceOrder` buy path + unit tests. Price-fetch failure **persists a rejected order and returns the error** — never a fill at a guessed price. Weighted-avg asserted with real numbers (10@100 then 10@120 ⇒ 110)
+- [x] **Task 4** — `PlaceOrder` buy path + unit tests. Price-fetch failure **persists a rejected order and returns the error** — never a fill at a guessed price. Weighted-avg asserted with real numbers (10@100 then 10@120 ⇒ 110)
 
-- [ ] **Task 5** — `PriceClient` over HTTP to `market-data`. `404` → `symbol_unavailable`; everything else → `upstream_unavailable`; explicit client timeout (this is on the synchronous order path). `httptest.Server` only — no real service required
+- [x] **Task 5** — `PriceClient` over HTTP to `market-data`. `404` → `symbol_unavailable`; everything else → `upstream_unavailable`; explicit client timeout (this is on the synchronous order path). `httptest.Server` only — no real service required
 
-- [ ] **Task 6** — 🔴 **The transaction.** `SELECT ... FOR UPDATE` on the account row, validate *inside* the lock, upsert position with the weighted-avg formula, insert order + trade, update balance. Business rejections **COMMIT**; only infrastructure errors **ROLLBACK**. Compile-time `var _ service.TradingStore = ...`
+- [x] **Task 6** — 🔴 **The transaction.** `SELECT ... FOR UPDATE` on the account row, validate *inside* the lock, upsert position with the weighted-avg formula, insert order + trade, update balance. Business rejections **COMMIT**; only infrastructure errors **ROLLBACK**. Compile-time `var _ service.TradingStore = ...`
 
-- [ ] **Task 7** — 🔴 **Harness + guard proof, before anything destructive runs.** Copy Step 12's harness into `services/trading-engine/integration` (Postgres only, no Redis). Prove `assertTestDB` rejects `postgres`, `quantsim`, `""`. Force `TEST_DATABASE_URL` at `postgres` by hand and confirm it **refuses**. Extend `test-integration` and `vet`'s tagged pass — alongside auth's, not replacing it
+- [x] **Task 7** — 🔴 **Harness + guard proof, before anything destructive runs.** Copy Step 12's harness into `services/trading-engine/integration` (Postgres only, no Redis). Prove `assertTestDB` rejects `postgres`, `quantsim`, `""`. Force `TEST_DATABASE_URL` at `postgres` by hand and confirm it **refuses**. Extend `test-integration` and `vet`'s tagged pass — alongside auth's, not replacing it
 
-- [ ] **Task 8** — Store integration tests **including the concurrency proof**: balance 1000, two goroutines from a common barrier each buy 1 @ 600 → exactly one fills, one gets `insufficient_balance`, balance is exactly 400, exactly one trade row. **Mutation check: remove `FOR UPDATE`, confirm it fails.** Second mutation: rejection path rolls back instead of committing → the persisted-rejection test must fail
+- [x] **Task 8** — Store integration tests **including the concurrency proof**: balance 1000, two goroutines from a common barrier each buy 1 @ 600 → exactly one fills, one gets `insufficient_balance`, balance is exactly 400, exactly one trade row. **Mutation check: remove `FOR UPDATE`, confirm it fails.** Second mutation: rejection path rolls back instead of committing → the persisted-rejection test must fail
 
-- [ ] **Task 9** — `POST /trading/orders`: handler + router (`RequireAuth` on the service's own routes, §2.11 — never trust `X-User-ID`) + `main.go` wiring. §2.9's exact status/code table. **Manual: place a real order at `:8083` and see the rows in `psql`**
+- [x] **Task 9** — `POST /trading/orders`: handler + router (`RequireAuth` on the service's own routes, §2.11 — never trust `X-User-ID`) + `main.go` wiring. §2.9's exact status/code table. **Manual: place a real order at `:8083` and see the rows in `psql`**
 
 - [ ] ⏸️ **Checkpoint B: A buy works end to end** — both mutations run and reverted, manual fill verified, `market-data`-down rejection verified, dev DB at 20
 
