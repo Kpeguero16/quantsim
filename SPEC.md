@@ -47,13 +47,23 @@ The environment makes this sharper than it looks:
 
 So the two names a careless harness would reach for, `postgres` and `quantsim`, are respectively the real data and the decoy. The target is `quantsim_test`, which is neither.
 
-**Three independent checks, deliberately redundant:**
+**An absolute denylist, plus a check on every path that can write:**
 
-1. When the DSN is derived — `assertTestDB` rejects any name that is not exactly `quantsim_test`.
-2. After the pool connects — ask the server `SELECT current_database()` and assert again.
-3. Immediately before **every** `TRUNCATE` — ask the server again.
+`assertTestDB` fails closed twice over — first against a hardcoded
+`protectedDatabases` list (`postgres`, `quantsim`, `template0`, `template1`),
+then against an exact match on `quantsim_test`. It is called:
 
-Check 3 exists because it is the statement that destroys data, and it trusts neither a string parsed at startup nor a cached boolean. It asks the server what it is about to empty.
+1. When the DSN is derived.
+2. Immediately before `DROP DATABASE`.
+3. After the pool connects — asking the server `SELECT current_database()`.
+4. Immediately before **every** `TRUNCATE` — asking the server again.
+
+Checks 3 and 4 consult the server rather than a string parsed at startup or a
+boolean cached from it, because those are the statements that destroy data.
+
+**The denylist was added in pre-merge review, and the reason matters** *(2026-08-17)*. The first version compared every target against `testDBName` alone. That defended against a wrong **DSN** and against nothing else: editing the constant to `postgres` would have satisfied every check while the harness dropped and truncated the database holding real users. The call that looked most protective — `assertTestDB(testDBName)` just before the `DROP` — was the emptiest of all, being a constant compared with itself, and a check that reads as protective but can never fire is worse than no check because it gets believed.
+
+Checking an absolute list first makes the constant itself subject to the guard rather than the yardstick for it. Verified end to end by poisoning `testDBName` to `quantsim` — the **empty decoy**, chosen deliberately so a guard failure would cost nothing recoverable — and confirming the run aborts with a non-zero exit. The failure being guarded against is unrecoverable, so it is never reproduced against the real database in order to be tested.
 
 ### 2.3 Skip, never fail, when Postgres is unavailable
 

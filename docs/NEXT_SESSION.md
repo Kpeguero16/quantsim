@@ -15,7 +15,7 @@ This file answers three questions on picking the project back up: *is anything h
 | Branch | `step12-store-integration-harness`, clean, **6 commits ahead of `main`** |
 | `main` | unchanged at `61738e4` (Step 11's merge and docs) |
 | Migrations | schema at version **5**, not dirty — Step 12 added none |
-| Tests | `make test` green (4 modules); `make test-integration` **14 PASS / 0 SKIP** |
+| Tests | `make test` green (4 modules); `make test-integration` **15 PASS / 0 SKIP** |
 | Dev database | verified `users=15`, `accounts=15` — unchanged throughout |
 | Not pushed | the branch is local only |
 
@@ -23,8 +23,9 @@ This file answers three questions on picking the project back up: *is anything h
 the branch and `main` has not moved, so there is no rush and no conflict risk.
 
 Step 11's pre-merge review found two real bypasses, so a review here is not a
-formality. Note that Step 12's own mid-step review already caught three bugs in
-the harness — all written up in `PHASE2_CHECKLIST.md`.
+formality. Note that Step 12's own reviews already caught four problems in the harness,
+including a guard that read as protective but could never fire — all written up
+in `PHASE2_CHECKLIST.md`.
 
 `SPEC.md`, `tasks/plan.md`, and `tasks/todo.md` describe **Step 12, fully
 checked off**. By convention they are archived to
@@ -40,7 +41,7 @@ against a Go map, so all 18 test files would have stayed green against a
 completely wrong SQL query — including Step 10's `lower(email)` fix, which
 lives in that layer and was verified only by hand.
 
-There are now 14 tests against a real Postgres, in `services/auth/integration/`
+There are now 15 tests against a real Postgres, in `services/auth/integration/`
 behind the repo's first build tag. Full write-up in `PHASE2_CHECKLIST.md`.
 
 **Run them:**
@@ -59,10 +60,16 @@ a laptop with nothing running.
 misleads.** `POSTGRES_DB=quantsim` is an **empty decoy**; `DATABASE_URL` points
 at `postgres`, which is where the 15 real users live. Both names a careless
 harness would grab are wrong, and one is wrong destructively. The target is
-`quantsim_test`, checked **three times** — when the DSN is derived, after the
-pool connects, and again immediately before every `TRUNCATE` (that one asks the
-server `SELECT current_database()`). **Do not consolidate those into one
-check.**
+`quantsim_test`, and `assertTestDB` fails closed twice over: an absolute
+`protectedDatabases` denylist first, then an exact match on the constant. It
+runs when the DSN is derived, before the `DROP`, after the pool connects, and
+immediately before every `TRUNCATE`.
+
+**Do not simplify that to one comparison against the constant.** That was the
+first version, and pre-merge review found it defended only against a wrong
+DSN — editing the constant to `postgres` would have passed every check while
+truncating real data. The denylist is what makes the constant itself subject to
+the guard.
 
 **Exactly one condition may skip the suite: Postgres unreachable.** Everything
 else fails. This is not fussiness — an earlier version skipped on any setup

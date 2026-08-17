@@ -39,6 +39,35 @@ func TestAssertTestDBRefusesEverythingButTheTestDatabase(t *testing.T) {
 	}
 }
 
+// The guard must catch a poisoned *constant*, not just a wrong DSN.
+//
+// The first version of this harness compared every target against testDBName,
+// which meant all three guards defended against a bad connection string and
+// none against a bad constant: editing testDBName to "postgres" would have
+// satisfied every check while the suite dropped and truncated the database
+// holding real users. The call that looked most protective --
+// assertTestDB(testDBName), immediately before the DROP -- was the emptiest,
+// being a constant compared with itself.
+//
+// This is deliberately verified by asserting the denylist rather than by
+// actually repointing the harness: the failure mode being guarded against is
+// unrecoverable, so it must never be reproduced to be tested.
+func TestProtectedDatabasesAreRefusedRegardlessOfTheConstant(t *testing.T) {
+	for _, protected := range protectedDatabases {
+		if err := assertTestDB(protected); err == nil {
+			t.Errorf("assertTestDB(%q) returned nil; protected databases must be refused even if testDBName were edited to name one", protected)
+		}
+	}
+
+	// And the constant itself must not be one of them -- which is what makes
+	// the pre-DROP check meaningful rather than tautological.
+	for _, protected := range protectedDatabases {
+		if testDBName == protected {
+			t.Fatalf("testDBName is %q, which is a protected database; the harness must never target it", testDBName)
+		}
+	}
+}
+
 // Derivation must replace the database name in DATABASE_URL rather than
 // inherit it. DATABASE_URL points at the dev database, so a harness that used
 // it as-is would truncate real data on its first run.

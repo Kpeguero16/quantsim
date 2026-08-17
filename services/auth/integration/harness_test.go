@@ -68,13 +68,40 @@ var ErrUnsafeTarget = errors.New("unsafe target database")
 // "nothing to test against" from "the harness is broken" protects nothing.
 var ErrPostgresUnavailable = errors.New("postgres unavailable")
 
-// assertTestDB is the guard, and it fails closed: anything that is not exactly
-// testDBName is refused, `postgres` and `quantsim` very much included.
+// protectedDatabases may never be written to by this suite, whatever
+// testDBName happens to say.
 //
-// It is called three times per run, deliberately redundantly -- when the DSN
-// is derived, after the pool connects, and again immediately before every
+// This list exists because of a hole found reviewing the first version: every
+// guard compared the target against testDBName, so all of them defended
+// against a wrong *DSN* and none against a wrong *constant*. Editing
+// testDBName to "postgres" would have satisfied every check while the harness
+// dropped and truncated the database holding real users -- and the call sites
+// that looked most protective were the emptiest, since assertTestDB(testDBName)
+// reduces to comparing a constant with itself.
+//
+// Checking an absolute list first makes the constant itself subject to the
+// guard rather than the yardstick for it.
+var protectedDatabases = []string{
+	"postgres",  // the dev database -- where the real rows actually live
+	"quantsim",  // empty decoy, and the value of POSTGRES_DB
+	"template0", // system
+	"template1", // system
+}
+
+// assertTestDB is the guard, and it fails closed twice over: an absolute
+// denylist first, then an exact match against testDBName.
+//
+// It is called on every path that could write: when the DSN is derived, before
+// the DROP, after the pool connects, and again immediately before every
 // TRUNCATE. See truncateAll for why the last one exists.
 func assertTestDB(name string) error {
+	for _, protected := range protectedDatabases {
+		if name == protected {
+			return fmt.Errorf(
+				"%w: %q is a protected database and must never be written to by tests",
+				ErrUnsafeTarget, name)
+		}
+	}
 	if name != testDBName {
 		return fmt.Errorf(
 			"%w: refusing to run integration tests against database %q; only %q is permitted",
@@ -212,9 +239,13 @@ func ensureTestDatabase(ctx context.Context, adminDSN string) error {
 		return fmt.Errorf("%w: %v", ErrPostgresUnavailable, err)
 	}
 
-	// Belt and braces before a DROP: the name is a compile-time constant, but
-	// this is the single most destructive statement in the repo, so it is
-	// checked here too rather than trusting that a caller checked earlier.
+	// Checked again before the single most destructive statement in the repo,
+	// rather than trusting that a caller checked earlier.
+	//
+	// This call is only meaningful because assertTestDB consults an absolute
+	// denylist before comparing against testDBName. Without that it would be
+	// `testDBName != testDBName` -- a check that reads as protective and can
+	// never fire, which is worse than no check because it gets believed.
 	if err := assertTestDB(testDBName); err != nil {
 		return err
 	}

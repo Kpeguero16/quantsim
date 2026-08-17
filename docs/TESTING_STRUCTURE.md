@@ -161,7 +161,9 @@ The suite runs against a dedicated **`quantsim_test`** database that the harness
 | `POSTGRES_DB` | `quantsim` — **empty**, a long-standing decoy |
 | `DATABASE_URL` database | `postgres` — **this is where the real rows live** |
 
-Both names a careless harness would reach for are wrong, and one of them is wrong destructively. So the target database name is checked **three times**: when the DSN is derived, after the pool connects, and again immediately before every `TRUNCATE` — the last by asking the server `SELECT current_database()` rather than trusting a string parsed at startup.
+Both names a careless harness would reach for are wrong, and one of them is wrong destructively. So `assertTestDB` fails closed twice over — an absolute `protectedDatabases` denylist first, then an exact match on `quantsim_test` — and is called on every path that can write: when the DSN is derived, before the `DROP`, after the pool connects, and again immediately before every `TRUNCATE`. The last two ask the server `SELECT current_database()` rather than trusting a string parsed at startup.
+
+**Do not simplify that to a single comparison against the constant.** That was the first version, and it defended only against a wrong DSN: editing the constant to `postgres` would have satisfied every check while the suite truncated real data. The denylist is what makes the constant itself subject to the guard instead of the yardstick for it.
 
 `DATABASE_URL` is never used as-is; its path component is replaced with `/quantsim_test`.
 

@@ -133,7 +133,7 @@ was manual, which proves the fix today and protects nothing tomorrow."*
 - [x] Harness against a real Postgres, in `services/auth/integration/` behind
       the repo's first build tag
 - [x] Dedicated `quantsim_test` database, dropped and recreated each run
-- [x] 14 tests over all three store methods
+- [x] 15 tests over all three store methods
 - [x] `make test`, `test-integration`, `test-all`, `test-db-drop`, `vet`
 - [x] `var _ service.UserStore` assertions on both the store and the mock
 - [x] Two `docs/deferred-tuning.md` entries (§6, §7) with named triggers
@@ -149,14 +149,14 @@ this repo, so testcontainers' main advantage — an ephemeral database CI can
 start unaided — is currently an advantage over nothing. Recorded as the upgrade
 path in `docs/deferred-tuning.md` §6 with its trigger: the first CI pipeline.
 
-**Three guards on the target database.** The dev database holds 15 real users
-and this harness runs `TRUNCATE`, while the environment actively misleads:
-`POSTGRES_DB=quantsim` is an *empty decoy* and `DATABASE_URL` points at
-`postgres`, where the real rows live. Both names a careless harness would grab
-are wrong, one destructively. So the name is checked when the DSN is derived,
-after the pool connects, and again immediately before every `TRUNCATE` — the
-last by asking the server `SELECT current_database()` rather than trusting a
-string parsed at startup.
+**A denylist plus a check on every write path.** The dev database holds 15 real
+users and this harness runs `TRUNCATE`, while the environment actively
+misleads: `POSTGRES_DB=quantsim` is an *empty decoy* and `DATABASE_URL` points
+at `postgres`, where the real rows live. Both names a careless harness would
+grab are wrong, one destructively. `assertTestDB` therefore fails closed twice
+over — an absolute `protectedDatabases` list first, then an exact match on
+`quantsim_test` — and runs when the DSN is derived, before the `DROP`, after
+the pool connects, and immediately before every `TRUNCATE`.
 
 **Rollback forced by numeric overflow.** `accounts.balance` is
 `NUMERIC(20,4)`, so a `startingBalance` of `1e16` fails the accounts insert
@@ -164,7 +164,30 @@ string parsed at startup.
 `CHECK` constraint there is nothing that can leak into a later test if cleanup
 fails.
 
-### Two bugs found in the harness itself
+### What pre-merge review found
+
+**The guards defended against the wrong thing.** All of them compared the
+target against `testDBName`, so they caught a bad connection string and nothing
+else — editing that constant to `postgres` would have satisfied every check
+while the harness dropped and truncated the database holding real users. The
+call that looked most protective, `assertTestDB(testDBName)` immediately before
+the `DROP`, was the emptiest of all: a constant compared with itself, which can
+never fire. **A check that reads as protective but cannot fail is worse than no
+check, because it gets believed.**
+
+Fixed with an absolute `protectedDatabases` denylist consulted first, which
+makes the constant subject to the guard rather than the yardstick for it.
+Verified by poisoning `testDBName` to `quantsim` — the *empty decoy*, chosen so
+a guard failure would cost nothing recoverable — and confirming the run aborts
+non-zero. The failure being guarded against is unrecoverable, so it is never
+reproduced against the real database in order to test it.
+
+Review also confirmed two things by running them rather than assuming:
+`TRUNCATE users CASCADE` really does reach `accounts`, `positions`, `orders`
+and `trades`; and `make test-db-drop`, which had shipped unexercised, works and
+the suite recreates the database afterwards.
+
+### Three bugs found in the harness while building it
 
 Both were mine, both were caught mid-step, and both produced a **green `ok`
 while testing nothing** — which is the failure mode this step exists to
@@ -200,7 +223,7 @@ Every one confirmed to fail the named test, then reverted:
 | `23505` mapping pointed at a SQLSTATE that never fires | all four duplicate cases fail |
 | migration 004's email index commented out | schema assertion **and** the case-differing duplicate fail — this is what proves migrations are genuinely applied, not inherited |
 
-Counted **14 PASS / 0 SKIP / 0 FAIL** rather than trusting `ok`, and confirmed
+Counted **15 PASS / 0 SKIP / 0 FAIL** rather than trusting `ok`, and confirmed
 the dev database still holds `users=15, accounts=15` after every run.
 
 The first attempt at the `23505` mutation only broke the build via unused
