@@ -23,12 +23,6 @@ var (
 	_ service.TradingStore = (*PostgresTradingStore)(nil)
 )
 
-// errSellNotImplemented is a placeholder removed in Task 10, when the sell
-// branch lands. It exists so that a sell reaching this store during the buy
-// slice fails loudly instead of falling through to something that looks like
-// it worked.
-var errSellNotImplemented = errors.New("sell orders are not implemented yet")
-
 type PostgresTradingStore struct {
 	pool *pgxpool.Pool
 }
@@ -105,7 +99,7 @@ func (s *PostgresTradingStore) ExecuteOrder(ctx context.Context, p service.Execu
 	case service.SideBuy:
 		return executeBuy(ctx, tx, p, balance)
 	case service.SideSell:
-		return service.PlaceOrderResult{}, errSellNotImplemented
+		return executeSell(ctx, tx, p, balance)
 	default:
 		// Unreachable: the service validates the side before this is called.
 		// Kept as a refusal rather than a fallthrough, so a future caller that
@@ -156,6 +150,67 @@ func executeBuy(ctx context.Context, tx pgx.Tx, p service.ExecuteOrderParams, ba
 	// transaction holds the row lock, so the value read at the top cannot have
 	// moved underneath it.
 	newBalance := balance - cost
+	if err := updateBalance(ctx, tx, p.AccountID, newBalance); err != nil {
+		return service.PlaceOrderResult{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return service.PlaceOrderResult{}, fmt.Errorf("committing order: %w", err)
+	}
+
+	return service.PlaceOrderResult{Order: order, Trade: trade, Balance: newBalance}, nil
+}
+
+// executeSell owns the transaction it is handed, including committing it.
+//
+// It is the mirror of executeBuy with one rule that is not a mirror: the
+// position's avg_cost is READ and written back unchanged. A sell books profit
+// against the basis it was bought at; it does not establish a new one. The
+// only thing that moves a cost basis is a buy.
+func executeSell(ctx context.Context, tx pgx.Tx, p service.ExecuteOrderParams, balance float64) (service.PlaceOrderResult, error) {
+	// Safe without its own FOR UPDATE for the same reason as in executeBuy:
+	// the account row is already locked, so every order touching any of this
+	// account's positions is serialized behind it.
+	qty, avgCost, err := currentPosition(ctx, tx, p.AccountID, p.Symbol)
+	if err != nil {
+		return service.PlaceOrderResult{}, err
+	}
+
+	// Long-only (SPEC.md §2.8). Selling what is not held is rejected, never
+	// filled into a negative quantity -- and "no position row at all" arrives
+	// here as qty 0, so it takes this same branch rather than a special case.
+	if p.Quantity > qty {
+		if err := rejectWithin(ctx, tx, p, "insufficient_position"); err != nil {
+			return service.PlaceOrderResult{}, err
+		}
+		return service.PlaceOrderResult{}, service.ErrInsufficientPosition
+	}
+
+	// Captured now, from the basis in effect at this instant. Storing it on the
+	// trade is what makes it survive the next buy moving avg_cost -- recomputing
+	// it later would produce a different number that still looks plausible.
+	realized := service.RealizedPL(avgCost, p.Price, p.Quantity)
+
+	order, err := insertOrder(ctx, tx, p, service.StatusFilled, &p.Price, nil)
+	if err != nil {
+		return service.PlaceOrderResult{}, fmt.Errorf("inserting filled order: %w", err)
+	}
+
+	trade, err := insertTrade(ctx, tx, p, order.ID, &realized)
+	if err != nil {
+		return service.PlaceOrderResult{}, fmt.Errorf("inserting trade: %w", err)
+	}
+
+	// A position sold out entirely keeps its row at quantity 0. ListHoldings
+	// filters those out, and WeightedAvgCost with oldQty 0 makes the next buy's
+	// basis exactly that buy's price -- so nothing needs to delete the row, and
+	// the account keeps a record that it once held the symbol.
+	newQty := qty - p.Quantity
+	if err := upsertPosition(ctx, tx, p.AccountID, p.Symbol, newQty, avgCost); err != nil {
+		return service.PlaceOrderResult{}, err
+	}
+
+	newBalance := balance + p.Price*p.Quantity
 	if err := updateBalance(ctx, tx, p.AccountID, newBalance); err != nil {
 		return service.PlaceOrderResult{}, err
 	}

@@ -53,6 +53,30 @@ func TestPlaceOrder_BuyPassesTheFetchedPriceToTheStore(t *testing.T) {
 	}
 }
 
+// A sell takes the same route as a buy -- one price lookup, one store call --
+// and arrives with its side intact. Everything that makes a sell different
+// (the position check, the cost basis, the realized P/L) happens inside the
+// store's transaction, where the integration suite tests it.
+func TestPlaceOrder_SellReachesTheStoreAsASell(t *testing.T) {
+	svc, _, trading, _, userID := newService(t)
+
+	if _, err := svc.PlaceOrder(context.Background(), userID,
+		service.PlaceOrderRequest{Symbol: testSymbol, Side: service.SideSell, Quantity: 4}); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+
+	if len(trading.ExecuteCalls) != 1 {
+		t.Fatalf("got %d ExecuteOrder calls, want 1", len(trading.ExecuteCalls))
+	}
+	got := trading.ExecuteCalls[0]
+	if got.Side != service.SideSell {
+		t.Errorf("got side %q, want sell -- a sell must never reach the store as a buy", got.Side)
+	}
+	if got.Quantity != 4 || got.Price != 150 {
+		t.Errorf("sell details did not survive: %+v", got)
+	}
+}
+
 // Fail closed. The most important test in this file: no price, no fill.
 func TestPlaceOrder_UpstreamDownRejectsAndNeverExecutes(t *testing.T) {
 	svc, _, trading, prices, userID := newService(t)

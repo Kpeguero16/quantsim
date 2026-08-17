@@ -39,6 +39,16 @@ func buy(accountID uuid.UUID, qty, price float64) service.ExecuteOrderParams {
 	}
 }
 
+func sell(accountID uuid.UUID, qty, price float64) service.ExecuteOrderParams {
+	return service.ExecuteOrderParams{
+		AccountID: accountID,
+		Symbol:    symbol,
+		Side:      service.SideSell,
+		Quantity:  qty,
+		Price:     price,
+	}
+}
+
 func countRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool, query string, args ...any) int {
 	t.Helper()
 	var n int
@@ -166,6 +176,210 @@ func TestExecuteOrder_SpendingTheEntireBalanceIsAllowed(t *testing.T) {
 	}
 	assertMoney(t, numeric(t, ctx, pool, `SELECT balance::text FROM accounts WHERE id = $1`, accountID),
 		0, "balance after spending everything")
+}
+
+func TestExecuteOrder_SellBooksRealizedPLAndLeavesTheCostBasisAlone(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, accountID := seedAccount(t, ctx, pool, 10000)
+
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 10, 100)); err != nil {
+		t.Fatalf("buy: %v", err)
+	}
+
+	result, err := s.ExecuteOrder(ctx, sell(accountID, 4, 150))
+	if err != nil {
+		t.Fatalf("sell: %v", err)
+	}
+
+	// 10000 - 1000 + 600
+	assertMoney(t, result.Balance, 9600, "returned balance")
+	assertMoney(t, numeric(t, ctx, pool, `SELECT balance::text FROM accounts WHERE id = $1`, accountID),
+		9600, "stored balance")
+
+	// (150 - 100) * 4
+	if result.Trade.RealizedPL == nil {
+		t.Fatal("a sell booked no realized P/L")
+	}
+	assertMoney(t, *result.Trade.RealizedPL, 200, "returned realized P/L")
+	assertMoney(t, numeric(t, ctx, pool,
+		`SELECT realized_pl::text FROM trades WHERE account_id = $1 AND side = 'sell'`, accountID),
+		200, "stored realized P/L")
+
+	assertMoney(t, numeric(t, ctx, pool, `SELECT quantity::text FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol),
+		6, "position quantity after selling 4 of 10")
+	// The whole rule of the sell path: profit is booked against the basis, the
+	// basis does not move. A sell that recomputed avg_cost would land here at
+	// 150 or somewhere between, and every later P/L would be wrong with it.
+	assertMoney(t, numeric(t, ctx, pool, `SELECT avg_cost::text FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol),
+		100, "avg_cost after a sell")
+}
+
+// 🔴 The trap migration 006 exists to avoid.
+//
+// The realized P/L of a past sell is only correct as of the basis in force
+// when it executed. A later buy moves avg_cost, so anything recomputing that
+// number afterwards produces a different, entirely plausible-looking answer.
+// Here the recomputed value would be (300 - 290) * 5 = 50 instead of 750.
+func TestExecuteOrder_ALaterBuyDoesNotRewriteAnEarlierSellsRealizedPL(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, accountID := seedAccount(t, ctx, pool, 100000)
+
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 10, 100)); err != nil {
+		t.Fatalf("first buy: %v", err)
+	}
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 10, 200)); err != nil {
+		t.Fatalf("second buy: %v", err)
+	}
+	// Basis is now 150; selling at 300 books (300 - 150) * 5 = 750.
+	if _, err := s.ExecuteOrder(ctx, sell(accountID, 5, 300)); err != nil {
+		t.Fatalf("sell: %v", err)
+	}
+
+	booked := numeric(t, ctx, pool,
+		`SELECT realized_pl::text FROM trades WHERE account_id = $1 AND side = 'sell'`, accountID)
+	assertMoney(t, booked, 750, "realized P/L at execution")
+
+	// (150 * 15 + 500 * 10) / 25 = 290
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 10, 500)); err != nil {
+		t.Fatalf("third buy: %v", err)
+	}
+	assertMoney(t, numeric(t, ctx, pool, `SELECT avg_cost::text FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol),
+		290, "avg_cost after the later buy")
+
+	after := numeric(t, ctx, pool,
+		`SELECT realized_pl::text FROM trades WHERE account_id = $1 AND side = 'sell'`, accountID)
+	assertMoney(t, after, 750, "realized P/L after a later buy moved the basis")
+
+	// -1000 -2000 +1500 -5000
+	assertMoney(t, numeric(t, ctx, pool, `SELECT balance::text FROM accounts WHERE id = $1`, accountID),
+		93500, "balance across four orders")
+}
+
+// A position sold out entirely keeps its row, and the next buy starts a clean
+// basis from it -- no delete, no special case for "quantity is zero".
+func TestExecuteOrder_SellingEverythingKeepsTheRowAndResetsTheBasisOnTheNextBuy(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, accountID := seedAccount(t, ctx, pool, 10000)
+
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 10, 100)); err != nil {
+		t.Fatalf("buy: %v", err)
+	}
+	if _, err := s.ExecuteOrder(ctx, sell(accountID, 10, 120)); err != nil {
+		t.Fatalf("selling the whole position was rejected: %v", err)
+	}
+
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol); n != 1 {
+		t.Fatalf("got %d position rows after selling out, want the row kept at quantity 0", n)
+	}
+	assertMoney(t, numeric(t, ctx, pool, `SELECT quantity::text FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol),
+		0, "quantity after selling everything")
+
+	// A holding at quantity 0 is not something anyone holds.
+	holdings, err := s.ListHoldings(ctx, accountID)
+	if err != nil {
+		t.Fatalf("ListHoldings: %v", err)
+	}
+	if len(holdings) != 0 {
+		t.Errorf("got %d holdings, want 0 -- a zeroed position is still being reported as held", len(holdings))
+	}
+
+	if _, err := s.ExecuteOrder(ctx, buy(accountID, 5, 300)); err != nil {
+		t.Fatalf("buying back in: %v", err)
+	}
+	assertMoney(t, numeric(t, ctx, pool, `SELECT avg_cost::text FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol),
+		300, "avg_cost of a position bought back from zero")
+}
+
+// Long-only (SPEC.md §2.8). Both shapes of "you do not hold that" -- too few
+// shares, and no position row at all -- must reject, persist, and move nothing.
+func TestExecuteOrder_SellingMoreThanHeldIsRejectedAndPersisted(t *testing.T) {
+	tests := []struct {
+		name    string
+		holding float64 // shares bought first; 0 means no position row exists
+	}{
+		{"more than held", 3},
+		{"nothing held at all", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, pool, ctx := newStore(t)
+			_, accountID := seedAccount(t, ctx, pool, 10000)
+
+			spent := 0.0
+			if tt.holding > 0 {
+				if _, err := s.ExecuteOrder(ctx, buy(accountID, tt.holding, 100)); err != nil {
+					t.Fatalf("seeding the position: %v", err)
+				}
+				spent = tt.holding * 100
+			}
+
+			_, err := s.ExecuteOrder(ctx, sell(accountID, 5, 150))
+
+			if !errors.Is(err, service.ErrInsufficientPosition) {
+				t.Fatalf("got %v, want ErrInsufficientPosition", err)
+			}
+
+			var status string
+			var reason *string
+			row := pool.QueryRow(ctx,
+				`SELECT status, rejection_reason FROM orders WHERE account_id = $1 AND side = 'sell'`, accountID)
+			if err := row.Scan(&status, &reason); err != nil {
+				t.Fatalf("the rejected sell was not persisted: %v", err)
+			}
+			if status != service.StatusRejected {
+				t.Errorf("status = %q, want rejected", status)
+			}
+			if reason == nil || *reason != "insufficient_position" {
+				t.Errorf("rejection_reason = %v, want insufficient_position", reason)
+			}
+
+			// Nothing about the account moved: no proceeds, no negative
+			// quantity, no trade.
+			assertMoney(t, numeric(t, ctx, pool, `SELECT balance::text FROM accounts WHERE id = $1`, accountID),
+				10000-spent, "balance after a rejected sell")
+			if n := countRows(t, ctx, pool, `SELECT count(*) FROM trades WHERE account_id = $1 AND side = 'sell'`, accountID); n != 0 {
+				t.Errorf("got %d sell trades for a rejected sell, want 0", n)
+			}
+			if n := countRows(t, ctx, pool, `SELECT count(*) FROM positions WHERE account_id = $1 AND quantity < 0`, accountID); n != 0 {
+				t.Errorf("a rejected sell produced a negative position -- this engine is long-only")
+			}
+			if tt.holding > 0 {
+				assertMoney(t, numeric(t, ctx, pool, `SELECT quantity::text FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol),
+					tt.holding, "position quantity after a rejected sell")
+			}
+		})
+	}
+}
+
+// The boundary the "more than held" test cannot catch: selling exactly what is
+// held must fill. A `quantity >= held` typo passes every other sell test here.
+func TestExecuteOrder_SellingExactlyTheHoldingIsAllowed(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, accountID := seedAccount(t, ctx, pool, 10000)
+	seedPosition(t, ctx, pool, accountID, symbol, 7, 100)
+
+	if _, err := s.ExecuteOrder(ctx, sell(accountID, 7, 100)); err != nil {
+		t.Fatalf("selling exactly the holding was rejected: %v", err)
+	}
+	assertMoney(t, numeric(t, ctx, pool, `SELECT quantity::text FROM positions WHERE account_id = $1 AND symbol = $2`, accountID, symbol),
+		0, "quantity after selling exactly the holding")
+}
+
+// A sell at a loss books a negative number rather than clamping at zero.
+func TestExecuteOrder_SellBelowCostBooksALoss(t *testing.T) {
+	s, pool, ctx := newStore(t)
+	_, accountID := seedAccount(t, ctx, pool, 10000)
+	seedPosition(t, ctx, pool, accountID, symbol, 10, 100)
+
+	result, err := s.ExecuteOrder(ctx, sell(accountID, 10, 60))
+	if err != nil {
+		t.Fatalf("sell: %v", err)
+	}
+	if result.Trade.RealizedPL == nil {
+		t.Fatal("a losing sell booked no realized P/L")
+	}
+	assertMoney(t, *result.Trade.RealizedPL, -400, "realized P/L on a losing sell")
 }
 
 // THE test in this suite.
