@@ -406,6 +406,88 @@ func TestLogout_FailsOpenWhenRevocationWriteErrors(t *testing.T) {
 	}
 }
 
+// TestLogout_RejectsTokenWithoutJTI guards against a real bug found by
+// adversarial review, not by any test written test-first: every token
+// minted before this deploy has jti == "" (the zero value). Revoking an
+// empty jti would collide every such legacy token onto the same store key --
+// one stale session logging out would silently break refresh for every
+// OTHER stale session across every user, until each separately refreshed
+// past a token with a real jti.
+func TestLogout_RejectsTokenWithoutJTI(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword}); err != nil {
+		t.Fatalf("unexpected error registering user A: %v", err)
+	}
+	if _, err := svc.Register(ctx, service.RegisterRequest{Email: "c@d.com", Username: "carol", Password: validPassword}); err != nil {
+		t.Fatalf("unexpected error registering user B: %v", err)
+	}
+	userA, err := users.GetUserByEmail(ctx, "a@b.com")
+	if err != nil {
+		t.Fatalf("expected user A to exist: %v", err)
+	}
+	userB, err := users.GetUserByEmail(ctx, "c@d.com")
+	if err != nil {
+		t.Fatalf("expected user B to exist: %v", err)
+	}
+
+	// fabricateToken never sets ID, matching exactly what the pre-Step-13
+	// GenerateToken produced.
+	legacyTokenA := fabricateToken(t, testSecret, userA.ID.String(), pkgauth.TokenTypeRefresh, 24*time.Hour)
+	legacyTokenB := fabricateToken(t, testSecret, userB.ID.String(), pkgauth.TokenTypeRefresh, 24*time.Hour)
+
+	if err := svc.Logout(ctx, service.RefreshTokenRequest{RefreshToken: legacyTokenA}); !errors.Is(err, service.ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid for a jti-less token, got %v", err)
+	}
+
+	// The collision check: user B's completely unrelated legacy token must
+	// still refresh, since A's rejected logout must not have written
+	// anything to the store.
+	if _, err := svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: legacyTokenB}); err != nil {
+		t.Fatalf("expected user B's unrelated legacy token to refresh normally, got: %v", err)
+	}
+}
+
+// TestRefresh_LegacyTokenWithoutJTIStillWorks pins the other half of the
+// same invariant: a jti-less token is not individually revocable, but it
+// must still work for Refresh -- rejecting it outright would force-log-out
+// every session open across a routine deploy. It naturally gets a real jti
+// on its first post-deploy refresh (issueTokenPair -> GenerateToken).
+func TestRefresh_LegacyTokenWithoutJTIStillWorks(t *testing.T) {
+	users := mock.NewUserStore()
+	revocations := mock.NewRevocationStore()
+	svc := service.NewService(users, revocations, testSecret)
+
+	ctx := context.Background()
+	tokens, err := svc.Register(ctx, service.RegisterRequest{Email: "a@b.com", Username: "alice", Password: validPassword})
+	if err != nil {
+		t.Fatalf("unexpected error on register: %v", err)
+	}
+	stored, err := users.GetUserByEmail(ctx, "a@b.com")
+	if err != nil {
+		t.Fatalf("expected user to exist: %v", err)
+	}
+	_ = tokens
+
+	legacyToken := fabricateToken(t, testSecret, stored.ID.String(), pkgauth.TokenTypeRefresh, 24*time.Hour)
+
+	newTokens, err := svc.Refresh(ctx, service.RefreshTokenRequest{RefreshToken: legacyToken})
+	if err != nil {
+		t.Fatalf("expected a jti-less legacy token to refresh normally, got: %v", err)
+	}
+
+	newClaims, err := pkgauth.ValidateToken(testSecret, newTokens.RefreshToken)
+	if err != nil {
+		t.Fatalf("failed to parse new claims: %v", err)
+	}
+	if newClaims.ID == "" {
+		t.Fatal("expected the freshly minted token to carry a real jti")
+	}
+}
+
 // fabricateToken signs a token directly (bypassing GenerateToken's TTL
 // choices) so tests can construct expired or wrongly-typed tokens.
 func fabricateToken(t *testing.T, secret []byte, userID, tokenType string, ttl time.Duration) string {

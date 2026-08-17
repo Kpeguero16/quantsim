@@ -161,6 +161,15 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (*TokenP
 // or an access token presented here gets the same ErrTokenInvalid, not a
 // separate failure vocabulary for one endpoint.
 //
+// A token with no jti is rejected rather than revoked. This matters at the
+// boundary of this exact deploy: every token minted before it has an empty
+// ID (the zero value -- jti did not exist yet), and every empty-ID token
+// would revoke to the identical store key. Without this check, one stale
+// session logging out would silently break refresh for every OTHER stale
+// session too, for every user, until each one separately refreshed past a
+// token with a real jti. Found by adversarial review, not by any test
+// written test-first -- see the regression test this shipped with.
+//
 // An already-expired token is not written to the store: there is nothing
 // left to protect, and a non-positive TTL would be a malformed revocation
 // entry. A store error fails open -- the caller already treats "sign out"
@@ -172,6 +181,9 @@ func (s *Service) Logout(ctx context.Context, req RefreshTokenRequest) error {
 		return ErrTokenInvalid
 	}
 	if claims.TokenType != pkgauth.TokenTypeRefresh {
+		return ErrTokenInvalid
+	}
+	if claims.ID == "" {
 		return ErrTokenInvalid
 	}
 
