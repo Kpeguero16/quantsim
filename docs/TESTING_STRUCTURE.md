@@ -140,7 +140,7 @@ Two details in there are load-bearing and should not be "tidied away":
 
 Implemented in Step 12 for `services/auth/internal/store`, which previously had no tests at all. See `SPEC.md` (Step 12) for the full reasoning.
 
-**As of Step 14 the harness exists in two modules**, `services/auth/integration/` and `services/trading-engine/integration/`, as a near-verbatim copy. Everything in this section describes both.
+**As of Step 16 the harness exists in three modules** — `services/auth/integration/`, `services/trading-engine/integration/`, and `services/backtesting/integration/` — as a near-verbatim copy. Everything in this section describes all three. Full up-to-date reasoning, including why the third copy landed in `backtesting` rather than the `market-data` this section originally predicted, is in `docs/deferred-tuning.md` §11 — that file is the one kept current session to session; treat the rest of this section as the original two-copy rationale, still correct in substance.
 
 ### Why it was copied rather than shared
 
@@ -154,9 +154,9 @@ What legitimately *does* differ between the copies is the seeding (`insertUserRa
 
 ### The trigger for extracting it
 
-**A third service needing it.** At three call sites the shape is demonstrated rather than guessed, and the duplication stops being a copy and starts being a policy nobody owns. `services/market-data`'s `historical_price_store.go` is the likely third — it has no store tests either, and its idempotent upsert on `UNIQUE(symbol, timeframe, timestamp)` is exactly the kind of SQL that needs a real database.
+**A fourth service needing it.** `docs/deferred-tuning.md` §11 names `market-data`'s `historical_price_store.go` as that fourth use — it still has no store tests, and its idempotent upsert on `UNIQUE(symbol, timeframe, timestamp)` is exactly the kind of SQL that needs a real database. At four call sites the shape is demonstrated rather than guessed, and the duplication stops being a copy and starts being a policy nobody owns.
 
-At that point extract to `pkg/testutil/` under §5's constraint (test files only, so the dependency never reaches a service binary), and port all three call sites in the same change — an extraction that leaves one copy behind is worse than three copies, because now there are four things and one of them lies.
+At that point extract to `pkg/testutil/` under §5's constraint (test files only, so the dependency never reaches a service binary), and port all four call sites in the same change — an extraction that leaves one copy behind is worse than four copies, because now there are five things and one of them lies.
 
 Until then: **when you change the harness, change both copies, and diff them.**
 

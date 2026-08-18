@@ -12,20 +12,20 @@ This project demonstrates real‑time systems design, financial data processing,
 
 # Status
 
-QuantSim is in active development (Phase 2). This section reflects what's actually built, not the target design further down.
+QuantSim is in active development (Phase 3). This section reflects what's actually built, not the target design further down.
 
 | Service | State |
 |---|---|
-| `services/auth` | Built — registration, login, JWT issuance, case-insensitive identity lookup, per-IP and per-account rate limiting on `/auth/*` |
-| `services/gateway` | Built — reverse proxy to auth and market-data, auth-aware rate limiting |
+| `services/auth` | Built — registration, login, JWT issuance, case-insensitive identity lookup, per-IP and per-account rate limiting on `/auth/*`, refresh-token revocation on logout |
+| `services/gateway` | Built — reverse proxy to auth, market-data, trading-engine, and backtesting; auth-aware rate limiting, router-wide request body cap |
 | `services/market-data` | Built — Alpaca ingestion, Redis caching |
-| `services/trading-engine` | Not started (stub `go.mod` only) |
-| `services/backtesting` | Not started (stub `go.mod` only) |
+| `services/trading-engine` | Built — market buy/sell orders, positions, portfolio, trade history; frontend dashboard (order ticket, positions, trade/order history) |
+| `services/backtesting` | Built — moving-average-crossover strategy, next-bar-open fills, the five `agents.md` §3 metrics; frontend dashboard tab (strategy form, results, run history). RSI/MACD strategies and multi-symbol runs are the next extension, not yet built |
 | `services/ai-insights` | Not started (stub `go.mod` only) |
 
-Schema is at migration version 5. Auth's store layer has an integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. No CI is wired up yet.
+Schema is at migration version 7. Auth, trading-engine, and backtesting each have a store-layer integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. The frontend has its own `vitest` suite (39 tests) for validation and error-mapping logic. No CI is wired up yet.
 
-For a detailed, checkpointed history of what's shipped, see `PHASE1_CHECKLIST.md` and `PHASE2_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
+For a detailed, checkpointed history of what's shipped, see `PHASE1_CHECKLIST.md`, `PHASE2_CHECKLIST.md`, and `PHASE3_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
 
 ---
 
@@ -50,19 +50,29 @@ make migrate-up               # apply migrations
 Each runs in its own terminal:
 
 ```bash
-make run-auth          # :8081
-make run-gateway       # :8080
-make run-market-data   # :8082
-make run-frontend      # :5173 (Vite dev server)
+make run-auth             # :8081
+make run-gateway          # :8080
+make run-market-data      # :8082
+make run-trading-engine   # :8083
+make run-backtesting      # :8084
+make run-frontend         # :5173 (Vite dev server)
 ```
 
 ### Testing
 
 ```bash
 make test               # unit tests, all modules — no Docker needed
-make test-integration   # auth store tests against a real Postgres — needs `make docker-up`
+make test-integration   # auth/trading-engine/backtesting store tests against a real Postgres — needs `make docker-up`
 make test-all           # both
 make vet                # go vet, including files behind the integration build tag
+```
+
+Frontend, from `frontend/`:
+
+```bash
+npm run lint    # oxlint
+npm run build   # tsc -b && vite build
+npm run test    # vitest run
 ```
 
 ### Other useful targets
@@ -116,7 +126,7 @@ Market Data API → Data Ingestion Service → Redis → WebSockets → Frontend
 
 ---
 
-## 2. Simulated Trading Engine — 🚧 not started
+## 2. Simulated Trading Engine — ✅ built (MVP)
 
 ### Description
 Users execute simulated trades using real market prices. All trades are paper trades — no real money involved.
@@ -132,11 +142,11 @@ Users execute simulated trades using real market prices. All trades are paper tr
 
 ### Supported Order Types
 
-**MVP**
+**MVP** — done
 - Market buy
 - Market sell
 
-**Advanced**
+**Advanced** — not started
 - Limit orders
 - Stop‑loss
 - Take‑profit
@@ -155,7 +165,7 @@ Users execute simulated trades using real market prices. All trades are paper tr
 
 ---
 
-## 3. Strategy Backtesting Engine ⭐ — 🚧 not started
+## 3. Strategy Backtesting Engine ⭐ — ✅ built (MVP)
 
 ### Description
 Users can test trading strategies against historical market data to evaluate performance before applying them in live simulations.
@@ -169,9 +179,9 @@ Users can test trading strategies against historical market data to evaluate per
 ### Strategy Input Methods
 
 **Option A — Prebuilt Strategies**
-- Moving average crossover
-- RSI signals
-- MACD signals
+- Moving average crossover — done
+- RSI signals — not started
+- MACD signals — not started
 
 **Option B — Configurable Strategies**
 Users define:
@@ -193,7 +203,7 @@ Historical Data → Strategy Engine → Trade Simulator → Performance Metrics
 
 ---
 
-### Performance Metrics
+### Performance Metrics — done
 
 - Total return (%)
 - Sharpe ratio
@@ -201,7 +211,7 @@ Historical Data → Strategy Engine → Trade Simulator → Performance Metrics
 - Win rate
 - Profit factor
 
-Displayed via dashboards and charts.
+Displayed via a metrics grid and trade log in the dashboard's Backtest tab (no equity-curve chart yet — the backend does not store one).
 
 ---
 
@@ -349,8 +359,8 @@ Optional, considered but not adopted (see `docs/deferred-tuning.md` for what wou
   /auth            — built
   /gateway         — built
   /market-data     — built
-  /trading-engine  — stub
-  /backtesting     — stub
+  /trading-engine  — built
+  /backtesting     — built
   /ai-insights     — stub
 /pkg
 /frontend
@@ -365,7 +375,7 @@ Optional, considered but not adopted (see `docs/deferred-tuning.md` for what wou
 
 # Development Roadmap
 
-Originally scoped at ~5–10 hrs/week over ~3–4 months; six months in and still mid-Phase 2, so treat this as direction rather than a schedule.
+Originally scoped at ~5–10 hrs/week over ~3–4 months; now several months in (with a pause for school in between) and mid-Phase 3, so treat this as direction rather than a schedule.
 
 ## Phase 1 — Trading Foundations — done
 - User authentication
@@ -373,17 +383,18 @@ Originally scoped at ~5–10 hrs/week over ~3–4 months; six months in and stil
 - Portfolio schema
 - Market data ingestion
 
-## Phase 2 — Trading Engine — in progress
-- Auth hardening (rate limiting, store-layer integration tests) — done
-- Order execution — not started
-- Trade history — not started
-- Profit/loss tracking — not started
-- Live portfolio UI — not started
+## Phase 2 — Trading Engine — done
+- Auth hardening (rate limiting, refresh-token revocation, gateway body cap) — done
+- Order execution — done
+- Trade history — done
+- Profit/loss tracking — done
+- Live portfolio UI — done
 
-## Phase 3 — Backtesting Engine — not started
-- Historical data ingestion
-- Strategy simulator
-- Performance dashboards
+## Phase 3 — Backtesting Engine — in progress
+- Historical data ingestion — done (Phase 1's market-data ingestion covers it)
+- Strategy simulator (MA crossover) — done
+- Performance dashboards — done
+- RSI/MACD strategies, multi-symbol backtests — not started
 
 ## Phase 4 — AI Insights + Deployment — not started
 - Portfolio analytics
@@ -454,4 +465,4 @@ Software Engineer | Full‑Stack Developer | Fintech Enthusiast
 
 # Summary
 
-QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture. Phase 1 (auth, market data ingestion) is done; Phase 2 (trading engine) is in progress.
+QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture. Phase 1 (auth, market data ingestion) and Phase 2 (trading engine) are done; Phase 3 (backtesting engine) is in progress, with the MA-crossover engine and its frontend shipped and RSI/MACD strategies next.

@@ -318,26 +318,27 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 - Portfolio schema
 - Market data ingestion
 
-## Phase 2 — Trading Engine
-- Order execution
-- Trade storage
-- P/L tracking
+## Phase 2 — Trading Engine — done
+- Order execution — done
+- Trade storage — done
+- P/L tracking — done
 - **Security items scheduled for this phase** — see **docs/security-backlog.md**
-  (items 1, 2, and 4). Phase 2 is where they belong because Phase 2 is what
-  makes them matter: today account takeover buys a read-only view of public
-  market data, but once `/trading/*` executes orders against a $100k balance
-  the same weakness lets someone trade as another user. The auth surface does
-  not get weaker in Phase 2 — the consequences of its existing gaps get worse.
-  - Rate limiting on the auth routes (nothing throttles credential stuffing today)
-  - Refresh-token revocation and a real server-side logout (tokens live 7 days
-    with no kill switch; "sign out" is client-side only)
-  - A gateway-wide request body cap, naturally done when `/trading/*` stops
-    returning `501`
+  (items 1, 2, and 4, all closed). Phase 2 is where they belonged because
+  Phase 2 is what made them matter: before it, account takeover bought a
+  read-only view of public market data, but once `/trading/*` executes orders
+  against a $100k balance the same weakness lets someone trade as another
+  user. The auth surface did not get weaker in Phase 2 — the consequences of
+  its existing gaps got worse.
+  - Rate limiting on the auth routes — done (Step 11)
+  - Refresh-token revocation and a real server-side logout — done (Step 13)
+  - A gateway-wide request body cap — done (Step 14)
 
-## Phase 3 — Backtesting Engine
-- Historical ingestion
-- Strategy simulator
-- Metrics dashboards
+## Phase 3 — Backtesting Engine — in progress
+- Historical ingestion — done (Phase 1's market-data ingestion covers it)
+- Strategy simulator (MA crossover) — done (Step 16)
+- Metrics dashboards — done (Step 17, frontend)
+- RSI/MACD strategies, multi-symbol backtests — not started, see
+  `docs/NEXT_SESSION.md` for current status
 
 ## Phase 4 — AI Insights + Infra
 - Portfolio analytics
