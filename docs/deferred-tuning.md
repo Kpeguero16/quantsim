@@ -322,6 +322,42 @@ it wants its own step rather than a corner of one.
 
 ---
 
+## 11. The Postgres integration-test harness is now a third copy, not extracted
+
+**Where:** `services/auth/integration/`, `services/trading-engine/integration/`,
+and as of Step 16, `services/backtesting/integration/` — `harness_test.go`,
+`harness_guard_test.go` and the `TestMain`/`newStore` pair in `main_test.go`
+are near-verbatim copies across all three.
+
+**Now:** `docs/TESTING_STRUCTURE.md` §6a names "a third service needing it"
+as the trigger to extract this to `pkg/testutil/`, and had predicted
+`market-data`'s `historical_price_store.go` would be the third. It was
+`backtesting` instead — SPEC.md (Step 16) §2.6's store needed the same
+real-Postgres treatment first. The trigger has fired; the extraction has not
+been done.
+
+**Why not done in Step 16:** the extraction is explicitly cross-cutting —
+§6a's own text says to "port all three call sites in the same change," which
+means touching already-shipped, working test files in `auth` and
+`trading-engine` as a side effect of a step whose `SPEC.md` scope was a new
+service. That is a bigger, differently-reviewed change than "add a new
+service's tests," and bundling it in would have made this step's diff harder
+to review for what it actually set out to do.
+
+**What to measure first:** nothing — this is a structural call, not a
+performance one. The three copies are still verified against each other by
+`diff`, per §6a's existing "when you change the harness, change both (now
+three) copies" rule.
+
+**When it changes:** the next time any of the three harness files needs a
+real edit (not just a per-service seed helper or table-list addition) is the
+natural moment to extract instead of editing three files in lockstep.
+`market-data`'s own store still has no integration tests at all, and adding
+those later would otherwise create a fourth copy — extract before that happens
+rather than after.
+
+---
+
 ## Related decisions recorded elsewhere
 
 - **Graceful shutdown** — none of the three services drain on SIGTERM

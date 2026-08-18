@@ -3,6 +3,7 @@ go 1.25.0
 use (
 	./pkg
 	./services/auth
+	./services/backtesting
 	./services/gateway
 	./services/market-data
 	./services/trading-engine

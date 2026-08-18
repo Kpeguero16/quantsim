@@ -1,11 +1,11 @@
 -include .env
 export
 
-.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway run-trading-engine run-frontend test test-integration test-all test-db-drop vet
+.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway run-trading-engine run-backtesting run-frontend test test-integration test-all test-db-drop vet
 
 # GO_MODULES is every module in the workspace. Kept in one place so a new
 # service is added to test and vet by editing a single line.
-GO_MODULES := pkg services/auth services/gateway services/market-data services/trading-engine
+GO_MODULES := pkg services/auth services/gateway services/market-data services/trading-engine services/backtesting
 
 help:
 	@echo "QuantSim targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  make run-market-data - Run market-data service"
 	@echo "  make run-gateway     - Run API gateway"
 	@echo "  make run-trading-engine - Run trading engine"
+	@echo "  make run-backtesting - Run backtesting engine"
 	@echo "  make run-frontend    - Run the Vite dev server (localhost:5173)"
 	@echo ""
 	@echo "  make test            - Unit tests, all modules. No Docker needed"
@@ -57,6 +58,9 @@ run-gateway:
 run-trading-engine:
 	cd services/trading-engine && go run ./cmd/server
 
+run-backtesting:
+	cd services/backtesting && go run ./cmd/server
+
 run-frontend:
 	cd frontend && npm run dev
 
@@ -89,6 +93,7 @@ test:
 test-integration:
 	cd services/auth && go test -tags=integration -count=1 -v ./integration/...
 	cd services/trading-engine && go test -tags=integration -count=1 -v ./integration/...
+	cd services/backtesting && go test -tags=integration -count=1 -v ./integration/...
 
 test-all: test test-integration
 
@@ -114,3 +119,4 @@ vet:
 	done
 	cd services/auth && go vet -tags=integration ./integration/...
 	cd services/trading-engine && go vet -tags=integration ./integration/...
+	cd services/backtesting && go vet -tags=integration ./integration/...

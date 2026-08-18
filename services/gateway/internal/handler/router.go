@@ -52,7 +52,7 @@ type RateLimitConfig struct {
 // RateLimitByIP is inside CORS for exactly the same reason, and scoped to
 // /auth/* because that is the surface worth protecting -- /healthz must stay
 // answerable to a load balancer no matter how busy the box is.
-func NewRouter(authProxy, marketDataProxy, tradingProxy http.Handler, jwtSecret []byte, allowedOrigin string, rateLimit RateLimitConfig) *chi.Mux {
+func NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy http.Handler, jwtSecret []byte, allowedOrigin string, rateLimit RateLimitConfig) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Use(middleware.StripUserID())
@@ -113,6 +113,17 @@ func NewRouter(authProxy, marketDataProxy, tradingProxy http.Handler, jwtSecret 
 		// itself as well (SPEC.md §2.11); the X-User-ID injected here is a
 		// convenience for the backend, never the thing it trusts.
 		r.Handle("/trading/*", tradingProxy)
+
+		// The backtesting engine, live since Step 16. Same posture as
+		// trading-engine: backtesting revalidates the token itself
+		// (SPEC.md Step 16 §2.7) rather than trusting X-User-ID.
+		//
+		// Both patterns are needed -- unlike /trading, which has no bare
+		// endpoint, POST/GET /backtests is the collection route itself, and
+		// chi's "/backtests/*" wildcard does not match the bare prefix with
+		// no trailing segment.
+		r.Handle("/backtests", backtestingProxy)
+		r.Handle("/backtests/*", backtestingProxy)
 	})
 
 	return r
