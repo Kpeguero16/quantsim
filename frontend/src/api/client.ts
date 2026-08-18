@@ -28,7 +28,12 @@ import type {
   HistoryResponse,
   LoginRequest,
   MeResponse,
+  OrdersResponse,
+  PlaceOrderRequest,
+  PlaceOrderResult,
+  PortfolioResponse,
   Price,
+  PositionsResponse,
   RegisterRequest,
   SymbolsResponse,
   TokenPair,
@@ -288,4 +293,13 @@ export const api = {
     request<HistoryResponse>(
       `/market-data/history/${encodeURIComponent(symbol)}`,
     ),
+
+  placeOrder: (body: PlaceOrderRequest) =>
+    request<PlaceOrderResult>('/trading/orders', { method: 'POST', body }),
+
+  orders: () => request<OrdersResponse>('/trading/orders'),
+
+  positions: () => request<PositionsResponse>('/trading/positions'),
+
+  portfolio: () => request<PortfolioResponse>('/trading/portfolio'),
 }

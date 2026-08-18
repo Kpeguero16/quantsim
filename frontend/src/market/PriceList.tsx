@@ -7,14 +7,8 @@
  * treating them as errors would make the dashboard look broken every
  * evening and all weekend.
  */
+import { formatPrice } from '../format'
 import type { PriceState } from './use-prices'
-
-function formatPrice(price: number): string {
-  return price.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-}
 
 interface RowValueProps {
   state: PriceState
