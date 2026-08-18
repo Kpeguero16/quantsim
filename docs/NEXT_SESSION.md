@@ -1,62 +1,63 @@
 # Next session — state of play
 
-Last updated **2026-08-18**, at the close of Step 16 (backtesting engine MVP).
+Last updated **2026-08-18**, at the close of Step 17 (backtesting frontend).
 
 This file answers three questions on picking the project back up: *is anything half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not appended to.
 
 ---
 
-## Step 16 is code-complete and verified, but not yet committed or merged
+## Step 17 is code-complete and verified, but not yet committed or merged
 
 | | |
 |---|---|
-| Branch | `step16-backtesting-engine` — checked out, working tree has all of Step 16's changes **uncommitted**. Nothing has been pushed. |
-| Commit | **Not done yet, deliberately.** This session built and adversarially verified all 14 tasks but did not commit or merge — needs Khalil's explicit go-ahead per this project's git workflow (branch per step, review before merge). |
-| Tests | `make test`, `make vet`, and `make test-integration` (all three services' harnesses, including 12 new backtesting-store tests) all green. |
-| Dev database | `users=20`, `accounts=20`, every trading and backtesting table empty again — the two throwaway accounts (`step16review`, `step16stranger`) used for manual verification were deleted afterward. Migration `007_backtests` is applied. |
-| Local processes | The gateway and backtesting service that were started for manual verification were killed at the end of this session. `auth`, `market-data`, and `trading-engine` were already running from earlier in the day and were left as they were — check with `lsof -i :8080-8084` before assuming any port's state. |
+| Branch | `step17-backtesting-frontend` — checked out, working tree has all of Step 17's changes **uncommitted**. Nothing has been pushed. |
+| Commit | **Not done yet, deliberately.** This session built and manually verified all 14 tasks in a real browser but did not commit or merge — needs Khalil's explicit go-ahead per this project's git workflow (branch per step, review before merge). |
+| Tests | `npm run lint`, `npm run build`, and `npm run test` (39 tests: 17 from Step 15 plus 22 new) all green. Backend `make test`, `make vet`, and `make test-integration` (all three services' harnesses) also re-run clean — this branch ended up touching one backend file, see below. |
+| Dev database | `users=20`, `accounts=20`, `backtests=0`, `backtest_trades=0` — three throwaway accounts across two verification rounds (`step17review`, `step17stranger`, `step17verify`) were deleted afterward, backtests first (`backtests.user_id` has no `ON DELETE CASCADE`, unlike `backtest_trades`). |
+| Local processes | The `gateway` and `backtesting` processes started for this session's browser verification were killed at the end. `auth`, `market-data`, and `trading-engine` were already running from earlier in the day and were left as they were — check with `lsof -i :8080-8084` before assuming any port's state. The frontend dev server (`vite`, port 5173) was already running and picked up every change live via HMR — it was left running too. |
 
-`docs/archive/phase2-step16-backtesting-engine/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo — moved there (plain `mv`, not `git mv`, since `SPEC.md` was never committed on this branch to begin with; staged as new files either way) the same way Step 14/15's were.
+`docs/archive/phase3-step17-backtesting-frontend/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo — moved there (plain `mv`, not `git mv`, since none of the three were ever committed on this branch to begin with) the same way Step 16's were.
 
 ### Before committing: review the diff
 
 Nothing in `git status` has been committed. The next session (or Khalil, right now) should:
 
-1. `git status` / `git diff` to see everything this session touched — the new `services/backtesting/` module in full, migration `007_backtests.{up,down}.sql`, edits to `go.work`, `services/gateway/{internal/handler/router.go,cmd/server/main.go,internal/handler/router_test.go}`, `Makefile`, `.env.example`, the new `PHASE3_CHECKLIST.md`, the `PHASE2_CHECKLIST.md` Phase-2-complete note, `docs/deferred-tuning.md` §11, the archived spec/plan/todo, and this file.
-2. Decide on commit granularity (one commit per task, matching Steps 14–15's convention, or fewer) and write the commits.
-3. Merge `step16-backtesting-engine` to `main`, delete the branch locally and on the remote, matching Steps 14–15's close-out.
+1. `git status` / `git diff` to see everything this session touched — the new `frontend/src/backtesting/` directory in full, edits to `frontend/src/{api/{client.ts,types.ts},format.ts,format.test.ts,market/Dashboard.tsx}`, one backend fix (`services/backtesting/internal/service/{simulate.go,simulate_test.go}` — a real bug this step's own adversarial testing found, not scope creep; see below), the archived spec/plan/todo, `PHASE3_CHECKLIST.md`'s Step 17 entry, and this file.
+2. Decide on commit granularity (one commit per task, matching Steps 14–16's convention, or fewer) and write the commits.
+3. Merge `step17-backtesting-frontend` to `main`, delete the branch locally and on the remote, matching Steps 14–16's close-out.
 
 ---
 
-## What Step 16 shipped
+## What Step 17 shipped
 
-A fifth Go service, `services/backtesting`, the first system in Phase 3. `POST /backtests` runs a moving-average-crossover strategy against `market-data`'s existing historical daily bars: `GenerateSignals` finds crossings, `Simulate` fills them at the *next* bar's open (avoiding lookahead bias) with all-in long-only sizing, and `ComputeMetrics` derives the five `agents.md` §3 metrics (total return, Sharpe, max drawdown, win rate, profit factor). The run and its simulated trade log persist to two new tables (`backtests`, `backtest_trades`, migration 007) and are readable via `GET /backtests` and `GET /backtests/{id}`, both scoped to the caller. Gateway got a fourth proxied prefix.
+The backtesting engine's frontend — Step 16 shipped the API, deliberately with no UI (`docs/archive/phase2-step16-backtesting-engine/SPEC.md` §1 non-goals). A fifth `Dashboard.tsx` tab (`'backtest'`), holding a strategy-config form (symbol, MA windows, date range, starting capital) with client-side validation mirroring the backend's exact bounds, a synchronous result view built directly from `POST /backtests`'s own response (no extra round trip, since the backend already returns the full trade log), and a persistent run-history sidebar that reopens any past run via `GET /backtests/{id}`. No new frontend dependencies — `vitest` was already in place from Step 15.
 
-**Backend only**, mirroring the Step 14 → 15 split — the frontend is a later step.
+**This closes the Step 14→15 / Step 16→17 pattern for the second time** — both of Phase 2 and Phase 3's backend systems now have a working UI, not just a tested API.
 
-`services/backtesting/integration/` is the third copy of the auth/trading-engine Postgres integration harness — `docs/TESTING_STRUCTURE.md` §6a's extraction trigger has now fired, recorded with its own reasoning in `docs/deferred-tuning.md` §11. The extraction itself was deliberately deferred to its own change rather than bundled in here.
+### Verified live in a browser, not just against curl
 
-### A real routing bug the build caught before it shipped
+Every rejection path (`symbol_unavailable`, `date_range_unavailable`), the `profit_factor: null` rendering rule, history reopening, and cross-user isolation were driven through the actual dashboard with `claude-in-chrome`, against real ingested AAPL history — not asserted from API responses alone. Full writeup in `PHASE3_CHECKLIST.md`'s Step 17 entry.
 
-`trading-engine` has no bare `/trading` endpoint, so the gateway's original `/trading/*`-only wildcard was always sufficient. `backtesting` *does* have one — `POST`/`GET /backtests` is the collection route itself — and chi's `/backtests/*` wildcard alone does not match a request with no trailing segment. Caught by both the gateway's own routing test and a live `curl` (a 401 instead of reaching the backend) before the fix — adding `r.Handle("/backtests", backtestingProxy)` alongside the wildcard — went in. Full writeup in `PHASE3_CHECKLIST.md`'s Step 16 entry.
+### Two real bugs the browser pass found, one of them backend
 
-### A real test gap the mutation-testing pass found
+1. **A backend crash bug**: `Simulate` built its trade log as a nil slice (`var trades []TradeRecord`), which every existing `len()`-based test missed but `encoding/json` did not — a nil slice marshals as `null`, not `[]`. Any zero-trade run sent `"trades": null`, and `TradeLogTable.tsx`'s unconditional `.length` access crashed the whole dashboard to a blank screen. This is the one backend file this "frontend-only" step ended up touching (`services/backtesting/internal/service/simulate.go`) — fixed at the source (`trades := []TradeRecord{}`), not worked around in the frontend, matching the "list responses are never null" rule this project already enforces everywhere else.
+2. **A timezone rendering bug**: `start_date`/`end_date`/`bar_timestamp` are calendar dates with no meaningful time-of-day, but were rendered with a bare `toLocaleDateString()`, which converts through the *viewer's* local timezone — `2024-08-01T00:00:00Z` read as `7/31/2024` on this US-Eastern dev machine. Fixed with a shared `formatDate` in `frontend/src/format.ts` that renders with `{timeZone: 'UTC'}`.
 
-Removing `GenerateSignals`' `haveState` guard (so the very first eligible bar could fire a false signal) was **not caught** by the original crossover test, because that series happened to start with the short and long MAs exactly tied. A new test using a monotonically increasing series — already above on bar one, nothing to "cross" from — closed the gap; the same mutation is caught by it. Full writeup in `PHASE3_CHECKLIST.md`.
+Both were caught by actually looking at the rendered page during manual verification, not by the unit test suite — full writeup with the exact regression tests added for each in `PHASE3_CHECKLIST.md`'s Step 17 entry.
 
 ---
 
 ## What to do next
 
-**1. Commit and merge Step 16** (see above) — this is the immediate next action, not a new step.
+**1. Commit and merge Step 17** (see above) — this is the immediate next action, not a new step.
 
-**2. Step 17: the backtesting frontend**, mirroring Step 14 → 15's split — a strategy-config form, a results view (metrics + trade log), and a run history list, all against the four `/backtests/*` endpoints Step 16 just shipped. Recommended next, since it's the same shape of work Step 15 already proved out against `/trading/*`.
+**2. RSI/MACD strategies** are now the natural next extension — Step 16's SPEC.md and Step 17's own non-goals both deferred them until a frontend existed to drive a strategy picker, and that frontend now exists.
 
-**3. RSI/MACD strategies** are the next natural extension of the backtesting engine itself once the frontend exists to exercise them, but are lower priority than the frontend — a second and third strategy behind a UI nobody can drive yet doesn't add resume-visible value.
+**3. Multi-symbol / portfolio-level backtests** remain a materially bigger lift (correlation, cross-symbol position sizing) than a small extension — lower priority than RSI/MACD.
 
 **4. The two long-standing small items**, both still open and both still lower priority:
 
-- `market-data`'s store has no tests (`historical_price_store.go`). The integration harness now exists in **three** copies (not two); a fourth use is the point to actually extract to `pkg/testutil/` — see `docs/deferred-tuning.md` §11 and `docs/TESTING_STRUCTURE.md` §6a.
+- `market-data`'s store has no tests (`historical_price_store.go`). The integration harness exists in **three** copies (auth, trading-engine, backtesting); a fourth use is the point to actually extract to `pkg/testutil/` — see `docs/deferred-tuning.md` §11 and `docs/TESTING_STRUCTURE.md` §6a.
 - Pre-existing `gofmt` drift in `services/auth/internal/service/{interfaces.go,types.go}`, untouched since Step 11. Worth a one-line cleanup commit before any `fmt` check lands in CI.
 
 **5. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
@@ -94,46 +95,28 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
   "SELECT count(*) FROM users"     # 20, as of this session
 ```
 
-**A `go run` service started before a code change keeps serving the old binary.** This session had to kill and restart a gateway process left running from earlier in the day, predating the `/backtests` proxy wiring. Kill the whole `make run-*` / `go run` process tree and restart rather than assuming a long-running dev process reflects the code currently on disk.
+**`backtests.user_id` has no `ON DELETE CASCADE`, unlike `backtest_trades.backtest_id`.** Deleting a throwaway user who has run any backtests fails with a foreign-key violation unless their `backtests` rows are deleted first. `backtest_trades` cascades fine from `backtests` — it's only the `users → backtests` edge that needs the extra step.
 
-**A gateway wildcard route (`/prefix/*`) does not match the bare prefix with no trailing segment.** This is what the Step 16 routing bug above was. If a new backend service has a collection endpoint at its own root (no sub-path, unlike `trading-engine`'s `/trading/orders` etc.), the gateway needs both `r.Handle("/prefix", proxy)` and `r.Handle("/prefix/*", proxy)`.
+**A `go run` service started before a code change keeps serving the old binary.** Kill the whole `make run-*` / `go run` process tree and restart rather than assuming a long-running dev process reflects the code currently on disk. The frontend's `vite` dev server is the exception — it has HMR and picks up changes live, so it doesn't need restarting between edits the way the Go services do.
 
-**Money is `float64` in Go and `NUMERIC(20,4)` in Postgres, and Postgres is the authority.** Read money as `::text` in tests — scanning straight into a `float64` lets a value that lost precision on the way in come back looking exactly like the number you expected. `docs/deferred-tuning.md` §10 has the measured numbers and the trigger for fixing it properly. Backtesting's `POST /backtests` response echoes the raw Go-computed float (not yet round-tripped through Postgres), while `GET /backtests`/`GET /backtests/{id}` show what Postgres actually stored — the two can differ in trailing digits, and that's expected, not a bug.
+**A gateway wildcard route (`/prefix/*`) does not match the bare prefix with no trailing segment.** This was Step 16's routing bug. If a new backend service has a collection endpoint at its own root (no sub-path, unlike `trading-engine`'s `/trading/orders` etc.), the gateway needs both `r.Handle("/prefix", proxy)` and `r.Handle("/prefix/*", proxy)`.
 
-**Order quantities have a floor of `0.0001` in `trading-engine`, and it is load-bearing.** Do not relax that check without reading `PHASE2_CHECKLIST.md` Step 14 first. `backtesting`'s simulator has no equivalent floor — it computes `cash / price` directly for an all-in fill, since a hypothetical backtest quantity has no ledger tick to respect the way a real paper-traded position does.
+**The integration harness now exists in three copies** (`services/{auth,trading-engine,backtesting}/integration/`), not extracted to `pkg/testutil/` yet — see `docs/deferred-tuning.md` §11 for why, and what should trigger doing it for real.
 
-**Backtesting's fills happen at the *next* bar's open, one bar after the signal.** This is deliberate (SPEC.md Step 16 §2.4, avoiding lookahead bias), not a bug — a signal on a bar's own close cannot be "traded" until the following bar opens. The very last bar in any range can never produce a fill for exactly this reason.
+**A nil Go slice and an empty one are `len()`-identical but `encoding/json`-different.** `var s []T` marshals as `null`; `s := []T{}` marshals as `[]`. Every list-shaped response field needs the latter, deliberately, even when every existing test only ever checks `len(s)` — that check cannot tell the two apart. This is what Step 17's `Simulate` bug (above) was.
 
-**The write path fails closed; the read path fails open** — true of `trading-engine` since Step 14, and now equally true of `backtesting`'s history fetch: an unreachable `market-data` fails the whole backtest request (`502 upstream_unavailable`), it never runs on partial or stale data.
-
-**`migrate` lives at `~/go/bin/migrate` and is not on a non-interactive shell's PATH.** Use `make migrate-up` from an interactive shell, or the full path. The integration harness execs the `.up.sql` files directly instead — `docs/deferred-tuning.md` §7.
-
-**A failed migration leaves the schema dirty.** Recovery is `make migrate-force VERSION=<n>` at the last good version, then fix the cause and re-run. Dev database only — the test database is recreated from scratch every run.
-
-**Restart a service after changing its code.** Everything runs under `go run`, so a live instance keeps serving the old binary. Killing the `go run` wrapper alone may not release the port — check `lsof -i :<port>` and kill the actual server binary too if it's still held.
-
-**A green `go test ./...` says nothing about Redis or Postgres.** `make test-integration` covers both, on independent skip paths. `make vet` includes a `-tags=integration` pass so a tagged suite cannot rot invisibly.
-
-**The integration harness now exists in three copies** (`services/auth/integration/`, `services/trading-engine/integration/`, `services/backtesting/integration/`). The guard machinery is byte-identical on purpose. **Change one, change all three, and `diff` them** — `docs/TESTING_STRUCTURE.md` §6a and `docs/deferred-tuning.md` §11 explain why it was copied a third time rather than extracted, and what triggers actually doing that now.
-
-**Rate-limit counters are per-process.** Correct while one gateway runs; a second instance doubles the effective limit — `docs/deferred-tuning.md` §4–§5.
-
-**`gofmt` reports drift in `services/auth/internal/service/interfaces.go` and `types.go`.** Pre-existing, deliberately left alone since Step 11.
+**`toLocaleDateString()` with no `timeZone` option uses the *browser's* local zone, not UTC.** Any value that's a calendar date rather than a real instant (a form's `start_date`/`end_date`, a daily bar's `bar_timestamp`) needs `{timeZone: 'UTC'}` passed explicitly, or it can render a day off depending on where the browser sits relative to UTC. `frontend/src/format.ts`'s `formatDate` is the one place in this app that does this correctly — reuse it rather than calling `toLocaleDateString()` directly on a calendar-date field.
 
 ---
 
 ## Where things are written down
 
-| | |
+| Topic | File |
 |---|---|
-| `agents.md` | master context, working agreement, architecture |
-| `PHASE1_CHECKLIST.md` | Phase 1, all 9 steps + Step 10 — **closed** |
-| `PHASE2_CHECKLIST.md` | Phase 2, Steps 11–15 — **closed** |
-| `PHASE3_CHECKLIST.md` | Phase 3 — Step 16 written up, including its review findings |
-| `SPEC.md` | the current step's spec — **Step 16's is archived; there is no active spec until Step 17 is drafted** |
-| `tasks/plan.md`, `tasks/todo.md` | archived with Step 16; recreated when the next step is planned |
-| `docs/TESTING_STRUCTURE.md` | test layout; §6a is the integration-test guide |
-| `docs/security-backlog.md` | 8 known gaps — items 1, 2 and 4 **closed**; item 8 cheapest next, item 3 the next substantive one |
-| `docs/deferred-tuning.md` | deferred decisions with triggers; §11 is Step 16's |
-| `docs/archive/phase*/` | every completed step's spec, plan, and todo |
-| `docs/intent/quantsim-resume.md` | why the workflow changed in July 2026 |
+| Phase 1 (auth + market data) | `docs/archive/phase1-step4-auth/` through Step 7's archive |
+| Phase 2 (trading engine) — complete | `PHASE2_CHECKLIST.md`, archived specs `docs/archive/phase2-step*` |
+| Phase 3 (backtesting engine) — in progress | `PHASE3_CHECKLIST.md`, archived specs `docs/archive/phase3-step*` |
+| Deferred tuning / known trade-offs | `docs/deferred-tuning.md` |
+| Testing conventions | `docs/TESTING_STRUCTURE.md` |
+| Security backlog | `docs/security-backlog.md` |
+| Roadmap / phase definitions | `agents.md` |
