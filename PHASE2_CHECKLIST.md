@@ -555,6 +555,158 @@ and the gateway, migrations at version 6.
 
 ---
 
+## Step 15: Trading Frontend
+
+Wires the four `/trading/*` endpoints Step 14 shipped into the existing
+dashboard — a typed wire layer, two polling/refetch hooks, and five new
+components (order ticket, positions table, order history, portfolio
+summary, and a shared null-safety helper), landing inside
+`frontend/src/market/Dashboard.tsx`'s existing shell. Frontend only, no
+backend change (`SPEC.md` §1 non-goals). First frontend step with automated
+tests — `vitest` + `@testing-library/react`, scoped to the units holding
+real logic.
+
+- [x] Spec drafted and reviewed — ten design decisions resolved, all as
+      recommended (`SPEC.md` §8)
+- [x] Plan (`tasks/plan.md`) — 13 tasks across 4 phases, 3 checkpoints
+- [x] `vitest` + Testing Library scaffolded; test files excluded from
+      `tsc -b`
+- [x] Wire types and `api.placeOrder/orders/positions/portfolio`, mirrored
+      field-for-field against `services/trading-engine/internal/service/types.go`
+- [x] Shared `frontend/src/format.ts` (`formatPrice`, `formatQuantity`);
+      `PriceList.tsx` migrated onto it
+- [x] `rejection-reason.ts` — four persisted rejection codes mapped to
+      readable copy, `invalid_request` deliberately excluded (§2.6)
+- [x] `usePortfolio` (15s poll) / `useOrders` (fetch-once), both with
+      `refetch()` and a request-id guard against a poll tick and a refetch
+      racing each other
+- [x] `position-display.ts` — the null-price/null-P&L rule (§2.5) as one
+      tested pure function, not reimplemented per component
+- [x] `PositionsTable`, `PortfolioSummary`, `OrdersTable`, `OrderTicket` —
+      the four new trading components
+- [x] `Dashboard.tsx` wired: three-column layout, tabbed
+      Chart/Positions/Orders/Portfolio panel, order ticket pinned across
+      every tab, header balance
+- [x] Adversarial manual pass found and fixed a real bug — see below
+
+**Completed 2026-08-18.** Spec, plan and todo archived to
+`docs/archive/phase2-step15-trading-frontend/`.
+
+### The bug the adversarial pass found
+
+`OrderTicket`'s `<input type="number" min={MIN_QUANTITY} max={MAX_QUANTITY}>`
+sits inside a `<form>`. Submitting an out-of-range value (e.g. `0`) lets the
+browser's own HTML5 constraint validation silently block the submit *before*
+`handleSubmit` ever runs — no network request, but also no re-render, so
+whatever error text happened to be on screen from a **previous** rejection
+(a stale `insufficient_position` message, in the run that caught it) stayed
+up, now describing the wrong thing entirely. `npm run build`/`lint`/`test`
+all stayed green through this the whole time — it only showed up driving
+the real form through a real browser, exactly the posture
+`docs/NEXT_SESSION.md` and this project's own review convention insist on.
+Fixed with `noValidate` on the `<form>`: the same bounds are still enforced,
+just entirely by `validateQuantity` (already correct, already tested by the
+other three cases), so there is exactly one place quantity errors get
+decided and rendered instead of two disagreeing ones.
+
+### Verification
+
+**Adversarial, against the full stack running** (auth, market-data,
+gateway, trading-engine, and the Vite dev server, all on their normal
+ports) through a real browser, one throwaway account
+(`step15manual`, deleted afterward):
+
+- **Buy then sell, same interaction** — 10 AAPL bought, balance/position/
+  order all updated with no refresh and no wait for the next poll tick;
+  5 AAPL sold, same immediacy, confirmed from three different tabs
+  (Positions, Orders, Portfolio) including the header balance figure
+- **All four rejection reasons**, each rendering distinct, readable copy in
+  both the order ticket and `OrdersTable`'s history: an oversized buy
+  (`insufficient_balance`), an oversized sell (`insufficient_position`),
+  and `market-data` stopped mid-session for a buy attempt
+  (`upstream_unavailable`). `symbol_unavailable` was not reproducible
+  through the running UI — the watchlist is a fixed, fully-cached
+  seven-symbol list, so there is no symbol reachable through the actual
+  form that the backend would refuse to price; this is a gap in what the
+  *manual* pass could exercise, not a claim the code path is untested (it's
+  covered by the handler's own table-driven test)
+- **Client-side quantity validation** — `0`, `-5`, and `0.00001` (below the
+  `0.0001` floor) all confirmed via the Network tab to never reach the
+  gateway. This is the pass that found the bug above: `0` specifically
+  didn't reach the network *or* update the error text, until the
+  `noValidate` fix
+- **`market-data` killed mid-session**: Positions showed em-dashes (not
+  `$0.00`) for price and P/L on the existing position, Portfolio's muted
+  "N position(s) valued at cost" note appeared with the correct count, and
+  a buy attempt failed with the `upstream_unavailable` copy — all three in
+  the same session. Restarting `market-data` and waiting one poll tick
+  cleared the em-dashes and the muted note without a page refresh
+- **Responsive layout** — below the `lg` breakpoint the three sections
+  stacked watchlist → tab content → order ticket, matching the plan's
+  acceptance criterion; above it, the three-column layout rendered with the
+  order ticket pinned in the third column
+- **Tab-switch mid-typing** — `42.5` typed into the quantity field survived
+  two tab switches (Chart → Positions) unchanged, confirming `OrderTicket`
+  lives outside the tab-conditional render as designed
+
+`npm run build`, `npm run lint` (three pre-existing, non-blocking
+`react-hooks/exhaustive-deps` warnings — one inherited from `use-prices.ts`,
+two new ones on the same ref-in-cleanup pattern in the two new hooks,
+neither failing the command), and `npm run test` (17 tests) all green on
+the final commit. Dev database returned to `users=20, accounts=20,
+orders=0, trades=0, positions=0` after the throwaway account was deleted.
+
+### Second pass: code review plus mutation-tested the test suite
+
+Before committing, a `/code-review high` pass over the full diff found four
+more issues, all fixed and re-verified:
+
+- **No reentrancy guard in `OrderTicket.handleSubmit`.** The submit
+  button's `disabled={submitting}` only takes effect once React commits a
+  re-render; a fast double-click or double Enter could fire two submits
+  before that happens. Fixed with a synchronous `if (submitting) return` at
+  the top of the handler, then confirmed live: a double-click on the real
+  form in a real browser produces exactly one order in history, not two.
+  (The pre-fix race wasn't separately reproduced — the guard closes an
+  obviously real gap regardless, and the post-fix check is the one that
+  matters.)
+- **Stale quantity and error text on a symbol switch.** Typing `500` for
+  AAPL, getting `insufficient_balance`, then switching the watchlist
+  selection to MSFT left both the `500` and the AAPL-specific error
+  visible under MSFT's header — misleading, and a real risk of an
+  unintended large order carried over to the wrong symbol. Fixed with a
+  `useEffect` keyed on `symbol` that clears `quantity` and `error` (not
+  `side`, which is deliberately symbol-agnostic per §2.8). Reproduced
+  before the fix and confirmed clean after it, live in the browser.
+- **`tsconfig.app.json`'s test-file `exclude` (added in Task 1) was
+  unnecessary** and quietly turned off type-checking for every `*.test.ts`
+  file — verified by running `tsc` against the same config with the
+  exclude removed, which compiled clean with zero errors. Removed
+  entirely; `npm run build` still passes and test files are type-checked
+  again.
+- **The four rejection codes were hardcoded a second time** in
+  `OrderTicket`'s live-submit error handling, duplicating
+  `rejection-reason.ts`'s own list. `isKnownReason` was exported as
+  `isRejectionReason` and `OrderTicket` now calls it instead of repeating
+  the four strings — one list instead of two that could drift apart.
+
+**Mutation-tested the three new test files** to confirm they're a real
+safety net, not decoration — the same posture `docs/NEXT_SESSION.md`
+insists on for UI verification, applied to the tests themselves: reverted
+`position-display.ts`'s null-check to also require `unrealized_pl !== 0`
+(reintroducing the exact "0 reads as flat" class of bug this file exists
+to prevent) and the test suite failed immediately; duplicated one of
+`rejection-reason.ts`'s four descriptions and the distinctness test caught
+it; loosened `formatQuantity`'s trailing-zero trim and both affected tests
+failed. All three mutations reverted afterward with a clean diff.
+
+Full suite re-verified after every fix: `npm run build`/`lint`/`test`
+green, `make test`/`make vet` green (untouched, confirming no backend
+regression), dev database back to baseline after a second throwaway
+account (`step15review`) used to verify the two behavioral fixes live.
+
+---
+
 ## Still open
 
 - [ ] **market-data's store has the same gap** — `historical_price_store.go`
