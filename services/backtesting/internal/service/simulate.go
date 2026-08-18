@@ -18,7 +18,14 @@ package service
 func Simulate(bars []Bar, signals []Signal, startingCapital float64) SimulationResult {
 	cash := startingCapital
 	var quantity, avgCost float64
-	var trades []TradeRecord
+	// Non-nil even with zero trades: BacktestDetail.Trades is a JSON array
+	// field, and a nil slice marshals as `null`, not `[]` -- the exact
+	// nil-vs-empty distinction ListBacktests' handler already guards
+	// against for the list endpoint. GetBacktest's store path already
+	// starts from `[]service.TradeRecord{}` for the same reason; this is
+	// the one place that didn't, reachable whenever a run's date range is
+	// too short for GenerateSignals to fire even once.
+	trades := []TradeRecord{}
 	equity := make([]float64, len(bars))
 
 	for i, bar := range bars {

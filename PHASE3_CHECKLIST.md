@@ -142,15 +142,155 @@ were deleted.
 
 ---
 
+## Step 17: Backtesting Frontend
+
+Wired all three `/backtests/*` endpoints Step 16 shipped into the existing
+dashboard — mirrors the Step 14 → 15 split completing itself a second time.
+A fifth `Dashboard.tsx` tab (`'backtest'`), not a new page: a strategy-config
+form (symbol, MA windows, date range, starting capital) with client-side
+validation mirroring `validateRequest`'s exact bounds, a synchronous result
+view (five metrics + trade log) built from `POST /backtests`'s own response
+body — no extra round trip — and a persistent run-history sidebar that
+reopens any past run via `GET /backtests/{id}`. No new frontend
+dependencies; `vitest` was already in place from Step 15.
+
+- [x] Spec drafted and reviewed — every field/error mapping was fully
+      determined by Step 16's already-shipped API, so this spec carried no
+      blocking open questions, unlike Step 16's three (`SPEC.md` "Open
+      questions")
+- [x] Plan (`tasks/plan.md`) — 14 tasks
+- [x] Wire types (`api/types.ts`) — `Backtest`, `BacktestDetail`,
+      `TradeRecord`, `Metrics`, mirroring
+      `services/backtesting/internal/service/types.go` field-for-field
+- [x] `api/client.ts` — `runBacktest`, `backtests`, `backtest(id)`
+- [x] `use-backtests.ts` — fetch-on-mount + `refetch()`, no polling, same
+      shape as Step 15's `use-orders.ts` and the same reasoning: nothing
+      outside this session creates a backtest for this account
+- [x] `backtest-validation.ts` — client-side mirror of `validateRequest`'s
+      bounds (`short_window≥2`, `long_window` in `(short_window,500]`,
+      dates, `starting_capital>0`), pure function, unit tested per boundary
+- [x] `backtest-errors.ts` — five error codes mapped; `invalid_request`
+      passed through verbatim rather than replaced with static copy, since
+      backtesting's own validation messages are already specific and safe
+      (a deliberate deviation from Step 15's `rejection-reason.ts`
+      precedent, not an oversight)
+- [x] `MetricsGrid.tsx` — `profit_factor: null` renders as "—" with a
+      "no losing trades" note, never `0`/`∞`; `total_return_pct`/
+      `sharpe_ratio` sign-colored, `max_drawdown_pct` left neutral since the
+      backend only ever returns a non-negative value
+- [x] `TradeLogTable.tsx`, `BacktestResult.tsx`, `BacktestForm.tsx`,
+      `BacktestHistoryList.tsx`, `BacktestPanel.tsx` — composition layer,
+      reusing `format.ts`'s `formatPrice`/`formatQuantity` and the existing
+      up/down/em-dash P/L convention rather than inventing new formatting
+- [x] `Dashboard.tsx` — `'backtest'` added as a fifth tab; `OrderTicket`
+      stays pinned across it unchanged, same as every other tab
+- [x] Manual adversarial pass against the real stack and real ingested AAPL
+      history, in a browser — found two real bugs, see below
+- [x] `npm run lint`, `npm run build`, `npm run test` (39 tests: 17 from
+      Step 15 plus 22 new) all clean; backend `make test`, `make vet`,
+      `make test-integration` re-run clean after the one backend fix this
+      step's own testing required (see below)
+
+**Completed 2026-08-18.** Spec, plan and todo archived to
+`docs/archive/phase3-step17-backtesting-frontend/`.
+
+### A real backend bug the frontend surfaced: `Trades` marshaling as `null`
+
+`Simulate` (`services/backtesting/internal/service/simulate.go`) built its
+trade log as `var trades []TradeRecord` — a nil slice until the first
+`append`. `len()` treats a nil and an empty slice identically, so every
+existing `Simulate`/`RunBacktest` test (all of which assert on `len(...)`)
+stayed green with this in place. `encoding/json` does not: a nil slice
+marshals as `null`, not `[]`. Any run whose date range gave
+`GenerateSignals` no room to fire even once — the exact "no losing trades"
+zero-trade case this step's own manual pass went looking for on purpose —
+sent `"trades": null` over the wire. `TradeLogTable.tsx` calls `trades.length`
+unconditionally, so the frontend crashed with a blank screen (a real,
+reproduced-twice `TypeError`, caught via `read_console_messages`, not a
+theoretical concern). `GetBacktest`'s store path already built from
+`[]service.TradeRecord{}` and `ListBacktests`' handler already guarded nil
+before marshaling — `Simulate` was the one place in the whole backend that
+didn't follow the "list responses are never null" rule this project already
+applies everywhere else. Fixed with a one-line change (`trades :=
+[]TradeRecord{}`) plus a new regression test,
+`TestSimulate_TradesIsNeverNilEvenWithZeroTrades`, which encodes the result
+with `encoding/json` and asserts the literal bytes `[]` — confirmed it fails
+against the pre-fix code and passes against the fix, then re-verified live:
+a fresh zero-trade `POST /backtests` now returns `"trades": []` and renders
+"No trades were simulated for this run." with no crash.
+
+### A real rendering bug: calendar dates shifting a day backward
+
+`BacktestResult.tsx`, `BacktestHistoryList.tsx`, and `TradeLogTable.tsx` all
+formatted `start_date`/`end_date`/`bar_timestamp` with a bare
+`new Date(...).toLocaleDateString()`. Those three fields are calendar dates
+with no meaningful time-of-day (the backend's own `dateLayout` comment says
+so), encoded as UTC midnight on the wire (`2024-08-01T00:00:00Z`).
+`toLocaleDateString()` with no `timeZone` option renders in the *viewer's*
+local zone, which for anyone west of UTC (this dev machine: US Eastern,
+UTC-4) reads that exact value as the *previous* day — `7/31/2024` for a
+form input of `08/01/2024`. Caught by directly comparing what was typed
+into the form against what the result view echoed back during this step's
+own manual verification, not by any of the unit tests (§2.10 scoped tests
+to validation/error-mapping, not rendering). Fixed by adding a shared
+`formatDate` to `frontend/src/format.ts` that renders with
+`{timeZone: 'UTC'}`, used by all three call sites; two new tests pin the
+exact UTC-midnight and non-UTC-offset cases and were confirmed to fail
+against the pre-fix `toLocaleDateString()` call before the fix went in.
+
+### Verification
+
+**Manual browser pass**, full stack running (auth, market-data,
+trading-engine already up from earlier in the session; a fresh gateway and
+`backtesting` started to pick up Step 16's code), two rounds of throwaway
+accounts (the first round, `step17review`/`step17stranger`, found the two
+bugs above; a second round after both fixes re-verified every scenario
+against the corrected code), against real ingested AAPL history:
+
+- **Golden path**: a 5/20 crossover over AAPL's full ~2-year range ran
+  end-to-end in the browser — metrics grid, trade log (buy rows showing an
+  em-dash P/L, sell rows colored), and the new run appearing in history
+  immediately, all without a page reload
+- **`profit_factor: null` with trades**: a narrow date range with only
+  winning trades (a 2/3 crossover over one month) rendered "—" with a
+  "no losing trades" note next to it, confirmed against the raw API response
+  (`"profit_factor": null`) rather than assumed from the UI alone
+- **Zero trades at all**: a date range too short for `GenerateSignals` to
+  fire (one month against a 5/20 crossover) — the exact case that found the
+  `null`-marshaling bug above — re-run after the fix and confirmed
+  `"trades": []` on the wire and "No trades were simulated for this run."
+  rendered with no crash, three separate times including a fresh `POST`
+- **`symbol_unavailable`**: an unignested symbol (`ZZZZ`) produced "No
+  historical data is available for that symbol." inline, no history row
+  created
+- **`date_range_unavailable`**: a valid symbol with dates entirely before
+  AAPL's ingested range (Jan–Jun 2020, ingestion starts 2024-07-30) produced
+  "No historical data is available in the requested date range."
+- **Reopening history**: clicking an older run in the sidebar reloaded it
+  via `GET /backtests/{id}` and rendered identically to what was originally
+  shown, with the row highlighted as selected
+- **Cross-user isolation**: `step17stranger`'s history list showed "No
+  backtests run yet." — confirms scoping holds in the browser, not just in
+  Step 16's store-level integration test
+
+Dev database returned to `users=20, accounts=20, backtests=0,
+backtest_trades=0` after all three throwaway accounts across both rounds
+(and the backtests they owned — `backtests.user_id` has no
+`ON DELETE CASCADE`, so those had to be deleted explicitly before the
+users) were removed. The `gateway` and
+`backtesting` processes started for this session's verification were killed
+afterward; `auth`/`market-data`/`trading-engine` were left running as they
+were untouched by this step.
+
+---
+
 ## Still open
 
-- [ ] **Frontend for `/backtests/*`.** Step 16 is backend only, mirroring
-      the Step 14 → 15 split — an order ticket-equivalent (strategy config
-      form), a results view (metrics + trade log), and a run history list
-      are all unbuilt.
 - [ ] **RSI and MACD strategies**, `agents.md` §3's other two named
-      examples. `SPEC.md` (Step 16) §1 scoped these out deliberately —
-      mechanical once the crossover pipeline exists, but not built yet.
+      examples. `SPEC.md` (Step 16) §1 scoped these out deliberately, and
+      Step 17's own non-goals reaffirmed it — now that a frontend exists to
+      drive a strategy picker, this is the natural next extension rather
+      than dead weight behind a UI nobody could use yet.
 - [ ] **Multi-symbol / portfolio-level backtests.** One symbol per run today
       (`SPEC.md` §1 Non-goals) — a materially different simulator
       (correlation, cross-symbol position sizing), not a small extension.

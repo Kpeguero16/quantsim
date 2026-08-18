@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -114,6 +115,37 @@ func TestSimulate_SellSignalWhileFlatIsANoOp(t *testing.T) {
 	}
 	if !approxEqual(result.FinalEquity, 1000) {
 		t.Errorf("final equity = %v, want 1000 (cash untouched)", result.FinalEquity)
+	}
+}
+
+// TestSimulate_TradesIsNeverNilEvenWithZeroTrades guards a real bug this
+// suite's own len()-only assertions above didn't catch: a `var trades
+// []TradeRecord` (nil until the first append) is indistinguishable from an
+// empty slice by len(), but not by encoding/json -- a nil slice marshals as
+// `null`, an empty one as `[]`. BacktestDetail.Trades is a JSON array field
+// on the wire (services/backtesting/internal/service/types.go), and the
+// frontend's TradeLogTable calls `.length` on it unconditionally, matching
+// the same "list responses are never null" rule ListBacktests' handler
+// already enforces for the collection endpoint and GetBacktest's store path
+// already enforces by starting from `[]service.TradeRecord{}`. This is the
+// one place that didn't, reachable whenever a run's date range has no room
+// for GenerateSignals to fire even once.
+func TestSimulate_TradesIsNeverNilEvenWithZeroTrades(t *testing.T) {
+	bars := openCloseBars([][2]float64{{100, 101}, {102, 103}})
+	signals := []Signal{SignalNone, SignalNone}
+
+	result := Simulate(bars, signals, 1000)
+
+	if result.Trades == nil {
+		t.Fatal("Trades is nil; it must be a non-nil empty slice so it marshals as [] rather than null")
+	}
+
+	encoded, err := json.Marshal(result.Trades)
+	if err != nil {
+		t.Fatalf("json.Marshal(Trades): %v", err)
+	}
+	if string(encoded) != "[]" {
+		t.Errorf("json.Marshal(Trades) = %s, want [] -- a nil slice here would break every consumer expecting an array", encoded)
 	}
 }
 

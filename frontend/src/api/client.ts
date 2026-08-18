@@ -25,6 +25,8 @@
  */
 import type {
   ApiErrorBody,
+  BacktestDetail,
+  BacktestsResponse,
   HistoryResponse,
   LoginRequest,
   MeResponse,
@@ -35,6 +37,7 @@ import type {
   Price,
   PositionsResponse,
   RegisterRequest,
+  RunBacktestRequest,
   SymbolsResponse,
   TokenPair,
 } from './types'
@@ -302,4 +305,12 @@ export const api = {
   positions: () => request<PositionsResponse>('/trading/positions'),
 
   portfolio: () => request<PortfolioResponse>('/trading/portfolio'),
+
+  runBacktest: (body: RunBacktestRequest) =>
+    request<BacktestDetail>('/backtests', { method: 'POST', body }),
+
+  backtests: () => request<BacktestsResponse>('/backtests'),
+
+  backtest: (id: string) =>
+    request<BacktestDetail>(`/backtests/${encodeURIComponent(id)}`),
 }

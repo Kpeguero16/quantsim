@@ -9,6 +9,7 @@
  *   services/auth/internal/service/types.go
  *   services/market-data/internal/service/types.go
  *   services/trading-engine/internal/service/types.go
+ *   services/backtesting/internal/service/types.go
  */
 
 /** POST /auth/register */
@@ -155,4 +156,67 @@ export interface PortfolioResponse {
   positions: Position[]
   total_equity: number
   total_unrealized_pl: number
+}
+
+/**
+ * Backtesting types, from services/backtesting/internal/service/types.go.
+ *
+ * `profit_factor` is nullable for the same reason `filled_price` etc. are
+ * above: it's a pointer on the Go side, null (not 0 or Infinity) when there
+ * are no losing trades to divide by.
+ */
+
+/** One simulated fill, part of a BacktestDetail's trade log. `realized_pl`
+ * is set only on sells. */
+export interface TradeRecord {
+  side: Side
+  bar_timestamp: string
+  price: number
+  quantity: number
+  realized_pl: number | null
+}
+
+/** The five metrics agents.md defines, computed for one backtest run. */
+export interface Metrics {
+  total_return_pct: number
+  sharpe_ratio: number
+  max_drawdown_pct: number
+  win_rate_pct: number
+  profit_factor: number | null
+}
+
+/** One persisted backtest run's parameters and metrics -- no trade log
+ * (that's BacktestDetail below). Returned by GET /backtests. */
+export interface Backtest {
+  id: string
+  symbol: string
+  short_window: number
+  long_window: number
+  start_date: string
+  end_date: string
+  starting_capital: number
+  final_equity: number
+  metrics: Metrics
+  created_at: string
+}
+
+/** GET /backtests/{id} and the response of POST /backtests. Backtest's
+ * fields plus the simulated trade log. */
+export interface BacktestDetail extends Backtest {
+  trades: TradeRecord[]
+}
+
+/** POST /backtests. start_date/end_date are YYYY-MM-DD calendar dates. */
+export interface RunBacktestRequest {
+  symbol: string
+  short_window: number
+  long_window: number
+  start_date: string
+  end_date: string
+  starting_capital: number
+}
+
+/** GET /backtests */
+export interface BacktestsResponse {
+  backtests: Backtest[]
 }

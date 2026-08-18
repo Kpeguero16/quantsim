@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import { formatPrice } from '../format'
 import BrandMark from '../BrandMark'
 import { useAuth } from '../auth/context'
+import BacktestPanel from '../backtesting/BacktestPanel'
 import OrderTicket from '../trading/OrderTicket'
 import OrdersTable from '../trading/OrdersTable'
 import PortfolioSummary from '../trading/PortfolioSummary'
@@ -27,13 +28,14 @@ import { useSymbols } from './use-symbols'
 // on every unrelated re-render (e.g. each 15s price tick).
 const NO_SYMBOLS: string[] = []
 
-type Tab = 'chart' | 'positions' | 'orders' | 'portfolio'
+type Tab = 'chart' | 'positions' | 'orders' | 'portfolio' | 'backtest'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chart', label: 'Chart' },
   { id: 'positions', label: 'Positions' },
   { id: 'orders', label: 'Orders' },
   { id: 'portfolio', label: 'Portfolio' },
+  { id: 'backtest', label: 'Backtest' },
 ]
 
 export default function Dashboard() {
@@ -165,6 +167,7 @@ export default function Dashboard() {
           {tab === 'positions' && <PositionsTable state={portfolio} />}
           {tab === 'orders' && <OrdersTable state={orders} />}
           {tab === 'portfolio' && <PortfolioSummary state={portfolio} />}
+          {tab === 'backtest' && <BacktestPanel />}
         </section>
 
         <OrderTicket

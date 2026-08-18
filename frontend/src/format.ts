@@ -25,3 +25,20 @@ export function formatQuantity(quantity: number): string {
     maximumFractionDigits: 4,
   })
 }
+
+/**
+ * Formats an RFC3339 timestamp as a calendar date, independent of the
+ * viewer's local timezone. A backtest's start_date/end_date and a daily
+ * bar's bar_timestamp have no meaningful time-of-day -- they're calendar
+ * dates encoded as midnight in some reference offset. Converting through
+ * Date's *local*-timezone rendering can shift the displayed day backward
+ * for any viewer west of that offset: `2024-08-01T00:00:00Z` reads as
+ * 7/31/2024 in US Eastern. Rendering with `timeZone: 'UTC'` instead reads
+ * off the timestamp's own calendar fields, which is stable for every
+ * value this app actually receives (UTC midnight for dates the backend
+ * parsed itself, or a US-market non-UTC offset for ingested bars -- both
+ * land on the same UTC calendar day, never the day before).
+ */
+export function formatDate(timestamp: string): string {
+  return new Date(timestamp).toLocaleDateString('en-US', { timeZone: 'UTC' })
+}
