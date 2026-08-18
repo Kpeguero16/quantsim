@@ -1,5 +1,8 @@
 # QuantSim Phase 2 — Trading Engine Checklist
 
+**Phase 2 complete as of Step 15.** Phase 3 (backtesting engine) continues
+in `PHASE3_CHECKLIST.md`, starting at Step 16.
+
 Phase 1 is complete (`PHASE1_CHECKLIST.md`). Phase 2 delivers the trading
 engine — order execution, trade storage, P/L tracking — and opens with the
 security work that Phase 2 itself makes consequential.

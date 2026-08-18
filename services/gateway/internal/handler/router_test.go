@@ -43,7 +43,7 @@ func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
 
 func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall) {
 	t.Helper()
-	gw, authCall, mdCall, _ := newGatewayBackends(t, rateLimit)
+	gw, authCall, mdCall, _, _ := newGatewayBackends(t, rateLimit)
 	return gw, authCall, mdCall
 }
 
@@ -53,16 +53,25 @@ func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (h
 // their existing call shape.
 func newTradingGateway(t *testing.T) (http.Handler, *backendCall) {
 	t.Helper()
-	gw, _, _, tradingCall := newGatewayBackends(t, noRateLimit)
+	gw, _, _, tradingCall, _ := newGatewayBackends(t, noRateLimit)
 	return gw, tradingCall
 }
 
-func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall, *backendCall) {
+// newBacktestingGateway is the same wiring, returning the backtesting
+// backend's recorder -- the Step 16 counterpart to newTradingGateway.
+func newBacktestingGateway(t *testing.T) (http.Handler, *backendCall) {
+	t.Helper()
+	gw, _, _, _, backtestingCall := newGatewayBackends(t, noRateLimit)
+	return gw, backtestingCall
+}
+
+func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall, *backendCall, *backendCall) {
 	t.Helper()
 
 	authCall := &backendCall{}
 	mdCall := &backendCall{}
 	tradingCall := &backendCall{}
+	backtestingCall := &backendCall{}
 
 	record := func(c *backendCall) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +90,8 @@ func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.H
 	t.Cleanup(mdBackend.Close)
 	tradingBackend := httptest.NewServer(record(tradingCall))
 	t.Cleanup(tradingBackend.Close)
+	backtestingBackend := httptest.NewServer(record(backtestingCall))
+	t.Cleanup(backtestingBackend.Close)
 
 	authURL, err := url.Parse(authBackend.URL)
 	if err != nil {
@@ -94,17 +105,22 @@ func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.H
 	if err != nil {
 		t.Fatalf("parsing trading backend URL: %v", err)
 	}
+	backtestingURL, err := url.Parse(backtestingBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing backtesting backend URL: %v", err)
+	}
 
 	transport := proxy.NewTransport()
 	r := handler.NewRouter(
 		proxy.New(authURL, transport, "auth"),
 		proxy.New(mdURL, transport, "market-data"),
 		proxy.New(tradingURL, transport, "trading-engine"),
+		proxy.New(backtestingURL, transport, "backtesting"),
 		testSecret,
 		testOrigin,
 		rateLimit,
 	)
-	return r, authCall, mdCall, tradingCall
+	return r, authCall, mdCall, tradingCall, backtestingCall
 }
 
 // noRateLimit leaves the limiter out of the chain, so the existing routing,
@@ -168,7 +184,7 @@ func TestAuthRoutesArePublic(t *testing.T) {
 // TestProtectedRouteWithoutTokenIsBlocked is the central authorization
 // guarantee: the request must be rejected at the gateway and never forwarded.
 func TestProtectedRouteWithoutTokenIsBlocked(t *testing.T) {
-	for _, path := range []string{"/market-data/symbols", "/trading/orders"} {
+	for _, path := range []string{"/market-data/symbols", "/trading/orders", "/backtests"} {
 		t.Run(path, func(t *testing.T) {
 			gw, _, mdCall := newGateway(t)
 
@@ -283,6 +299,50 @@ func TestTradingReachesTheTradingEngine(t *testing.T) {
 	}
 }
 
+// The Step 16 counterpart to TestTradingReachesTheTradingEngine.
+func TestBacktestsReachesTheBacktestingEngine(t *testing.T) {
+	gw, backtestingCall := newBacktestingGateway(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/backtests",
+		strings.NewReader(`{"symbol":"AAPL","short_window":10,"long_window":50,"start_date":"2025-01-01","end_date":"2025-06-01","starting_capital":10000}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if !backtestingCall.hit {
+		t.Fatal("/backtests did not reach the backtesting engine")
+	}
+	if backtestingCall.path != "/backtests" {
+		t.Errorf("backend saw path %q, want /backtests unchanged", backtestingCall.path)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want the backend's 200", rec.Code)
+	}
+	if backtestingCall.userID != testUserID {
+		t.Errorf("backend saw X-User-ID %q, want the token subject %q", backtestingCall.userID, testUserID)
+	}
+	// backtesting revalidates the token itself (SPEC.md Step 16 §2.7), so the
+	// header has to survive the hop.
+	if backtestingCall.auth == "" {
+		t.Error("the Authorization header did not survive the proxy hop")
+	}
+}
+
+func TestBacktestsIgnoresAClientSuppliedUserID(t *testing.T) {
+	gw, backtestingCall := newBacktestingGateway(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/backtests", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	req.Header.Set("X-User-ID", "99999999-9999-9999-9999-999999999999")
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if backtestingCall.userID != testUserID {
+		t.Errorf("backend saw X-User-ID %q, want the token subject %q -- a forged header survived",
+			backtestingCall.userID, testUserID)
+	}
+}
+
 // The gateway rejects before the engine ever sees the request. Both layers
 // check, and this pins the outer one.
 func TestTradingWithoutATokenNeverReachesTheEngine(t *testing.T) {
@@ -336,6 +396,7 @@ func TestTradingEngineDownIs502(t *testing.T) {
 		proxy.New(backendURL, proxy.NewTransport(), "auth"),
 		proxy.New(backendURL, proxy.NewTransport(), "market-data"),
 		proxy.New(backendURL, proxy.NewTransport(), "trading-engine"),
+		proxy.New(backendURL, proxy.NewTransport(), "backtesting"),
 		testSecret, testOrigin, noRateLimit,
 	)
 
@@ -547,10 +608,11 @@ func gatewayWithLimits(t *testing.T, ipLimit, failures int) http.Handler {
 	return handler.NewRouter(
 		proxy.New(authURL, transport, "auth"),
 		proxy.New(mdURL, transport, "market-data"),
-		// This suite only exercises the login limiter; the trading backend is
-		// never reached, so it points at market-data's stub rather than
-		// standing up a third server for nothing.
+		// This suite only exercises the login limiter; the trading and
+		// backtesting backends are never reached, so both point at
+		// market-data's stub rather than standing up servers for nothing.
 		proxy.New(mdURL, transport, "trading-engine"),
+		proxy.New(mdURL, transport, "backtesting"),
 		testSecret,
 		testOrigin,
 		handler.RateLimitConfig{
