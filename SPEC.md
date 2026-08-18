@@ -1,7 +1,7 @@
 # SPEC — Trading Frontend: Order Ticket, Positions, Orders & Portfolio (Step 15)
 
-Status: **Draft.** Every numbered decision below is a recommendation, not yet approved. §8 is the list to resolve before implementation starts.
-Scope: `frontend/src/` only — a new `frontend/src/trading/` directory, additions to `frontend/src/api/{client.ts,types.ts}`, edits to `frontend/src/market/Dashboard.tsx`, and (if §2.10 is approved as recommended) new frontend dev dependencies and `frontend/package.json` scripts. No backend, migration, or gateway changes.
+Status: **Approved 2026-08-17.** All ten decisions resolved as recommended; §8 records them. Implementation is unblocked — not started.
+Scope: `frontend/src/` only — a new `frontend/src/trading/` directory, additions to `frontend/src/api/{client.ts,types.ts}`, edits to `frontend/src/market/Dashboard.tsx`, and new frontend dev dependencies and `frontend/package.json` scripts for §2.10. No backend, migration, or gateway changes.
 
 Prior specs archived at `docs/archive/phase1-step4-auth/` through `docs/archive/phase2-step14-trading-engine-mvp/`.
 
@@ -160,9 +160,11 @@ cd frontend && npm run test     # only if §2.10 is approved
 
 ---
 
-## 8. Decisions requiring a call
+## 8. Decisions resolved before implementation
 
-| # | Decision | Recommendation |
+Resolved 2026-08-17, all as recommended:
+
+| # | Decision | Resolution |
 |---|---|---|
 | 1 | Navigation model | **No router** — tabs as local state inside `Dashboard.tsx` — §2.1 |
 | 2 | Layout | **Three-column grid**, order ticket pinned across all tabs rather than its own tab — §2.2 |
@@ -179,4 +181,4 @@ cd frontend && npm run test     # only if §2.10 is approved
 
 ## 9. Implementation
 
-Not started. `tasks/plan.md` and `tasks/todo.md` get created once this spec is reviewed and the decisions in §8 are resolved, per the gated workflow (`agents.md`: spec reviewed → plan → checkpoints).
+Not started. `tasks/plan.md` and `tasks/todo.md` created next, per the gated workflow (`agents.md`: spec reviewed → plan → checkpoints).
