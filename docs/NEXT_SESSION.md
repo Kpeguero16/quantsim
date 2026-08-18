@@ -6,17 +6,16 @@ This file answers three questions on picking the project back up: *is anything h
 
 ---
 
-## Step 14 is built, reviewed, and ready to merge
+## Step 14 is merged
 
 | | |
 |---|---|
-| Branch | `step14-trading-engine-mvp` — the whole step, one commit per task. Ahead of `origin/step14-trading-engine-mvp` too: only the three spec commits were ever pushed. `main` is untouched at `75d050b` (Step 13). |
-| Merge | **Not merged.** The branch is complete and verified; merging it to `main` is the first thing left to do. |
+| Merge | **Done.** `step14-trading-engine-mvp` merged to `main` at `ce526a7`, one commit per task, and pushed to `origin/main`. The merge branch is deleted, locally and on the remote. |
 | Migrations | version **6**. `006_trading_cost_basis_and_order_audit` added `positions.avg_cost`, `orders.filled_price`, `orders.rejection_reason`, `trades.realized_pl`. |
 | `services/trading-engine` | a real fourth Go module — in `go.work`, in the Makefile's `GO_MODULES`, with `run-trading-engine`, and its own `integration/` suite wired into `test-integration` and `vet`. Listens on **:8083**. |
 | Tests | `make test` **13 packages ok** (no Docker needed); `make test-integration` **43 PASS / 0 FAIL / 0 SKIP** with Docker up; `make vet` clean |
 | Dev database | `users=20`, `accounts=20`, and the trading tables **empty** — `orders=0`, `trades=0`, `positions=0` |
-| Local branches | `main`, `step14-trading-engine-mvp` (current) |
+| Local branches | `main` (current) |
 
 `docs/archive/phase2-step14-trading-engine-mvp/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo.
 
@@ -42,9 +41,7 @@ The gateway's `/trading/*` `501` placeholder is gone, replaced by a real proxy t
 
 ## What to do next
 
-**1. Merge `step14-trading-engine-mvp` to `main`.** Everything is verified; nothing is half-finished. Resolve the dev-database question above first, since it is the one open Checkpoint E criterion.
-
-**2. Step 15: the trading frontend.** This is the obvious next step and the one the engine was built to be built against — `SPEC.md` §1 listed the UI as a non-goal specifically so it could be its own step. The API it consumes is stable and documented; four endpoints, all under `/trading/*` through the gateway on `:8080`:
+**1. Step 15: the trading frontend.** This is the obvious next step and the one the engine was built to be built against — `SPEC.md` §1 listed the UI as a non-goal specifically so it could be its own step. The API it consumes is stable and documented; four endpoints, all under `/trading/*` through the gateway on `:8080`:
 
 | endpoint | shape |
 |---|---|
@@ -58,12 +55,12 @@ Two things the UI has to get right, both of which the backend deliberately made 
 - **`latest_price` is nullable and `null` is meaningful.** It means market-data could not price that holding right now — the position is real and is valued at cost in the totals. Rendering `null` as `0`, or dropping the row, reports the user as having lost everything they hold because one HTTP call failed. There is a test on both the service and the handler pinning this; do not let the frontend undo it.
 - **Rejected orders are part of the history, not errors to hide.** Each carries a `rejection_reason` (`insufficient_balance`, `insufficient_position`, `symbol_unavailable`, `upstream_unavailable`). An order list that shows only fills would look complete while being wrong.
 
-**3. The two long-standing small items**, both still open and both still lower priority:
+**2. The two long-standing small items**, both still open and both still lower priority:
 
 - `market-data`'s store has no tests (`historical_price_store.go`). The harness now exists in **two** modules; a third use is the recorded trigger for extracting it to `pkg/testutil/` — see `docs/TESTING_STRUCTURE.md` §6a.
 - Pre-existing `gofmt` drift in `services/auth/internal/service/{interfaces.go,types.go}`, untouched since Step 11. Worth a one-line cleanup commit before any `fmt` check lands in CI.
 
-**4. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
+**3. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
 
 ---
 
