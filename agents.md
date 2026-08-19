@@ -337,8 +337,9 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 - Historical ingestion — done (Phase 1's market-data ingestion covers it)
 - Strategy simulator (MA crossover) — done (Step 16)
 - Metrics dashboards — done (Step 17, frontend)
-- RSI/MACD strategies, multi-symbol backtests — not started, see
-  `docs/NEXT_SESSION.md` for current status
+- RSI/MACD strategies — done (Step 18)
+- Multi-symbol backtests — not started, see `docs/NEXT_SESSION.md` for
+  current status
 
 ## Phase 4 — AI Insights + Infra
 - Portfolio analytics
