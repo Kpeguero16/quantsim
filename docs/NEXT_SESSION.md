@@ -1,66 +1,68 @@
 # Next session — state of play
 
-Last updated **2026-08-18**, at the close of Step 17 (backtesting frontend).
+Last updated **2026-08-18**, at the close of Step 18 (RSI & MACD strategies).
 
 This file answers three questions on picking the project back up: *is anything half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not appended to.
 
 ---
 
-## Step 17 is code-complete and verified, but not yet committed or merged
+## Step 18 is code-complete and verified, but not yet committed or merged
 
 | | |
 |---|---|
-| Branch | `step17-backtesting-frontend` — checked out, working tree has all of Step 17's changes **uncommitted**. Nothing has been pushed. |
-| Commit | **Not done yet, deliberately.** This session built and manually verified all 14 tasks in a real browser but did not commit or merge — needs Khalil's explicit go-ahead per this project's git workflow (branch per step, review before merge). |
-| Tests | `npm run lint`, `npm run build`, and `npm run test` (39 tests: 17 from Step 15 plus 22 new) all green. Backend `make test`, `make vet`, and `make test-integration` (all three services' harnesses) also re-run clean — this branch ended up touching one backend file, see below. |
-| Dev database | `users=20`, `accounts=20`, `backtests=0`, `backtest_trades=0` — three throwaway accounts across two verification rounds (`step17review`, `step17stranger`, `step17verify`) were deleted afterward, backtests first (`backtests.user_id` has no `ON DELETE CASCADE`, unlike `backtest_trades`). |
-| Local processes | The `gateway` and `backtesting` processes started for this session's browser verification were killed at the end. `auth`, `market-data`, and `trading-engine` were already running from earlier in the day and were left as they were — check with `lsof -i :8080-8084` before assuming any port's state. The frontend dev server (`vite`, port 5173) was already running and picked up every change live via HMR — it was left running too. |
+| Branch | `step18-rsi-macd-strategies` — checked out, 19 tasks across 5 phases in 19 commits (three task-pairs — T4+T5, T6+T7, T9+T10 — landed together where splitting them would have meant an artificially broken intermediate state). Nothing has been pushed. |
+| Commit | **Not merged yet, deliberately.** Every task landed compiling and green (`internal/store` was allowed to break temporarily between T6/T7 and T9, confirmed via `go build` that nothing else was affected), but merging to `main` needs Khalil's explicit go-ahead per this project's git workflow (branch per step, review before merge). |
+| Tests | `make vet`/`test`/`test-integration` all green across all five services. `npm run lint`/`build`/`test` (58 tests) green — `build` uses the project's real `tsc -b`, not a bare `tsc --noEmit`, which was found mid-step to silently no-op against this project's referenced `tsconfig` and report zero errors regardless of what's broken. |
+| Mutation testing | Three controls broken deliberately and confirmed caught, then cleanly reverted (`git diff` empty afterward): `maxWarmupBars`, RSI's `oversold < overbought`, and `crossoverSignals`' edge-only firing (this one alone failed 5 tests across both strategies that share it). |
+| Dev database | `users=20`, `accounts=20`, `backtests=0` — unchanged from before this step. Migration `008_backtest_strategies` **is applied** to the real dev database (`strategy`/`params` columns present, `short_window`/`long_window` gone) — this happened during Checkpoint B verification, before any frontend code existed, and is not something a merge needs to redo. Two throwaway accounts (`step18verify2` for Checkpoint B's curl pass, `step18browser` for the browser pass) were created and deleted in turn, each restoring the baseline exactly. |
+| Local processes | The `gateway`, `backtesting`, and frontend dev server (`vite`, port 5173) started for this session's verification were killed at the end. `auth`, `market-data`, and `trading-engine` were already running from earlier and were left as they were — check with `lsof -i :8080-8084` and `:5173` before assuming any port's state. |
 
-`docs/archive/phase3-step17-backtesting-frontend/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo — moved there (plain `mv`, not `git mv`, since none of the three were ever committed on this branch to begin with) the same way Step 16's were.
+`docs/archive/phase3-step18-rsi-macd-strategies/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo — moved there (plain `mv`, not `git mv`, since none of the three were ever committed under `tasks/` before being moved) the same way Steps 16/17's were.
 
-### Before committing: review the diff
+### Before merging: review the diff
 
-Nothing in `git status` has been committed. The next session (or Khalil, right now) should:
+`git status` on `step18-rsi-macd-strategies` is clean — everything is committed, one commit per task (T4+T5 and T6+T7 and T9+T10 landed paired, since each pair was too tightly coupled to split meaningfully; noted in their own commit messages). The next session (or Khalil, right now) should:
 
-1. `git status` / `git diff` to see everything this session touched — the new `frontend/src/backtesting/` directory in full, edits to `frontend/src/{api/{client.ts,types.ts},format.ts,format.test.ts,market/Dashboard.tsx}`, one backend fix (`services/backtesting/internal/service/{simulate.go,simulate_test.go}` — a real bug this step's own adversarial testing found, not scope creep; see below), the archived spec/plan/todo, `PHASE3_CHECKLIST.md`'s Step 17 entry, and this file.
-2. Decide on commit granularity (one commit per task, matching Steps 14–16's convention, or fewer) and write the commits.
-3. Merge `step17-backtesting-frontend` to `main`, delete the branch locally and on the remote, matching Steps 14–16's close-out.
+1. `git log --oneline main..step18-rsi-macd-strategies` to see all 19 commits, and spot-check a few diffs — particularly `services/backtesting/internal/service/strategy.go` (the new `Strategy` interface + three implementations, 384 lines), `infra/migrations/008_backtest_strategies.{up,down}.sql`, and `frontend/src/api/types.ts` (the discriminated-union rewrite).
+2. Decide whether to squash before merging — Steps 16/17 both ended up as a single squashed `feat(stepN):` commit on `main` despite per-task commits existing on the branch during development; Step 18 has 19 commits including several docs/checkpoint ones, so squashing is probably worth it here too, but that's Khalil's call.
+3. Merge `step18-rsi-macd-strategies` to `main`, delete the branch locally and on the remote, matching Steps 14–17's close-out.
+4. **After merging:** `agents.md`'s Phase 3 roadmap line ("RSI/MACD strategies, multi-symbol backtests — not started") is now stale for the RSI/MACD half — update it the same way Step 17's close-out did (`f7dd5a6`, a separate `docs:` commit on `main` after the merge, alongside a README/TESTING_STRUCTURE pass). Not done as part of this branch, matching that precedent.
 
 ---
 
-## What Step 17 shipped
+## What Step 18 shipped
 
-The backtesting engine's frontend — Step 16 shipped the API, deliberately with no UI (`docs/archive/phase2-step16-backtesting-engine/SPEC.md` §1 non-goals). A fifth `Dashboard.tsx` tab (`'backtest'`), holding a strategy-config form (symbol, MA windows, date range, starting capital) with client-side validation mirroring the backend's exact bounds, a synchronous result view built directly from `POST /backtests`'s own response (no extra round trip, since the backend already returns the full trade log), and a persistent run-history sidebar that reopens any past run via `GET /backtests/{id}`. No new frontend dependencies — `vitest` was already in place from Step 15.
+The backtesting engine's second and third strategies — `agents.md` §3 names three example strategies (moving-average crossover, RSI thresholds, MACD signals); Step 16 built the first and Step 17 shipped its UI, both deliberately deferring RSI/MACD until the pipeline and a strategy picker existed. Both preconditions were met, so this step made the engine genuinely multi-strategy rather than single-strategy-with-room-to-grow:
 
-**This closes the Step 14→15 / Step 16→17 pattern for the second time** — both of Phase 2 and Phase 3's backend systems now have a working UI, not just a tested API.
+- A `Strategy` interface (`Kind`/`Params`/`WarmupBars`/`GenerateSignals`) with three implementations behind one `NewStrategy(kind, raw)` constructor — the single place an unknown kind, malformed params, or an out-of-bounds parameter all surface as `ErrInvalidRequest`.
+- `wilderRSI` and `ema`, two new pure indicators, each verified against a hand-computed reference fixture *before* either strategy was built on top of them — the deliberate sequencing this step's plan called D1, because a wrong indicator produces a plausible-looking equity curve with every downstream test still green.
+- A breaking change to the wire format and schema — `{strategy, params}` replaces `{short_window, long_window}` on `POST /backtests` and in the `Backtest` response; `strategy TEXT` + `params JSONB` replaces the two window columns in Postgres. **No compatibility shim** — taken deliberately, since the only client is this repo's own frontend, updated in the same step.
+- `Simulate`, `ComputeMetrics`, `backtest_trades`, the next-bar-open fill rule, and all five metrics are **completely untouched**. Every line of new code sits upstream of `[]Signal` — the payoff of how Step 16 originally split the pipeline.
+- A strategy `<select>` in the existing `BacktestForm.tsx`, swapping visible field groups per strategy with every strategy's own conventional defaults pre-populated from mount, and one `describeStrategy` helper (with a defensive unknown-strategy fallback) replacing the two places that used to format `{short}/{long}` inline.
 
-### Verified live in a browser, not just against curl
+Full writeup, including the mutation-testing results and the manual browser pass, in `PHASE3_CHECKLIST.md`'s Step 18 entry.
 
-Every rejection path (`symbol_unavailable`, `date_range_unavailable`), the `profit_factor: null` rendering rule, history reopening, and cross-user isolation were driven through the actual dashboard with `claude-in-chrome`, against real ingested AAPL history — not asserted from API responses alone. Full writeup in `PHASE3_CHECKLIST.md`'s Step 17 entry.
+### Two things worth knowing about even though nothing was broken by them
 
-### Two real bugs the browser pass found, one of them backend
+Unlike Steps 16 and 17, this step found no real bug in existing code — but two things came up mid-work worth remembering:
 
-1. **A backend crash bug**: `Simulate` built its trade log as a nil slice (`var trades []TradeRecord`), which every existing `len()`-based test missed but `encoding/json` did not — a nil slice marshals as `null`, not `[]`. Any zero-trade run sent `"trades": null`, and `TradeLogTable.tsx`'s unconditional `.length` access crashed the whole dashboard to a blank screen. This is the one backend file this "frontend-only" step ended up touching (`services/backtesting/internal/service/simulate.go`) — fixed at the source (`trades := []TradeRecord{}`), not worked around in the frontend, matching the "list responses are never null" rule this project already enforces everywhere else.
-2. **A timezone rendering bug**: `start_date`/`end_date`/`bar_timestamp` are calendar dates with no meaningful time-of-day, but were rendered with a bare `toLocaleDateString()`, which converts through the *viewer's* local timezone — `2024-08-01T00:00:00Z` read as `7/31/2024` on this US-Eastern dev machine. Fixed with a shared `formatDate` in `frontend/src/format.ts` that renders with `{timeZone: 'UTC'}`.
-
-Both were caught by actually looking at the rendered page during manual verification, not by the unit test suite — full writeup with the exact regression tests added for each in `PHASE3_CHECKLIST.md`'s Step 17 entry.
+1. **`tsc --noEmit` silently no-ops against this project's `tsconfig` setup.** The root `tsconfig.json` is a bare `references`-only file (no `include`/`files` of its own); running `npx tsc --noEmit` from `frontend/` reports zero errors *regardless of what's actually broken*, because it isn't resolving the referenced project configs the way `tsc -b` does. Verified directly: ran both against a deliberately-broken intermediate state (old field names still referenced after the wire-format change) — `tsc --noEmit` reported nothing, `tsc -b` (the actual `npm run build` command) reported exactly the expected errors. **Always typecheck this frontend with `npm run build` or `npx tsc -b`, never a bare `tsc --noEmit`.**
+2. **`Pick<UnionType, K>` does not distribute over the union in TypeScript.** `strategy-display.ts`'s first draft of `BacktestParamsByKind` was `Pick<Backtest, 'strategy' | 'params'>`. Since `Backtest` is now a three-variant discriminated union, `Pick` over it collapses to one flat `{ strategy: StrategyKind; params: BacktestParams }` shape — the pairing between a given strategy and its own params type is lost, which breaks exactly the narrowing a `switch (backtest.strategy)` needs to narrow `backtest.params` inside each case. Fixed by restating the type as a direct three-member union instead of deriving it with `Pick`. Worth remembering for any future discriminated-union work in this codebase: `Pick`/`Omit` over a union needs the `T extends unknown ? Pick<T, K> : never` distributive form, or — simpler, as done here — just write the union out directly.
 
 ---
 
 ## What to do next
 
-**1. Commit and merge Step 17** (see above) — this is the immediate next action, not a new step.
+**1. Merge Step 18** (see above) — this is the immediate next action, not a new step.
 
-**2. RSI/MACD strategies** are now the natural next extension — Step 16's SPEC.md and Step 17's own non-goals both deferred them until a frontend existed to drive a strategy picker, and that frontend now exists.
+**2. Multi-symbol / portfolio-level backtests** are now the last named item from `agents.md` §3's backtesting scope. Both Step 16 and Step 18 deferred it for the same reason: it's a materially different simulator (correlation, cross-symbol position sizing), not a small extension — the natural next *major* piece of work in this system, but a bigger lift than either strategy step was.
 
-**3. Multi-symbol / portfolio-level backtests** remain a materially bigger lift (correlation, cross-symbol position sizing) than a small extension — lower priority than RSI/MACD.
-
-**4. The two long-standing small items**, both still open and both still lower priority:
+**3. The two long-standing small items**, both still open and both still lower priority:
 
 - `market-data`'s store has no tests (`historical_price_store.go`). The integration harness exists in **three** copies (auth, trading-engine, backtesting); a fourth use is the point to actually extract to `pkg/testutil/` — see `docs/deferred-tuning.md` §11 and `docs/TESTING_STRUCTURE.md` §6a.
 - Pre-existing `gofmt` drift in `services/auth/internal/service/{interfaces.go,types.go}`, untouched since Step 11. Worth a one-line cleanup commit before any `fmt` check lands in CI.
 
-**5. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
+**4. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
 
 ---
 
@@ -84,6 +86,8 @@ Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff a
 
 **Register a fresh password with something that isn't your username, email, or "quantsim."** Auth's password validator rejects any password containing the username, the email, or the service name as a substring, case-insensitively. A generic throwaway phrase with no connection to the account's own name/email sidesteps it.
 
+**The `migrate` CLI is installed to `$(go env GOPATH)/bin`, not on the default `PATH`.** `make migrate-up`/`migrate-down` will report `migrate: command not found` from a plain shell unless `$(go env GOPATH)/bin` is on `PATH` — export it first, or run the `migrate` binary by its full path.
+
 ---
 
 ## Things that will trip you up
@@ -103,9 +107,13 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 
 **The integration harness now exists in three copies** (`services/{auth,trading-engine,backtesting}/integration/`), not extracted to `pkg/testutil/` yet — see `docs/deferred-tuning.md` §11 for why, and what should trigger doing it for real.
 
-**A nil Go slice and an empty one are `len()`-identical but `encoding/json`-different.** `var s []T` marshals as `null`; `s := []T{}` marshals as `[]`. Every list-shaped response field needs the latter, deliberately, even when every existing test only ever checks `len(s)` — that check cannot tell the two apart. This is what Step 17's `Simulate` bug (above) was.
+**A nil Go slice and an empty one are `len()`-identical but `encoding/json`-different.** `var s []T` marshals as `null`; `s := []T{}` marshals as `[]`. Every list-shaped response field needs the latter, deliberately, even when every existing test only ever checks `len(s)` — that check cannot tell the two apart. This is what Step 17's `Simulate` bug was.
 
 **`toLocaleDateString()` with no `timeZone` option uses the *browser's* local zone, not UTC.** Any value that's a calendar date rather than a real instant (a form's `start_date`/`end_date`, a daily bar's `bar_timestamp`) needs `{timeZone: 'UTC'}` passed explicitly, or it can render a day off depending on where the browser sits relative to UTC. `frontend/src/format.ts`'s `formatDate` is the one place in this app that does this correctly — reuse it rather than calling `toLocaleDateString()` directly on a calendar-date field.
+
+**A bare `tsc --noEmit` silently no-ops against this project's `tsconfig` setup and reports zero errors regardless of what's broken.** This is Step 18's own discovery — see above. Use `npm run build` (which runs `tsc -b`) or `npx tsc -b` directly to actually typecheck this frontend.
+
+**`Pick<UnionType, K>` does not distribute over a union in TypeScript** — it collapses a discriminated union's fields into one flat shape and loses the pairing a `switch` on the discriminant needs to narrow the other field. See `strategy-display.ts`'s `BacktestParamsByKind` for the fix (a direct union, not a `Pick`).
 
 ---
 

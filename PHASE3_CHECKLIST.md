@@ -284,13 +284,222 @@ were untouched by this step.
 
 ---
 
+## Step 18: RSI & MACD Strategies
+
+`agents.md` §3 names three example strategies; Step 16 built the first
+(moving-average crossover) and deferred the other two twice — once because
+the pipeline was the hard part, once because there was no UI to drive a
+strategy picker. Both reasons were spent once Step 17 shipped. Made the
+backtesting engine multi-strategy: a `Strategy` interface with three
+implementations behind one `NewStrategy` constructor, a `{strategy, params}`
+wire format replacing the two fixed window fields, `strategy TEXT` +
+`params JSONB` replacing the two window columns, and a strategy picker in
+the existing dashboard tab. `Simulate`, `ComputeMetrics`, `backtest_trades`,
+the next-bar-open fill rule, and all five metrics are **untouched** — every
+line of new code sits upstream of `[]Signal`, which is the whole payoff of
+how Step 16 originally split the pipeline.
+
+- [x] Spec drafted and reviewed — four open decisions (RSI fires on the
+      *exit* from a zone rather than the *entry*, a flat price series reads
+      RSI as `50` rather than `100`, backend and frontend ship in one
+      combined step rather than split, `short_window`/`long_window` are
+      dropped outright rather than kept dual-written) all resolved as
+      recommended (`SPEC.md` §3)
+- [x] Plan (`tasks/plan.md`) — 19 tasks across 5 phases, sequenced so the
+      indicators (`ema`, `wilderRSI`) land and pass hand-computed reference
+      fixtures *before* any strategy calls them — the plan's own risk note:
+      a subtly wrong indicator produces a plausible equity curve and
+      plausible metrics with every downstream test still green, unlike
+      `Simulate`'s self-evident balance-conservation invariant
+- [x] `Strategy` interface (`Kind`/`Params`/`WarmupBars`/`GenerateSignals`),
+      one `NewStrategy(kind, raw)` constructor as the sole validation
+      point; Step 16's `GenerateSignals` free function moved behind it as
+      `maCrossover` with **zero behavior change** — the crossing-detection
+      assertions are byte-identical to Step 16's own tests
+- [x] `wilderRSI` and `ema` (`indicators.go`) — pure `[]float64 -> []float64`,
+      each verified against a hand-computed fixture carried through the
+      seed bar and several smoothed bars *before* either strategy exists to
+      consume them
+- [x] `rsiStrategy` — exit-from-zone signals (buy on the cross back above
+      oversold, sell on the cross back below overbought), the same
+      edge-triggered shape `maCrossover` already uses; `WarmupBars =
+      period + 1`
+- [x] `macdStrategy` — MACD-line/signal-line crossings, sharing
+      `crossoverSignals` with `maCrossover` since both rules are "cross on
+      the sign change of two series' difference"; `WarmupBars = slow +
+      signal - 1`
+- [x] `maxWarmupBars = 500` replaces `maxLongWindow`, checked once in
+      `NewStrategy` rather than per-constructor — catches a MACD whose
+      `slow + signal - 1` exceeds 500 while `slow` alone does not, a case a
+      bound on `slow_period` alone could never see
+- [x] Migration `008_backtest_strategies` — `strategy`/`params` added and
+      backfilled, `short_window`/`long_window` dropped; both directions run
+      against a throwaway database with a mixed row set before being
+      trusted, not just written (see below)
+- [x] `{strategy, params}` on the wire (`RunBacktestRequest`, `Backtest`) —
+      a **deliberate breaking change with no compatibility shim**: the only
+      client is this repo's own frontend, updated in the same step
+- [x] `postgres_backtest_store.go` — `strategy`/`params` through the
+      `INSERT`, both `SELECT`s, `scanBacktest`
+- [x] `internal/handler` — needed **zero changes**, confirmed by `grep`,
+      not just by inspection: error mapping is by sentinel, and
+      `NewStrategy`'s failures are already `ErrInvalidRequest`
+- [x] `api/types.ts` — `Backtest`/`BacktestDetail`/`RunBacktestRequest`
+      rebuilt as genuine discriminated unions (three tagged variants, not
+      one interface with a loose `params: BacktestParams` field), so
+      narrowing on `.strategy` inside a `switch` actually narrows `.params`
+- [x] `backtest-validation.ts` — switches on the selected strategy, mirrors
+      all three strategies' backend bounds including the MACD
+      `slow_period + signal_period - 1` boundary
+- [x] `strategy-display.ts` — one `describeStrategy` replacing two inline
+      `{short}/{long}` formats, with an unknown-strategy fallback that
+      renders the raw name rather than throwing (see below)
+- [x] `BacktestForm.tsx` — a strategy `<select>` swaps the visible field
+      group; every strategy's fields carry their own default from mount, so
+      switching never leaves an empty, unrunnable form
+- [x] `BacktestResult.tsx`/`BacktestHistoryList.tsx` — both now call
+      `describeStrategy`; `MetricsGrid.tsx`/`TradeLogTable.tsx` untouched
+- [x] RSI and MACD run through real Postgres JSONB — the two strategies
+      `testBacktest`'s existing fixture never exercised
+- [x] Mutation-tested the three highest-value new controls (`maxWarmupBars`,
+      RSI's `oversold < overbought`, `crossoverSignals`' edge-only firing)
+      — all three caught, all cleanly reverted
+- [x] Manual browser pass — all three strategies live in the dashboard, a
+      live confirmation of the `profit_factor: null` render rule at 100%
+      win rate, both zero-trade boundaries, a pre-Step-18 MA run reopened
+      from history
+- [x] `npm run lint`/`build`/`test` (58 tests) and `make vet`/`test`/
+      `test-integration` (all five services) all green throughout
+
+**Completed 2026-08-18.** Spec, plan and todo archived to
+`docs/archive/phase3-step18-rsi-macd-strategies/`.
+
+### Getting the indicators right without trusting self-consistency
+
+Every prior step's riskiest logic (`Simulate`'s balance conservation,
+`ComputeMetrics`' null/zero edge cases) had a self-evident invariant a test
+could assert against. `wilderRSI` and `ema` don't — a subtly wrong smoothing
+constant or a seeding bug produces a plausible-looking equity curve and
+plausible-looking metrics, and every downstream test still passes, because
+nothing downstream knows what the "right" number should have been. The plan
+built around this from the start (D1: indicators land and pass before any
+strategy exists to consume them), and each indicator was checked against a
+fixture computed independently of the implementation:
+
+- `wilderRSI`: hand-derived through the seed bar and three further smoothed
+  bars via Wilder's own recurrence (`avg = (avg*(period-1) + current) /
+  period`) — the distinguishing feature versus the simple-average "Cutler's
+  RSI" this is deliberately not — plus the three degenerate rows §2.2 calls
+  out explicitly (all gains → `100`, all losses → `0`, perfectly flat →
+  `50`, the honest neutral rather than the `100` a naive `RS = 0/0`
+  short-circuit produces by accident).
+- `ema`: two independent fixtures chosen so every expected value is an
+  exact integer, so a wrong seed or wrong `alpha` is visible immediately
+  rather than lost in floating-point rounding.
+- The MACD strategy's own crossing fixture — a price series that declines
+  then reverses, expected to produce exactly one bullish cross — was
+  computed by hand and then **independently cross-checked with a small
+  Python script** replicating the exact recurrence before it went into the
+  Go test. Nested EMA-of-EMA arithmetic by hand is exactly the kind of
+  place a manual slip hides; the script confirmed the hand derivation to
+  five decimal places rather than trusting it on faith.
+
+Migration `008`'s up direction was validated the same way this project's
+specs already validate SQL before writing it as fact: run against a
+throwaway database (`step18_migration_scratch`, created and dropped) with a
+pre-existing `ma_crossover` row, confirming the exact backfilled JSON. The
+down direction was validated against a second, richer scenario in the same
+database — a directly-inserted `rsi` row with a `backtest_trades` row
+attached — confirming the down migration deletes the non-`ma_crossover` run
+and its trade (cascading via the existing FK) and restores the
+`ma_crossover` row's `short_window`/`long_window` to exactly what the up
+migration had encoded. The real dev database was never touched by either
+run; `users=20, backtests=0` held throughout.
+
+### A TypeScript gotcha caught before it shipped: `Pick` does not distribute over a union
+
+`strategy-display.ts`'s first draft defined `BacktestParamsByKind` as
+`Pick<Backtest, 'strategy' | 'params'>`. `Pick` applied to a union type does
+not distribute over its members — TypeScript resolves `T[P]` for a shared
+key by unioning across all members, collapsing the intended three-variant
+shape into one flat `{ strategy: StrategyKind; params: BacktestParams }`.
+That silently loses the pairing between a given strategy and its own params
+type, which is exactly the correlation `describeStrategy`'s `switch` on
+`backtest.strategy` needs to narrow `backtest.params` inside each case —
+with the collapsed type, every case would still see the full
+`MACrossoverParams | RSIParams | MACDParams` union and the code would only
+compile by accident (or not at all, depending on what each case actually
+read). Caught before any test ran, restated as a direct three-member union
+instead — the same shape `Backtest` itself already uses, and now the
+narrowing works the way the switch statement's shape implies it should.
+
+### Verification
+
+**Every task landed compiling and green**, not just the final state: T1
+(the `Strategy` interface, no behavior change) was checked against Step
+16's own byte-identical assertions; T2's indicators shipped and passed
+before T3/T4 existed to depend on them; T6-T7's wire-format change was
+allowed to temporarily break `internal/store`'s compilation (confirmed via
+`go build` that *only* `store` broke, exactly as the migration hadn't
+landed yet) rather than rushing an incomplete fix, then T8-T10 closed that
+gap in order.
+
+**Checkpoint B** (after the backend, before the frontend): `make
+vet`/`test`/`test-integration` clean across all five services, migration
+008 applied to the real dev database (`users=20` held), and all three
+strategies run live via `curl` against the real gateway — `POST
+/backtests`, `GET /backtests` (history list), `GET /backtests/{id}`
+(reopen), and an unknown-strategy rejection all confirmed against real
+responses.
+
+**Checkpoint C** (after the frontend): `npm run lint`/`build`/`test` (58
+tests) all green. The build check specifically used the project's real
+build command (`tsc -b`) rather than a bare `tsc --noEmit`, which was
+found to silently no-op against this project's referenced `tsconfig` setup
+and report zero errors regardless of what was actually broken — a check
+that would have rubber-stamped the frontend work without verifying
+anything.
+
+**Mutation testing**, three controls broken deliberately and confirmed
+caught, then reverted (`git diff` empty afterward, full `make vet`/`test`
+clean): the `maxWarmupBars` bound (short-circuited with `false &&`, caught
+by the MA and MACD boundary tests), RSI's `oversold < overbought` check
+(dropped from the condition, caught by both ordering subtests), and
+`crossoverSignals`' edge-only firing (changed to fire on every in-condition
+bar rather than only the crossing bar — caught five tests across both
+strategies that share this function, including the one named for exactly
+this case).
+
+**Manual browser pass**, full stack running (auth/market-data/
+trading-engine already up from earlier; a fresh gateway, `backtesting`, and
+frontend dev server started for this pass), one throwaway account
+(`step18browser`), against real ingested AAPL history:
+
+- All three strategies ran end to end through the real dashboard — MA
+  5/20, RSI(14) 30/70, MACD(12/26/9) — each producing a correctly labeled
+  result header and history row via `describeStrategy`
+- The strategy `<select>` correctly swapped visible field groups on every
+  switch, and values typed into a since-hidden field were never lost
+- RSI's run happened to have a 100% win rate, which is a live confirmation
+  of the `profit_factor: null`/"no losing trades" render rule established
+  in Step 16/17: rendered "—" with the note, not `0` or a crash
+- Both zero-trade boundaries (a narrow RSI window, a narrow MACD window)
+  rendered "No trades were simulated for this run." with no crash — the
+  exact failure mode Step 17's `trades: null` bug produced once already
+- The original MA run reopened from history and re-rendered
+  "AAPL — 5/20 crossover" correctly through the new `describeStrategy` path
+- Zero console errors across the whole session
+
+Dev database returned to `users=20, accounts=20, backtests=0` after the
+throwaway account and its backtests were removed. `gateway`, `backtesting`,
+and the frontend dev server (started fresh for this step's verification)
+were killed afterward; `auth`/`market-data`/`trading-engine` were left
+running as they were, untouched by this step.
+
+---
+
 ## Still open
 
-- [ ] **RSI and MACD strategies**, `agents.md` §3's other two named
-      examples. `SPEC.md` (Step 16) §1 scoped these out deliberately, and
-      Step 17's own non-goals reaffirmed it — now that a frontend exists to
-      drive a strategy picker, this is the natural next extension rather
-      than dead weight behind a UI nobody could use yet.
 - [ ] **Multi-symbol / portfolio-level backtests.** One symbol per run today
       (`SPEC.md` §1 Non-goals) — a materially different simulator
       (correlation, cross-symbol position sizing), not a small extension.

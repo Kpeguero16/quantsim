@@ -7,6 +7,7 @@
 import type { BacktestDetail } from '../api/types'
 import { formatDate, formatPrice } from '../format'
 import MetricsGrid from './MetricsGrid'
+import { describeStrategy } from './strategy-display'
 import TradeLogTable from './TradeLogTable'
 
 interface BacktestResultProps {
@@ -18,8 +19,7 @@ export default function BacktestResult({ backtest }: BacktestResultProps) {
     <div className="space-y-6">
       <div>
         <h3 className="text-sm font-semibold text-ink">
-          {backtest.symbol} — {backtest.short_window}/{backtest.long_window}{' '}
-          crossover
+          {backtest.symbol} — {describeStrategy(backtest)}
         </h3>
         <p className="mt-1 text-sm text-ink-muted">
           {formatDate(backtest.start_date)} – {formatDate(backtest.end_date)}
