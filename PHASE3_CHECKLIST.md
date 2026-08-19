@@ -370,8 +370,12 @@ how Step 16 originally split the pipeline.
       from history
 - [x] `npm run lint`/`build`/`test` (58 tests) and `make vet`/`test`/
       `test-integration` (all five services) all green throughout
+- [x] Adversarial pre-merge review, independent of the work above — found
+      and fixed one real bug (integer overflow in `WarmupBars`), see below
 
-**Completed 2026-08-18.** Spec, plan and todo archived to
+**Completed and merged to `main` 2026-08-18** (squashed to
+`feat(step18): RSI and MACD strategies`, merge commit `3b94d27`). Spec,
+plan and todo archived to
 `docs/archive/phase3-step18-rsi-macd-strategies/`.
 
 ### Getting the indicators right without trusting self-consistency
@@ -432,6 +436,38 @@ compile by accident (or not at all, depending on what each case actually
 read). Caught before any test ran, restated as a direct three-member union
 instead — the same shape `Backtest` itself already uses, and now the
 narrowing works the way the switch statement's shape implies it should.
+
+### A real bug an adversarial review found before merge: integer overflow bypassing `maxWarmupBars`
+
+Everything above landed green through nineteen task commits and passed
+Checkpoints B and C, mutation testing, and a full manual browser pass —
+all real verification, none of it fabricated. But per this project's
+"review before merge" convention, the branch also went through an
+independent adversarial review before touching `main`, and that review
+is what actually caught the one genuine bug in this step.
+
+`newRSIStrategy` and `newMACDStrategy` bounded their period parameters
+only from below (`period >= 2`, etc.), relying entirely on
+`NewStrategy`'s single generic `WarmupBars() > maxWarmupBars` check to
+reject anything too large. That check is exactly what a large enough
+period defeats: `rsiStrategy.WarmupBars()` is `period + 1` and
+`macdStrategy.WarmupBars()` is `slowPeriod + signalPeriod - 1`, and a
+period near `math.MaxInt` overflows either sum to a large-magnitude
+*negative* number. `negative > 500` is `false`, so the bound check
+passes silently, and the request sails through `RunBacktest`'s second
+`WarmupBars() > len(ranged)` check for the same reason. Execution then
+panics deep inside `GenerateSignals` — an `index out of range` for RSI,
+a `slice bounds out of range` for MACD — reachable by any authenticated
+user via a single crafted `POST /backtests` body. `maCrossover` was
+never affected: its `WarmupBars()` is `LongWindow` directly, no
+arithmetic to overflow.
+
+Fixed by rejecting `period`/`slow_period`/`signal_period` individually
+above `maxWarmupBars` in each constructor, before any arithmetic touches
+them — so the later sums those constructors feed into can never
+overflow. Confirmed with a standalone (non-repo) repro before the fix,
+and with two new regression test cases per strategy after it (one just
+over `maxWarmupBars`, one near `math.MaxInt`).
 
 ### Verification
 
