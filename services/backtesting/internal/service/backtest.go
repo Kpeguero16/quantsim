@@ -9,16 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// minShortWindow, maxLongWindow bound the crossover windows (SPEC.md §2.8).
-// maxLongWindow is fixed rather than derived from the request's date range --
-// simpler to validate before any history fetch, and matches the ~501 bars
-// any symbol has today; revisit only once a symbol's ingested range grows
-// meaningfully past this.
-const (
-	minShortWindow = 2
-	maxLongWindow  = 500
-)
-
 // dateLayout is the wire format for start_date/end_date -- calendar dates,
 // not timestamps, since a backtest range has no meaningful time-of-day.
 const dateLayout = "2006-01-02"
@@ -36,7 +26,9 @@ func NewService(store BacktestStore, history HistoryClient) *Service {
 // pipeline (GenerateSignals -> Simulate -> ComputeMetrics), and persists the
 // result -- SPEC.md §2's whole "Historical Data -> Strategy Engine -> Trade
 // Simulator -> Metrics Engine" flow in one synchronous call (§ Non-goals: no
-// async job queue at this data size).
+// async job queue at this data size). Simulate and ComputeMetrics are
+// unchanged by Step 18 -- neither knows or cares which strategy produced the
+// []Signal it's handed.
 func (s *Service) RunBacktest(ctx context.Context, userID uuid.UUID, req RunBacktestRequest) (BacktestDetail, error) {
 	params, err := validateRequest(req)
 	if err != nil {
@@ -52,20 +44,20 @@ func (s *Service) RunBacktest(ctx context.Context, userID uuid.UUID, req RunBack
 	if len(ranged) == 0 {
 		return BacktestDetail{}, ErrDateRangeUnavailable
 	}
-	if params.LongWindow > len(ranged) {
-		return BacktestDetail{}, fmt.Errorf("%w: long_window (%d) exceeds the %d bars available in the requested range",
-			ErrInvalidRequest, params.LongWindow, len(ranged))
+	if params.Strategy.WarmupBars() > len(ranged) {
+		return BacktestDetail{}, fmt.Errorf("%w: this strategy needs %d warm-up bars, more than the %d bars available in the requested range",
+			ErrInvalidRequest, params.Strategy.WarmupBars(), len(ranged))
 	}
 
-	signals := GenerateSignals(ranged, params.ShortWindow, params.LongWindow)
+	signals := params.Strategy.GenerateSignals(ranged)
 	result := Simulate(ranged, signals, params.StartingCapital)
 	metrics := ComputeMetrics(result, params.StartingCapital)
 
 	saved, err := s.store.SaveBacktest(ctx, Backtest{
 		UserID:          userID,
 		Symbol:          params.Symbol,
-		ShortWindow:     params.ShortWindow,
-		LongWindow:      params.LongWindow,
+		Strategy:        params.Strategy.Kind(),
+		Params:          params.Strategy.Params(),
 		StartDate:       params.StartDate,
 		EndDate:         params.EndDate,
 		StartingCapital: params.StartingCapital,
@@ -88,23 +80,25 @@ func (s *Service) GetBacktest(ctx context.Context, userID, id uuid.UUID) (Backte
 }
 
 // validateRequest checks everything decidable before any network call
-// (SPEC.md §2.8). Symbol availability and date-range coverage are checked
-// afterward in RunBacktest, once history has actually been fetched --
-// neither is knowable from the request alone.
+// (SPEC.md §2.8). Strategy construction and its own parameter bounds are
+// delegated to NewStrategy (Step 18 SPEC.md §2.1) -- the single place an
+// unknown kind, a malformed params object, or an out-of-bounds parameter
+// surface as ErrInvalidRequest, rather than validateRequest re-deriving
+// per-strategy checks it has no business knowing about. Symbol availability
+// and date-range coverage are checked afterward in RunBacktest, once
+// history has actually been fetched -- neither is knowable from the request
+// alone.
 func validateRequest(req RunBacktestRequest) (StrategyParams, error) {
 	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
 	if symbol == "" {
 		return StrategyParams{}, fmt.Errorf("%w: symbol is required", ErrInvalidRequest)
 	}
-	if req.ShortWindow < minShortWindow {
-		return StrategyParams{}, fmt.Errorf("%w: short_window must be at least %d", ErrInvalidRequest, minShortWindow)
+
+	strategy, err := NewStrategy(req.Strategy, req.Params)
+	if err != nil {
+		return StrategyParams{}, err
 	}
-	if req.LongWindow <= req.ShortWindow {
-		return StrategyParams{}, fmt.Errorf("%w: long_window must be greater than short_window", ErrInvalidRequest)
-	}
-	if req.LongWindow > maxLongWindow {
-		return StrategyParams{}, fmt.Errorf("%w: long_window must be at most %d", ErrInvalidRequest, maxLongWindow)
-	}
+
 	if req.StartingCapital <= 0 {
 		return StrategyParams{}, fmt.Errorf("%w: starting_capital must be greater than 0", ErrInvalidRequest)
 	}
@@ -123,8 +117,7 @@ func validateRequest(req RunBacktestRequest) (StrategyParams, error) {
 
 	return StrategyParams{
 		Symbol:          symbol,
-		ShortWindow:     req.ShortWindow,
-		LongWindow:      req.LongWindow,
+		Strategy:        strategy,
 		StartDate:       start,
 		EndDate:         end,
 		StartingCapital: req.StartingCapital,

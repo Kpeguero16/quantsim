@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,12 +43,15 @@ const (
 )
 
 // StrategyParams is one backtest's configuration -- the request body of
-// POST /backtests plus the resolved date range. Internal only, never
-// encoded -- validateRequest's output, not a wire type.
+// POST /backtests, its strategy already constructed and validated by
+// NewStrategy, plus the resolved date range. Internal only, never encoded --
+// validateRequest's output, not a wire type. Carrying the constructed
+// Strategy itself (SPEC.md Step 18 §2.1), rather than raw parameters, is
+// what lets RunBacktest call WarmupBars() and GenerateSignals() without
+// caring which strategy it got.
 type StrategyParams struct {
 	Symbol          string
-	ShortWindow     int
-	LongWindow      int
+	Strategy        Strategy
 	StartDate       time.Time
 	EndDate         time.Time
 	StartingCapital float64
@@ -90,19 +94,23 @@ type Metrics struct {
 }
 
 // Backtest is one persisted run: its parameters and its five metrics
-// together, so a list read needs no join (SPEC.md §2.6).
+// together, so a list read needs no join (SPEC.md §2.6). Strategy/Params
+// replace Step 16's ShortWindow/LongWindow (Step 18 SPEC.md §2.5/§2.6) --
+// Params is always the canonical re-encoding Strategy.Params() produced,
+// never the raw bytes a client sent, so a stored run is always readable by
+// NewStrategy.
 type Backtest struct {
-	ID              uuid.UUID `json:"id"`
-	UserID          uuid.UUID `json:"-"`
-	Symbol          string    `json:"symbol"`
-	ShortWindow     int       `json:"short_window"`
-	LongWindow      int       `json:"long_window"`
-	StartDate       time.Time `json:"start_date"`
-	EndDate         time.Time `json:"end_date"`
-	StartingCapital float64   `json:"starting_capital"`
-	FinalEquity     float64   `json:"final_equity"`
-	Metrics         Metrics   `json:"metrics"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              uuid.UUID       `json:"id"`
+	UserID          uuid.UUID       `json:"-"`
+	Symbol          string          `json:"symbol"`
+	Strategy        StrategyKind    `json:"strategy"`
+	Params          json.RawMessage `json:"params"`
+	StartDate       time.Time       `json:"start_date"`
+	EndDate         time.Time       `json:"end_date"`
+	StartingCapital float64         `json:"starting_capital"`
+	FinalEquity     float64         `json:"final_equity"`
+	Metrics         Metrics         `json:"metrics"`
+	CreatedAt       time.Time       `json:"created_at"`
 }
 
 // BacktestDetail is one run plus its simulated trade log, returned by
@@ -114,14 +122,17 @@ type BacktestDetail struct {
 	Trades []TradeRecord `json:"trades"`
 }
 
-// RunBacktestRequest is the body of POST /backtests.
+// RunBacktestRequest is the body of POST /backtests. Strategy and Params
+// form a discriminated union (SPEC.md Step 18 §2.6) -- Params' shape depends
+// on Strategy, and NewStrategy is the only place that relationship is
+// interpreted; this type carries Params as raw, undecoded bytes.
 type RunBacktestRequest struct {
-	Symbol          string  `json:"symbol"`
-	ShortWindow     int     `json:"short_window"`
-	LongWindow      int     `json:"long_window"`
-	StartDate       string  `json:"start_date"`
-	EndDate         string  `json:"end_date"`
-	StartingCapital float64 `json:"starting_capital"`
+	Symbol          string          `json:"symbol"`
+	Strategy        StrategyKind    `json:"strategy"`
+	Params          json.RawMessage `json:"params"`
+	StartDate       string          `json:"start_date"`
+	EndDate         string          `json:"end_date"`
+	StartingCapital float64         `json:"starting_capital"`
 }
 
 // BacktestsResponse is GET /backtests -- wrapped rather than a bare array,

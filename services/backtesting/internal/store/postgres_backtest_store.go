@@ -39,14 +39,14 @@ func (s *PostgresBacktestStore) SaveBacktest(ctx context.Context, b service.Back
 
 	err = tx.QueryRow(ctx, `
 	INSERT INTO backtests (
-		user_id, symbol, short_window, long_window, start_date, end_date,
+		user_id, symbol, strategy, params, start_date, end_date,
 		starting_capital, final_equity, total_return_pct, sharpe_ratio,
 		max_drawdown_pct, win_rate_pct, profit_factor
 	)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	RETURNING id, created_at
 	`,
-		b.UserID, b.Symbol, b.ShortWindow, b.LongWindow, b.StartDate, b.EndDate,
+		b.UserID, b.Symbol, b.Strategy, b.Params, b.StartDate, b.EndDate,
 		b.StartingCapital, b.FinalEquity, b.Metrics.TotalReturnPct, b.Metrics.SharpeRatio,
 		b.Metrics.MaxDrawdownPct, b.Metrics.WinRatePct, b.Metrics.ProfitFactor,
 	).Scan(&b.ID, &b.CreatedAt)
@@ -82,7 +82,7 @@ func (s *PostgresBacktestStore) SaveBacktest(ctx context.Context, b service.Back
 
 func (s *PostgresBacktestStore) ListBacktests(ctx context.Context, userID uuid.UUID) ([]service.Backtest, error) {
 	rows, err := s.pool.Query(ctx, `
-	SELECT id, user_id, symbol, short_window, long_window, start_date, end_date,
+	SELECT id, user_id, symbol, strategy, params, start_date, end_date,
 	       starting_capital, final_equity, total_return_pct, sharpe_ratio,
 	       max_drawdown_pct, win_rate_pct, profit_factor, created_at
 	FROM backtests
@@ -112,7 +112,7 @@ func (s *PostgresBacktestStore) ListBacktests(ctx context.Context, userID uuid.U
 // two apart from outside (SPEC.md §2.7).
 func (s *PostgresBacktestStore) GetBacktest(ctx context.Context, userID, id uuid.UUID) (service.BacktestDetail, error) {
 	row := s.pool.QueryRow(ctx, `
-	SELECT id, user_id, symbol, short_window, long_window, start_date, end_date,
+	SELECT id, user_id, symbol, strategy, params, start_date, end_date,
 	       starting_capital, final_equity, total_return_pct, sharpe_ratio,
 	       max_drawdown_pct, win_rate_pct, profit_factor, created_at
 	FROM backtests
@@ -164,7 +164,7 @@ type scanner interface {
 func scanBacktest(row scanner) (service.Backtest, error) {
 	var b service.Backtest
 	err := row.Scan(
-		&b.ID, &b.UserID, &b.Symbol, &b.ShortWindow, &b.LongWindow, &b.StartDate, &b.EndDate,
+		&b.ID, &b.UserID, &b.Symbol, &b.Strategy, &b.Params, &b.StartDate, &b.EndDate,
 		&b.StartingCapital, &b.FinalEquity, &b.Metrics.TotalReturnPct, &b.Metrics.SharpeRatio,
 		&b.Metrics.MaxDrawdownPct, &b.Metrics.WinRatePct, &b.Metrics.ProfitFactor, &b.CreatedAt,
 	)

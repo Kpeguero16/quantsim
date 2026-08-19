@@ -185,13 +185,36 @@ export interface Metrics {
   profit_factor: number | null
 }
 
-/** One persisted backtest run's parameters and metrics -- no trade log
- * (that's BacktestDetail below). Returned by GET /backtests. */
-export interface Backtest {
-  id: string
-  symbol: string
+/** Which named strategy a backtest ran, from
+ * services/backtesting/internal/service/strategy.go's StrategyKind. */
+export type StrategyKind = 'ma_crossover' | 'rsi' | 'macd'
+
+export interface MACrossoverParams {
   short_window: number
   long_window: number
+}
+
+export interface RSIParams {
+  period: number
+  oversold: number
+  overbought: number
+}
+
+export interface MACDParams {
+  fast_period: number
+  slow_period: number
+  signal_period: number
+}
+
+export type BacktestParams = MACrossoverParams | RSIParams | MACDParams
+
+/** strategy discriminates params' shape -- narrowing on `backtest.strategy`
+ * (e.g. `=== 'rsi'`) narrows `backtest.params` to the matching interface,
+ * the same way the Go side's json.RawMessage is only ever interpreted once
+ * NewStrategy has already looked at the kind (Step 18 SPEC.md 2.6). */
+interface BacktestBase {
+  id: string
+  symbol: string
   start_date: string
   end_date: string
   starting_capital: number
@@ -200,21 +223,32 @@ export interface Backtest {
   created_at: string
 }
 
+/** One persisted backtest run's parameters and metrics -- no trade log
+ * (that's BacktestDetail below). Returned by GET /backtests. */
+export type Backtest =
+  | (BacktestBase & { strategy: 'ma_crossover'; params: MACrossoverParams })
+  | (BacktestBase & { strategy: 'rsi'; params: RSIParams })
+  | (BacktestBase & { strategy: 'macd'; params: MACDParams })
+
 /** GET /backtests/{id} and the response of POST /backtests. Backtest's
  * fields plus the simulated trade log. */
-export interface BacktestDetail extends Backtest {
-  trades: TradeRecord[]
-}
+export type BacktestDetail = Backtest & { trades: TradeRecord[] }
 
-/** POST /backtests. start_date/end_date are YYYY-MM-DD calendar dates. */
-export interface RunBacktestRequest {
+interface RunBacktestRequestBase {
   symbol: string
-  short_window: number
-  long_window: number
+  /** YYYY-MM-DD calendar dates. */
   start_date: string
   end_date: string
   starting_capital: number
 }
+
+/** POST /backtests. Mirrors Backtest's discriminated shape -- the request
+ * that produced a run and the run itself agree on what params means for a
+ * given strategy. */
+export type RunBacktestRequest =
+  | (RunBacktestRequestBase & { strategy: 'ma_crossover'; params: MACrossoverParams })
+  | (RunBacktestRequestBase & { strategy: 'rsi'; params: RSIParams })
+  | (RunBacktestRequestBase & { strategy: 'macd'; params: MACDParams })
 
 /** GET /backtests */
 export interface BacktestsResponse {

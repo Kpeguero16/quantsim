@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -12,12 +13,17 @@ import (
 	"github.com/kpeguero/quantsim/services/backtesting/internal/service"
 )
 
+// testBacktest builds a ma_crossover fixture -- Strategy/Params replace
+// Step 16's ShortWindow/LongWindow (Step 18 SPEC.md §2.5). RSI and MACD
+// fixtures, and the JSONB round-trip assertions specific to the
+// {strategy, params} shape, are covered separately by
+// TestSaveBacktest_AllThreeStrategiesRoundTripThroughJSONB.
 func testBacktest(userID uuid.UUID, symbol string, profitFactor *float64) service.Backtest {
 	return service.Backtest{
 		UserID:          userID,
 		Symbol:          symbol,
-		ShortWindow:     10,
-		LongWindow:      50,
+		Strategy:        service.StrategyMACrossover,
+		Params:          json.RawMessage(`{"short_window":10,"long_window":50}`),
 		StartDate:       time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 		EndDate:         time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
 		StartingCapital: 10000,
@@ -169,6 +175,72 @@ func TestListBacktests_ScopedToTheCallingUser(t *testing.T) {
 	}
 	if len(listB) != 1 || listB[0].Symbol != "TSLA" {
 		t.Errorf("userB's list = %+v, want exactly the TSLA run", listB)
+	}
+}
+
+// TestSaveBacktest_AllThreeStrategiesRoundTripThroughJSONB saves one run per
+// named strategy (SPEC.md Step 18 §2.1), reads each back, and confirms the
+// reloaded params reconstruct via NewStrategy -- proving a stored run stays
+// interpretable by the exact function that would need to interpret it
+// again (§2.6: Params is always the canonical re-encoding, never the raw
+// bytes a client sent). testBacktest's own fixture already exercises
+// ma_crossover; this is what actually puts RSI's and MACD's params through
+// real Postgres JSONB, which nothing else in this suite does.
+func TestSaveBacktest_AllThreeStrategiesRoundTripThroughJSONB(t *testing.T) {
+	s, _, ctx := newStore(t)
+	userID := seedUser(t, ctx, testPool)
+
+	cases := []struct {
+		name     string
+		strategy service.StrategyKind
+		params   json.RawMessage
+	}{
+		{
+			name:     "ma_crossover",
+			strategy: service.StrategyMACrossover,
+			params:   json.RawMessage(`{"short_window":5,"long_window":20}`),
+		},
+		{
+			name:     "rsi",
+			strategy: service.StrategyRSI,
+			params:   json.RawMessage(`{"period":14,"oversold":30,"overbought":70}`),
+		},
+		{
+			name:     "macd",
+			strategy: service.StrategyMACD,
+			params:   json.RawMessage(`{"fast_period":12,"slow_period":26,"signal_period":9}`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := testBacktest(userID, "AAPL", nil)
+			b.Strategy = tc.strategy
+			b.Params = tc.params
+
+			saved, err := s.SaveBacktest(ctx, b, nil)
+			if err != nil {
+				t.Fatalf("SaveBacktest: %v", err)
+			}
+
+			detail, err := s.GetBacktest(ctx, userID, saved.ID)
+			if err != nil {
+				t.Fatalf("GetBacktest: %v", err)
+			}
+
+			if detail.Strategy != tc.strategy {
+				t.Errorf("Strategy = %q, want %q", detail.Strategy, tc.strategy)
+			}
+
+			strat, err := service.NewStrategy(detail.Strategy, detail.Params)
+			if err != nil {
+				t.Fatalf("NewStrategy(%q, %s) failed to reconstruct the reloaded params: %v",
+					detail.Strategy, detail.Params, err)
+			}
+			if strat.Kind() != tc.strategy {
+				t.Errorf("reconstructed Kind() = %q, want %q", strat.Kind(), tc.strategy)
+			}
+		})
 	}
 }
 

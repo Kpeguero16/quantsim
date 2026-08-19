@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -27,11 +28,20 @@ func barsOverRange(start time.Time, closes []float64) []service.Bar {
 	return bars
 }
 
+// maCrossoverParamsJSON builds a {short_window, long_window} params body --
+// this file's stand-in for the JSON a real client would send, now that
+// RunBacktestRequest carries a discriminated {strategy, params} pair
+// (Step 18 SPEC.md §2.6) rather than top-level ShortWindow/LongWindow
+// fields.
+func maCrossoverParamsJSON(short, long int) []byte {
+	return []byte(fmt.Sprintf(`{"short_window":%d,"long_window":%d}`, short, long))
+}
+
 func validRequest() service.RunBacktestRequest {
 	return service.RunBacktestRequest{
 		Symbol:          "aapl",
-		ShortWindow:     2,
-		LongWindow:      3,
+		Strategy:        service.StrategyMACrossover,
+		Params:          maCrossoverParamsJSON(2, 3),
 		StartDate:       "2025-01-01",
 		EndDate:         "2025-01-20",
 		StartingCapital: 1000,
@@ -39,22 +49,27 @@ func validRequest() service.RunBacktestRequest {
 }
 
 // TestRunBacktest_ValidationRejectsBeforeAnyHistoryFetch covers every check
-// in §2.8 that is decidable from the request alone. history.Calls must stay
-// empty for all of these -- a validation failure has no business making a
-// network call.
+// in §2.8 that is decidable from the request alone -- both the checks
+// validateRequest still makes directly (symbol, starting capital, dates)
+// and the ones it now delegates to NewStrategy (SPEC.md Step 18 §2.1:
+// window bounds, an unknown strategy, malformed params). history.Calls must
+// stay empty for all of these -- a validation failure has no business
+// making a network call.
 func TestRunBacktest_ValidationRejectsBeforeAnyHistoryFetch(t *testing.T) {
 	cases := []struct {
 		name string
 		mod  func(r *service.RunBacktestRequest)
 	}{
 		{"empty symbol", func(r *service.RunBacktestRequest) { r.Symbol = "  " }},
-		{"short window too small", func(r *service.RunBacktestRequest) { r.ShortWindow = 1 }},
-		{"long window not greater than short", func(r *service.RunBacktestRequest) { r.LongWindow = r.ShortWindow }},
-		{"long window exceeds the fixed bound", func(r *service.RunBacktestRequest) { r.LongWindow = 501 }},
+		{"short window too small", func(r *service.RunBacktestRequest) { r.Params = maCrossoverParamsJSON(1, 3) }},
+		{"long window not greater than short", func(r *service.RunBacktestRequest) { r.Params = maCrossoverParamsJSON(2, 2) }},
+		{"long window exceeds the fixed bound", func(r *service.RunBacktestRequest) { r.Params = maCrossoverParamsJSON(2, 501) }},
 		{"non-positive starting capital", func(r *service.RunBacktestRequest) { r.StartingCapital = 0 }},
 		{"malformed start date", func(r *service.RunBacktestRequest) { r.StartDate = "01/01/2025" }},
 		{"malformed end date", func(r *service.RunBacktestRequest) { r.EndDate = "not-a-date" }},
 		{"start not before end", func(r *service.RunBacktestRequest) { r.StartDate, r.EndDate = r.EndDate, r.StartDate }},
+		{"unknown strategy kind", func(r *service.RunBacktestRequest) { r.Strategy = "not-a-real-strategy" }},
+		{"malformed params JSON", func(r *service.RunBacktestRequest) { r.Params = []byte("not json") }},
 	}
 
 	for _, tc := range cases {
@@ -132,16 +147,16 @@ func TestRunBacktest_DateRangeWithNoOverlapIsRejected(t *testing.T) {
 	}
 }
 
-// TestRunBacktest_LongWindowExceedingTheRangedBarsIsInvalid: the date range
-// is valid but leaves fewer bars than long_window needs -- caught after the
-// fetch, since it depends on how many bars actually fall in range.
-func TestRunBacktest_LongWindowExceedingTheRangedBarsIsInvalid(t *testing.T) {
+// TestRunBacktest_WarmupExceedingTheRangedBarsIsInvalid: the date range is
+// valid but leaves fewer bars than the strategy's WarmupBars needs (SPEC.md
+// Step 18 §2.4) -- caught after the fetch, since it depends on how many
+// bars actually fall in range.
+func TestRunBacktest_WarmupExceedingTheRangedBarsIsInvalid(t *testing.T) {
 	svc, history, store := newService(t)
 	history.Bars = barsOverRange(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), []float64{1, 2, 3}) // only 3 bars
 
 	req := validRequest()
-	req.LongWindow = 10 // exceeds the 3 bars in range
-	req.ShortWindow = 2
+	req.Params = maCrossoverParamsJSON(2, 10) // exceeds the 3 bars in range
 
 	_, err := svc.RunBacktest(context.Background(), uuid.New(), req)
 
@@ -149,13 +164,15 @@ func TestRunBacktest_LongWindowExceedingTheRangedBarsIsInvalid(t *testing.T) {
 		t.Fatalf("got err %v, want ErrInvalidRequest", err)
 	}
 	if len(store.Saved) != 0 {
-		t.Error("a backtest was saved despite an unsatisfiable long_window")
+		t.Error("a backtest was saved despite an unsatisfiable warm-up")
 	}
 }
 
 // TestRunBacktest_HappyPathSavesAndReturnsTheResult runs the full pipeline
 // against a bar series with a clean, known crossover and checks the result
-// that comes back matches what the store was asked to save.
+// that comes back matches what the store was asked to save, including the
+// strategy identity now that Strategy/Params replace ShortWindow/LongWindow
+// (Step 18 SPEC.md §2.5/§2.6).
 func TestRunBacktest_HappyPathSavesAndReturnsTheResult(t *testing.T) {
 	svc, history, store := newService(t)
 	closes := []float64{10, 10, 10, 10, 20, 30, 40, 50, 40, 30, 20, 10}
@@ -164,8 +181,7 @@ func TestRunBacktest_HappyPathSavesAndReturnsTheResult(t *testing.T) {
 	req := validRequest()
 	req.StartDate = "2025-01-01"
 	req.EndDate = "2025-01-12"
-	req.ShortWindow = 2
-	req.LongWindow = 3
+	req.Params = maCrossoverParamsJSON(2, 3)
 
 	userID := uuid.New()
 	detail, err := svc.RunBacktest(context.Background(), userID, req)
@@ -182,6 +198,12 @@ func TestRunBacktest_HappyPathSavesAndReturnsTheResult(t *testing.T) {
 	}
 	if saved.Symbol != "AAPL" {
 		t.Errorf("saved.Symbol = %q, want AAPL", saved.Symbol)
+	}
+	if saved.Strategy != service.StrategyMACrossover {
+		t.Errorf("saved.Strategy = %q, want %q", saved.Strategy, service.StrategyMACrossover)
+	}
+	if got := string(saved.Params); got != `{"short_window":2,"long_window":3}` {
+		t.Errorf("saved.Params = %s, want the canonical re-encoding", got)
 	}
 	if detail.ID != saved.ID {
 		t.Errorf("returned detail id %v does not match what was saved %v", detail.ID, saved.ID)

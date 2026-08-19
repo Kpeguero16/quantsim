@@ -6,6 +6,7 @@
  */
 import type { Backtest } from '../api/types'
 import { formatDate } from '../format'
+import { describeStrategy } from './strategy-display'
 import type { BacktestsState } from './use-backtests'
 
 function signClassName(value: number): string {
@@ -74,7 +75,7 @@ export default function BacktestHistoryList({
               </span>
             </div>
             <p className="mt-1 text-xs text-ink-muted">
-              {backtest.short_window}/{backtest.long_window} ·{' '}
+              {describeStrategy(backtest)} ·{' '}
               {formatDate(backtest.start_date)} – {formatDate(backtest.end_date)}
             </p>
           </button>
