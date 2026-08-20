@@ -20,10 +20,10 @@ QuantSim is in active development (Phase 3). This section reflects what's actual
 | `services/gateway` | Built — reverse proxy to auth, market-data, trading-engine, and backtesting; auth-aware rate limiting, router-wide request body cap |
 | `services/market-data` | Built — Alpaca ingestion, Redis caching |
 | `services/trading-engine` | Built — market buy/sell orders, positions, portfolio, trade history; frontend dashboard (order ticket, positions, trade/order history) |
-| `services/backtesting` | Built — moving-average-crossover, RSI, and MACD strategies, next-bar-open fills, the five `agents.md` §3 metrics; frontend dashboard tab (strategy form, results, run history). Multi-symbol runs are the next extension, not yet built |
+| `services/backtesting` | Built — moving-average-crossover, RSI, and MACD strategies, next-bar-open fills, the five `agents.md` §3 metrics; multi-symbol portfolio runs drawing on one shared pool of capital (1–10 symbols); frontend dashboard tab (strategy form, results, run history) |
 | `services/ai-insights` | Not started (stub `go.mod` only) |
 
-Schema is at migration version 8. Auth, trading-engine, and backtesting each have a store-layer integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. The frontend has its own `vitest` suite (58 tests) for validation and error-mapping logic. No CI is wired up yet.
+Schema is at migration version 9. Auth, trading-engine, and backtesting each have a store-layer integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. The frontend has its own `vitest` suite (61 tests) for validation and error-mapping logic. No CI is wired up yet.
 
 For a detailed, checkpointed history of what's shipped, see `PHASE1_CHECKLIST.md`, `PHASE2_CHECKLIST.md`, and `PHASE3_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
 
@@ -390,11 +390,11 @@ Originally scoped at ~5–10 hrs/week over ~3–4 months; now several months in 
 - Profit/loss tracking — done
 - Live portfolio UI — done
 
-## Phase 3 — Backtesting Engine — in progress
+## Phase 3 — Backtesting Engine — done
 - Historical data ingestion — done (Phase 1's market-data ingestion covers it)
 - Strategy simulator (MA crossover, RSI, MACD) — done
 - Performance dashboards — done
-- Multi-symbol backtests — not started
+- Multi-symbol backtests — done (one shared pool of capital per run)
 
 ## Phase 4 — AI Insights + Deployment — not started
 - Portfolio analytics
@@ -465,4 +465,4 @@ Software Engineer | Full‑Stack Developer | Fintech Enthusiast
 
 # Summary
 
-QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture. Phase 1 (auth, market data ingestion) and Phase 2 (trading engine) are done; Phase 3 (backtesting engine) is in progress, with the MA-crossover/RSI/MACD strategies and their frontend shipped and multi-symbol backtests next.
+QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture. Phase 1 (auth, market data ingestion), Phase 2 (trading engine), and Phase 3 (backtesting engine) are done — the latter through MA-crossover/RSI/MACD strategies, their frontend, and multi-symbol portfolio runs. Phase 4 (AI insights, deployment) is next.

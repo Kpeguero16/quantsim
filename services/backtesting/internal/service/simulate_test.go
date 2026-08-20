@@ -11,6 +11,20 @@ func approxEqual(a, b float64) bool {
 	return math.Abs(a-b) < 1e-6
 }
 
+// simulateSingle runs one symbol through the portfolio engine. Step 16 wrote
+// every expectation in this file against Simulate; Step 19 deleted that
+// function and retargeted the calls here WITHOUT touching a single expected
+// number (plan D1). That is the point: the numbers are the invariant, and a
+// single-symbol run is the len(symbols)==1 case of SimulatePortfolio rather
+// than a mode of its own. If one of them ever has to change, the behavior
+// changed, and the change is a bug until proven otherwise.
+func simulateSingle(t *testing.T, bars []Bar, signals []Signal, startingCapital float64) SimulationResult {
+	t.Helper()
+	symbols, portBars, portSignals := buildPortfolio(t,
+		portfolioFixture{symbol: "AAPL", bars: bars, signals: signals})
+	return SimulatePortfolio(symbols, portBars, portSignals, startingCapital)
+}
+
 // openCloseBars builds bars with distinct Open/Close per bar, so a test can
 // prove which one a fill actually used.
 func openCloseBars(pairs [][2]float64) []Bar {
@@ -36,7 +50,7 @@ func TestSimulate_FillsAtNextBarsOpen(t *testing.T) {
 	signals := []Signal{SignalNone, SignalBuy, SignalNone, SignalSell, SignalNone}
 	startingCapital := 1000.0
 
-	result := Simulate(bars, signals, startingCapital)
+	result := simulateSingle(t, bars, signals, startingCapital)
 
 	if len(result.Trades) != 2 {
 		t.Fatalf("got %d trades, want 2 (one buy, one sell)", len(result.Trades))
@@ -78,7 +92,7 @@ func TestSimulate_SignalOnTheLastBarNeverFills(t *testing.T) {
 	bars := openCloseBars([][2]float64{{100, 101}, {102, 103}, {104, 105}})
 	signals := []Signal{SignalNone, SignalNone, SignalBuy}
 
-	result := Simulate(bars, signals, 1000)
+	result := simulateSingle(t, bars, signals, 1000)
 
 	if len(result.Trades) != 0 {
 		t.Fatalf("got %d trades, want 0 -- the final bar's signal has no next bar to fill at", len(result.Trades))
@@ -95,7 +109,7 @@ func TestSimulate_BuySignalWhileAlreadyHoldingIsANoOp(t *testing.T) {
 	bars := openCloseBars([][2]float64{{100, 101}, {102, 103}, {104, 105}})
 	signals := []Signal{SignalBuy, SignalBuy, SignalNone}
 
-	result := Simulate(bars, signals, 1000)
+	result := simulateSingle(t, bars, signals, 1000)
 
 	if len(result.Trades) != 1 {
 		t.Fatalf("got %d trades, want 1 -- the second buy signal fires while already holding and must be a no-op", len(result.Trades))
@@ -108,7 +122,7 @@ func TestSimulate_SellSignalWhileFlatIsANoOp(t *testing.T) {
 	bars := openCloseBars([][2]float64{{100, 101}, {102, 103}})
 	signals := []Signal{SignalSell, SignalNone}
 
-	result := Simulate(bars, signals, 1000)
+	result := simulateSingle(t, bars, signals, 1000)
 
 	if len(result.Trades) != 0 {
 		t.Fatalf("got %d trades, want 0 -- nothing was held to sell", len(result.Trades))
@@ -134,7 +148,7 @@ func TestSimulate_TradesIsNeverNilEvenWithZeroTrades(t *testing.T) {
 	bars := openCloseBars([][2]float64{{100, 101}, {102, 103}})
 	signals := []Signal{SignalNone, SignalNone}
 
-	result := Simulate(bars, signals, 1000)
+	result := simulateSingle(t, bars, signals, 1000)
 
 	if result.Trades == nil {
 		t.Fatal("Trades is nil; it must be a non-nil empty slice so it marshals as [] rather than null")
@@ -156,7 +170,7 @@ func TestSimulate_EquityMarksToMarketAtEveryBarsClose(t *testing.T) {
 	bars := openCloseBars([][2]float64{{100, 101}, {102, 200}})
 	signals := []Signal{SignalBuy, SignalNone}
 
-	result := Simulate(bars, signals, 1000)
+	result := simulateSingle(t, bars, signals, 1000)
 
 	wantQty := 1000.0 / 102
 	wantEquityAtFillBar := wantQty * 200 // bar 1's Close, not its Open (102) or bar 0's Close

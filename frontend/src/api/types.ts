@@ -169,6 +169,10 @@ export interface PortfolioResponse {
 /** One simulated fill, part of a BacktestDetail's trade log. `realized_pl`
  * is set only on sells. */
 export interface TradeRecord {
+  /** Which symbol this fill belongs to. A portfolio run interleaves fills
+   * across symbols in one log, and it is populated at every run size --
+   * including 1 -- so it never has to be rendered conditionally. */
+  symbol: string
   side: Side
   bar_timestamp: string
   price: number
@@ -214,7 +218,10 @@ export type BacktestParams = MACrossoverParams | RSIParams | MACDParams
  * NewStrategy has already looked at the kind (Step 18 SPEC.md 2.6). */
 interface BacktestBase {
   id: string
-  symbol: string
+  /** Always at least one, uppercased and sorted alphabetically by the server
+   * (Step 19 SPEC.md 2.4). A single-symbol run is the length-1 case of this,
+   * not a separate shape, so nothing here is optional or nullable. */
+  symbols: string[]
   start_date: string
   end_date: string
   starting_capital: number
@@ -235,7 +242,9 @@ export type Backtest =
 export type BacktestDetail = Backtest & { trades: TradeRecord[] }
 
 interface RunBacktestRequestBase {
-  symbol: string
+  /** 1..10 symbols. The server uppercases, sorts and rejects duplicates
+   * case-insensitively, so what comes back may not be the order sent. */
+  symbols: string[]
   /** YYYY-MM-DD calendar dates. */
   start_date: string
   end_date: string

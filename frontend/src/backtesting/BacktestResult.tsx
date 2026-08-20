@@ -19,7 +19,7 @@ export default function BacktestResult({ backtest }: BacktestResultProps) {
     <div className="space-y-6">
       <div>
         <h3 className="text-sm font-semibold text-ink">
-          {backtest.symbol} — {describeStrategy(backtest)}
+          {backtest.symbols.join(', ')} — {describeStrategy(backtest)}
         </h3>
         <p className="mt-1 text-sm text-ink-muted">
           {formatDate(backtest.start_date)} – {formatDate(backtest.end_date)}

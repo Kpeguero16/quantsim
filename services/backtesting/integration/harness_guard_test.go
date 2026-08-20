@@ -182,4 +182,51 @@ func TestMigrationsAppliedToTestDatabase(t *testing.T) {
 	if nullable != "YES" {
 		t.Errorf("backtests.profit_factor is NOT NULL; the store writes a nil pointer for the undefined case")
 	}
+
+	// Migration 009's columns, and the singular one it removed. Checking that
+	// backtests.symbol is GONE is the half that matters most: the column is
+	// dropped by 009's last statement, so a migration that failed partway
+	// could leave both present and every statement in the store would still
+	// run -- against a table quietly carrying a stale single-symbol answer.
+	for _, col := range []struct {
+		table, column string
+		want          bool
+	}{
+		{"backtests", "symbols", true},
+		{"backtests", "symbol", false},
+		{"backtest_trades", "symbol", true},
+		{"backtest_trades", "seq", true},
+	} {
+		var exists bool
+		err := testPool.QueryRow(t.Context(),
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			 WHERE table_schema='public' AND table_name=$1 AND column_name=$2)`,
+			col.table, col.column).Scan(&exists)
+		if err != nil {
+			t.Fatalf("checking %s.%s: %v", col.table, col.column, err)
+		}
+		if exists != col.want {
+			verb := "missing"
+			if !col.want {
+				verb = "still present"
+			}
+			t.Errorf("column %s.%s is %s; migration 009 did not apply cleanly", col.table, col.column, verb)
+		}
+	}
+
+	// symbols must be an actual array, not TEXT. Nothing else here would
+	// notice the difference: a TEXT column accepts pgx's []string bind as a
+	// literal and hands something back, so the failure would surface as a
+	// wrong symbol list rather than an error.
+	var dataType string
+	err = testPool.QueryRow(t.Context(),
+		`SELECT data_type FROM information_schema.columns
+		 WHERE table_schema='public' AND table_name='backtests' AND column_name='symbols'`).
+		Scan(&dataType)
+	if err != nil {
+		t.Fatalf("checking backtests.symbols type: %v", err)
+	}
+	if dataType != "ARRAY" {
+		t.Errorf("backtests.symbols is %q, want ARRAY", dataType)
+	}
 }

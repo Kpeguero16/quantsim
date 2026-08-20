@@ -6,7 +6,7 @@ import {
 } from './backtest-validation'
 
 const COMMON = {
-  symbol: 'aapl',
+  symbols: 'aapl',
   startDate: '2026-01-01',
   endDate: '2026-06-01',
   startingCapital: '10000',
@@ -53,9 +53,35 @@ const MACD_VALID: BacktestFormValues = {
 
 describe('validateBacktestForm', () => {
   describe('fields shared by every strategy', () => {
-    it('rejects an empty symbol', () => {
-      const result = validateBacktestForm({ ...MA_VALID, symbol: '  ' })
-      expect(result.ok).toBe(false)
+    it('rejects an empty symbol list', () => {
+      expect(validateBacktestForm({ ...MA_VALID, symbols: '  ' }).ok).toBe(false)
+      expect(validateBacktestForm({ ...MA_VALID, symbols: ' , , ' }).ok).toBe(false)
+    })
+
+    it('uppercases, sorts and drops the comma artifacts a human types', () => {
+      const result = validateBacktestForm({
+        ...MA_VALID,
+        symbols: ' msft , aapl,, nvda, ',
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.value.symbols).toEqual(['AAPL', 'MSFT', 'NVDA'])
+    })
+
+    it('rejects a duplicate rather than quietly deduplicating it', () => {
+      // Case-insensitively, matching the backend: silently running a
+      // one-symbol backtest for someone who asked for two answers a
+      // different question than the one asked.
+      expect(validateBacktestForm({ ...MA_VALID, symbols: 'AAPL, AAPL' }).ok).toBe(false)
+      expect(validateBacktestForm({ ...MA_VALID, symbols: 'aapl, AAPL' }).ok).toBe(false)
+      expect(validateBacktestForm({ ...MA_VALID, symbols: 'AAPL, aapl ' }).ok).toBe(false)
+    })
+
+    it('accepts ten symbols and rejects eleven', () => {
+      const ten = Array.from({ length: 10 }, (_, i) => `S${i}`).join(', ')
+      const eleven = Array.from({ length: 11 }, (_, i) => `S${i}`).join(', ')
+      expect(validateBacktestForm({ ...MA_VALID, symbols: ten }).ok).toBe(true)
+      expect(validateBacktestForm({ ...MA_VALID, symbols: eleven }).ok).toBe(false)
     })
 
     it('rejects a missing start or end date', () => {
@@ -108,12 +134,12 @@ describe('validateBacktestForm', () => {
   })
 
   describe('ma_crossover', () => {
-    it('accepts a fully valid form, uppercases the symbol, and builds a discriminated body', () => {
+    it('accepts a fully valid form, uppercases the symbols, and builds a discriminated body', () => {
       const result = validateBacktestForm(MA_VALID)
       expect(result).toEqual({
         ok: true,
         value: {
-          symbol: 'AAPL',
+          symbols: ['AAPL'],
           strategy: 'ma_crossover',
           params: { short_window: 5, long_window: 20 },
           start_date: '2026-01-01',
@@ -167,7 +193,7 @@ describe('validateBacktestForm', () => {
       expect(result).toEqual({
         ok: true,
         value: {
-          symbol: 'AAPL',
+          symbols: ['AAPL'],
           strategy: 'rsi',
           params: { period: 14, oversold: 30, overbought: 70 },
           start_date: '2026-01-01',
@@ -228,7 +254,7 @@ describe('validateBacktestForm', () => {
       expect(result).toEqual({
         ok: true,
         value: {
-          symbol: 'AAPL',
+          symbols: ['AAPL'],
           strategy: 'macd',
           params: { fast_period: 12, slow_period: 26, signal_period: 9 },
           start_date: '2026-01-01',

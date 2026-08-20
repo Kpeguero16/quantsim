@@ -16,6 +16,10 @@ import (
 
 var _ service.BacktestStore = (*PostgresBacktestStore)(nil)
 
+// []string binds to and scans from TEXT[] through pgx v5's default codec,
+// with no pgtype wrapper (Step 19 plan D5). This is the repo's first array
+// column, so it has no precedent here and the round trip is asserted against
+// real Postgres in the integration suite rather than trusted to compile.
 type PostgresBacktestStore struct {
 	pool *pgxpool.Pool
 }
@@ -39,14 +43,14 @@ func (s *PostgresBacktestStore) SaveBacktest(ctx context.Context, b service.Back
 
 	err = tx.QueryRow(ctx, `
 	INSERT INTO backtests (
-		user_id, symbol, strategy, params, start_date, end_date,
+		user_id, symbols, strategy, params, start_date, end_date,
 		starting_capital, final_equity, total_return_pct, sharpe_ratio,
 		max_drawdown_pct, win_rate_pct, profit_factor
 	)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	RETURNING id, created_at
 	`,
-		b.UserID, b.Symbol, b.Strategy, b.Params, b.StartDate, b.EndDate,
+		b.UserID, b.Symbols, b.Strategy, b.Params, b.StartDate, b.EndDate,
 		b.StartingCapital, b.FinalEquity, b.Metrics.TotalReturnPct, b.Metrics.SharpeRatio,
 		b.Metrics.MaxDrawdownPct, b.Metrics.WinRatePct, b.Metrics.ProfitFactor,
 	).Scan(&b.ID, &b.CreatedAt)
@@ -56,11 +60,15 @@ func (s *PostgresBacktestStore) SaveBacktest(ctx context.Context, b service.Back
 
 	if len(trades) > 0 {
 		batch := &pgx.Batch{}
-		for _, t := range trades {
+		// seq is the index in the log the engine produced. Several symbols
+		// fill on the same bar in a portfolio run, and bar_timestamp alone
+		// cannot order those; without seq the read-back order of a same-bar
+		// group is whatever their random UUIDs sort to.
+		for i, t := range trades {
 			batch.Queue(`
-			INSERT INTO backtest_trades (backtest_id, side, bar_timestamp, price, quantity, realized_pl)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			`, b.ID, t.Side, t.BarTimestamp, t.Price, t.Quantity, t.RealizedPL)
+			INSERT INTO backtest_trades (backtest_id, seq, symbol, side, bar_timestamp, price, quantity, realized_pl)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`, b.ID, i, t.Symbol, t.Side, t.BarTimestamp, t.Price, t.Quantity, t.RealizedPL)
 		}
 		results := tx.SendBatch(ctx, batch)
 		for range trades {
@@ -82,7 +90,7 @@ func (s *PostgresBacktestStore) SaveBacktest(ctx context.Context, b service.Back
 
 func (s *PostgresBacktestStore) ListBacktests(ctx context.Context, userID uuid.UUID) ([]service.Backtest, error) {
 	rows, err := s.pool.Query(ctx, `
-	SELECT id, user_id, symbol, strategy, params, start_date, end_date,
+	SELECT id, user_id, symbols, strategy, params, start_date, end_date,
 	       starting_capital, final_equity, total_return_pct, sharpe_ratio,
 	       max_drawdown_pct, win_rate_pct, profit_factor, created_at
 	FROM backtests
@@ -112,7 +120,7 @@ func (s *PostgresBacktestStore) ListBacktests(ctx context.Context, userID uuid.U
 // two apart from outside (SPEC.md §2.7).
 func (s *PostgresBacktestStore) GetBacktest(ctx context.Context, userID, id uuid.UUID) (service.BacktestDetail, error) {
 	row := s.pool.QueryRow(ctx, `
-	SELECT id, user_id, symbol, strategy, params, start_date, end_date,
+	SELECT id, user_id, symbols, strategy, params, start_date, end_date,
 	       starting_capital, final_equity, total_return_pct, sharpe_ratio,
 	       max_drawdown_pct, win_rate_pct, profit_factor, created_at
 	FROM backtests
@@ -128,10 +136,10 @@ func (s *PostgresBacktestStore) GetBacktest(ctx context.Context, userID, id uuid
 	}
 
 	rows, err := s.pool.Query(ctx, `
-	SELECT side, bar_timestamp, price, quantity, realized_pl
+	SELECT symbol, side, bar_timestamp, price, quantity, realized_pl
 	FROM backtest_trades
 	WHERE backtest_id = $1
-	ORDER BY bar_timestamp ASC, id ASC
+	ORDER BY seq ASC
 	`, id)
 	if err != nil {
 		return service.BacktestDetail{}, err
@@ -141,7 +149,7 @@ func (s *PostgresBacktestStore) GetBacktest(ctx context.Context, userID, id uuid
 	trades := []service.TradeRecord{}
 	for rows.Next() {
 		var t service.TradeRecord
-		if err := rows.Scan(&t.Side, &t.BarTimestamp, &t.Price, &t.Quantity, &t.RealizedPL); err != nil {
+		if err := rows.Scan(&t.Symbol, &t.Side, &t.BarTimestamp, &t.Price, &t.Quantity, &t.RealizedPL); err != nil {
 			return service.BacktestDetail{}, err
 		}
 		trades = append(trades, t)
@@ -164,9 +172,17 @@ type scanner interface {
 func scanBacktest(row scanner) (service.Backtest, error) {
 	var b service.Backtest
 	err := row.Scan(
-		&b.ID, &b.UserID, &b.Symbol, &b.Strategy, &b.Params, &b.StartDate, &b.EndDate,
+		&b.ID, &b.UserID, &b.Symbols, &b.Strategy, &b.Params, &b.StartDate, &b.EndDate,
 		&b.StartingCapital, &b.FinalEquity, &b.Metrics.TotalReturnPct, &b.Metrics.SharpeRatio,
 		&b.Metrics.MaxDrawdownPct, &b.Metrics.WinRatePct, &b.Metrics.ProfitFactor, &b.CreatedAt,
 	)
+	// symbols is NOT NULL and never written empty, so this cannot fire today.
+	// It exists because the alternative if it ever did -- Symbols marshaling
+	// as null on a field the API contract types as an array -- is a wire-shape
+	// break discovered by a frontend, which is a worse place to find it than
+	// one line of store code (Step 19 T3).
+	if b.Symbols == nil {
+		b.Symbols = []string{}
+	}
 	return b, err
 }
