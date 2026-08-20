@@ -25,7 +25,7 @@ QuantSim is in active development (Phase 3). This section reflects what's actual
 
 Schema is at migration version 9. Auth, trading-engine, and backtesting each have a store-layer integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. The frontend has its own `vitest` suite (61 tests) for validation and error-mapping logic. No CI is wired up yet.
 
-For a detailed, checkpointed history of what's shipped, see `PHASE1_CHECKLIST.md`, `PHASE2_CHECKLIST.md`, and `PHASE3_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
+For a detailed, checkpointed history of what's shipped, see `docs/PHASE1_CHECKLIST.md`, `docs/PHASE2_CHECKLIST.md`, and `docs/PHASE3_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
 
 ---
 
