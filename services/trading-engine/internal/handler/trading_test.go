@@ -551,3 +551,94 @@ func TestPortfolio_RequiresAuthentication(t *testing.T) {
 		t.Fatalf("got %d, want 401 -- GET /trading/portfolio is not behind RequireAuth", rec.Code)
 	}
 }
+
+// --- GET /trading/trades (Step 20 T2) ---
+
+func TestListTrades_ReturnsTheTradeLog(t *testing.T) {
+	h, trading, _, _ := newHandler(t)
+	pl := 125.50
+	trading.Trades = []service.Trade{
+		{ID: uuid.New(), OrderID: uuid.New(), Symbol: "AAPL", Side: service.SideBuy, Quantity: 10, Price: 150},
+		{ID: uuid.New(), OrderID: uuid.New(), Symbol: "AAPL", Side: service.SideSell, Quantity: 10, Price: 162.55, RealizedPL: &pl},
+	}
+
+	rec := get(t, h, "/trading/trades", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var got service.TradesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(got.Trades) != 2 {
+		t.Fatalf("got %d trades, want 2", len(got.Trades))
+	}
+	// realized_pl is absent on the buy and present on the sell. Encoding the
+	// buy's as 0 would report a break-even round trip that never happened.
+	if got.Trades[0].RealizedPL != nil {
+		t.Errorf("buy carries realized_pl %v, want null", *got.Trades[0].RealizedPL)
+	}
+	if got.Trades[1].RealizedPL == nil || *got.Trades[1].RealizedPL != pl {
+		t.Errorf("sell's realized_pl = %v, want %v", got.Trades[1].RealizedPL, pl)
+	}
+}
+
+func TestListTrades_EmptyLogHasAnEmptyArray(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+
+	rec := get(t, h, "/trading/trades", uuid.NewString())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); !strings.Contains(body, `"trades":[]`) {
+		t.Errorf("got %s, want an empty array -- null crashes a client that maps over it", body)
+	}
+}
+
+func TestListTrades_RequiresAuthentication(t *testing.T) {
+	h, _, _, _ := newHandler(t)
+
+	if rec := get(t, h, "/trading/trades", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401 -- GET /trading/trades is not behind RequireAuth", rec.Code)
+	}
+}
+
+// The query string is parsed leniently: anything not a usable positive integer
+// defaults rather than 400-ing. What reaches the store is asserted directly,
+// because that is the value that becomes a LIMIT clause.
+func TestListTrades_LimitQueryParam(t *testing.T) {
+	tests := []struct {
+		query string
+		want  int
+	}{
+		{"", service.DefaultTradeLimit},
+		{"?limit=", service.DefaultTradeLimit},
+		{"?limit=banana", service.DefaultTradeLimit},
+		{"?limit=0", service.DefaultTradeLimit},
+		{"?limit=-3", service.DefaultTradeLimit},
+		{"?limit=12.5", service.DefaultTradeLimit},
+		{"?limit=250", 250},
+		{"?limit=10000", service.MaxTradeLimit},
+		{"?limit=99999", service.MaxTradeLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run("limit"+tt.query, func(t *testing.T) {
+			h, trading, _, _ := newHandler(t)
+
+			rec := get(t, h, "/trading/trades"+tt.query, uuid.NewString())
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
+			}
+			if len(trading.TradeLimits) != 1 {
+				t.Fatalf("got %d ListTrades calls, want 1", len(trading.TradeLimits))
+			}
+			if got := trading.TradeLimits[0]; got != tt.want {
+				t.Errorf("store received limit %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

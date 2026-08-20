@@ -49,6 +49,28 @@ type TradingStore interface {
 
 	// ListHoldings returns open positions only (quantity > 0), unpriced.
 	ListHoldings(ctx context.Context, accountID uuid.UUID) ([]Holding, error)
+
+	// ListTrades returns the account's executions OLDEST first, capped at
+	// limit. The order is the opposite of ListOrders' and the reason is the
+	// consumer: ai-insights replays this log forward from the first trade to
+	// rebuild cash and holdings (Step 20 SPEC.md §2.1), so descending would
+	// mean reversing the slice to undo the ORDER BY.
+	//
+	// Oldest-first is also what makes truncation SAFE rather than correct.
+	// A capped response is a complete PREFIX of the account's history, so the
+	// cash and holdings derived from it are internally consistent -- whereas
+	// newest-first truncation would hand back sells whose funding buys had
+	// been cut off, and the derived balance would be wrong rather than merely
+	// partial.
+	//
+	// Consistent is not the same as usable, and the difference is worth
+	// stating: ai-insights reconciles its derivation against the LIVE account,
+	// which reflects every trade including the ones the cap dropped, so a
+	// truncated log fails that guard and degrades the whole report to
+	// insufficient_data. That is the intended direction -- a refusal, not a
+	// quietly short answer -- and it is what MaxTradeLimit exists to keep out
+	// of reach rather than something callers should plan around.
+	ListTrades(ctx context.Context, accountID uuid.UUID, limit int) ([]Trade, error)
 }
 
 // PriceClient fetches the latest cached price for a symbol from market-data

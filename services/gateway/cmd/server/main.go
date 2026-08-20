@@ -63,6 +63,7 @@ func main() {
 	marketDataURL := mustParseURL("MARKET_DATA_SERVICE_URL", envOrDefault("MARKET_DATA_SERVICE_URL", "http://localhost:8082"))
 	tradingURL := mustParseURL("TRADING_ENGINE_SERVICE_URL", envOrDefault("TRADING_ENGINE_SERVICE_URL", "http://localhost:8083"))
 	backtestingURL := mustParseURL("BACKTESTING_SERVICE_URL", envOrDefault("BACKTESTING_SERVICE_URL", "http://localhost:8084"))
+	insightsURL := mustParseURL("INSIGHTS_SERVICE_URL", envOrDefault("INSIGHTS_SERVICE_URL", "http://localhost:8085"))
 	port := envOrDefault("PORT", "8080")
 	// Loopback by default. In Phase 1 the frontend runs on the same machine,
 	// so nothing needs to reach the gateway from off-box; set BIND_ADDR
@@ -76,6 +77,7 @@ func main() {
 	marketDataProxy := proxy.New(marketDataURL, transport, "market-data")
 	tradingProxy := proxy.New(tradingURL, transport, "trading-engine")
 	backtestingProxy := proxy.New(backtestingURL, transport, "backtesting")
+	insightsProxy := proxy.New(insightsURL, transport, "ai-insights")
 
 	rateLimit := rateLimitConfig()
 
@@ -92,7 +94,7 @@ func main() {
 		go rateLimit.Backoff.Run(ctx, evictInterval)
 	}
 
-	router := handler.NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy, []byte(jwtSecret), allowedOrigin, rateLimit)
+	router := handler.NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy, insightsProxy, []byte(jwtSecret), allowedOrigin, rateLimit)
 
 	addr := bindAddr + ":" + port
 	srv := &http.Server{
@@ -101,8 +103,8 @@ func main() {
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	log.Printf("gateway listening on %s (auth=%s, market-data=%s, trading-engine=%s, backtesting=%s)",
-		addr, authURL, marketDataURL, tradingURL, backtestingURL)
+	log.Printf("gateway listening on %s (auth=%s, market-data=%s, trading-engine=%s, backtesting=%s, ai-insights=%s)",
+		addr, authURL, marketDataURL, tradingURL, backtestingURL, insightsURL)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

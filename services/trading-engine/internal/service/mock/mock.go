@@ -67,6 +67,8 @@ type TradingStore struct {
 	OrdersErr   error
 	Holdings    []service.Holding
 	HoldingsErr error
+	Trades      []service.Trade
+	TradesErr   error
 
 	// RejectErr makes persisting a rejection fail. Worth being able to
 	// simulate: the caller is already handling one failure when it happens.
@@ -74,6 +76,11 @@ type TradingStore struct {
 
 	ExecuteCalls  []service.ExecuteOrderParams
 	RejectedCalls []RejectedOrderCall
+
+	// TradeLimits records the limit each ListTrades call was given, so a test
+	// can assert the service normalized it rather than passing a caller's 0 or
+	// 99999 straight through to a LIMIT clause.
+	TradeLimits []int
 }
 
 func (s *TradingStore) ExecuteOrder(_ context.Context, p service.ExecuteOrderParams) (service.PlaceOrderResult, error) {
@@ -118,6 +125,17 @@ func (s *TradingStore) ListHoldings(_ context.Context, _ uuid.UUID) ([]service.H
 		return nil, s.HoldingsErr
 	}
 	return s.Holdings, nil
+}
+
+// ListTrades returns Trades verbatim and does NOT apply limit -- the mock
+// records it instead. Truncating here would hide the thing worth asserting:
+// that the service normalized the limit before the store ever saw it.
+func (s *TradingStore) ListTrades(_ context.Context, _ uuid.UUID, limit int) ([]service.Trade, error) {
+	s.TradeLimits = append(s.TradeLimits, limit)
+	if s.TradesErr != nil {
+		return nil, s.TradesErr
+	}
+	return s.Trades, nil
 }
 
 // PriceClient answers from a map. A symbol that is absent gets

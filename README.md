@@ -12,16 +12,16 @@ This project demonstrates real‑time systems design, financial data processing,
 
 # Status
 
-QuantSim is in active development (Phase 3). This section reflects what's actually built, not the target design further down.
+QuantSim is in active development (Phase 4). This section reflects what's actually built, not the target design further down.
 
 | Service | State |
 |---|---|
 | `services/auth` | Built — registration, login, JWT issuance, case-insensitive identity lookup, per-IP and per-account rate limiting on `/auth/*`, refresh-token revocation on logout |
-| `services/gateway` | Built — reverse proxy to auth, market-data, trading-engine, and backtesting; auth-aware rate limiting, router-wide request body cap |
+| `services/gateway` | Built — reverse proxy to auth, market-data, trading-engine, backtesting, and ai-insights; auth-aware rate limiting, router-wide request body cap |
 | `services/market-data` | Built — Alpaca ingestion, Redis caching |
 | `services/trading-engine` | Built — market buy/sell orders, positions, portfolio, trade history; frontend dashboard (order ticket, positions, trade/order history) |
 | `services/backtesting` | Built — moving-average-crossover, RSI, and MACD strategies, next-bar-open fills, the five `agents.md` §3 metrics; multi-symbol portfolio runs drawing on one shared pool of capital (1–10 symbols); frontend dashboard tab (strategy form, results, run history) |
-| `services/ai-insights` | Not started (stub `go.mod` only) |
+| `services/ai-insights` | Built — `GET /insights/portfolio`: risk (position weights, cash weight, concentration HHI, annualized volatility, max drawdown), benchmarking against buy-and-hold SPY and QQQ, and behavioral findings with the trade IDs that caused them. Every figure is derived from an equity curve reconstructed on demand from the trade log and stored bars, and reconciled against the live account. Deterministic and rule-based — the LLM layer that *phrases* these numbers is a later step |
 
 Schema is at migration version 9. Auth, trading-engine, and backtesting each have a store-layer integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. The frontend has its own `vitest` suite (61 tests) for validation and error-mapping logic. No CI is wired up yet.
 
@@ -55,6 +55,7 @@ make run-gateway          # :8080
 make run-market-data      # :8082
 make run-trading-engine   # :8083
 make run-backtesting      # :8084
+make run-ai-insights      # :8085
 make run-frontend         # :5173 (Vite dev server)
 ```
 
@@ -361,7 +362,7 @@ Optional, considered but not adopted (see `docs/deferred-tuning.md` for what wou
   /market-data     — built
   /trading-engine  — built
   /backtesting     — built
-  /ai-insights     — stub
+  /ai-insights     — built
 /pkg
 /frontend
 /infra
@@ -465,4 +466,4 @@ Software Engineer | Full‑Stack Developer | Fintech Enthusiast
 
 # Summary
 
-QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture. Phase 1 (auth, market data ingestion), Phase 2 (trading engine), and Phase 3 (backtesting engine) are done — the latter through MA-crossover/RSI/MACD strategies, their frontend, and multi-symbol portfolio runs. Phase 4 (AI insights, deployment) is next.
+QuantSim is designed to function as a production‑grade fintech simulation platform that bridges real‑time trading systems, quantitative research tooling, and AI‑driven analytics into one cohesive distributed architecture. Phase 1 (auth, market data ingestion), Phase 2 (trading engine), and Phase 3 (backtesting engine) are done — the latter through MA-crossover/RSI/MACD strategies, their frontend, and multi-symbol portfolio runs. Phase 4 (AI insights, deployment) is underway: the rule-based portfolio analytics service is built, with insight generation, Dockerization, and cloud deployment still ahead.

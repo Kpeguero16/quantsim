@@ -113,6 +113,51 @@ func (s *Service) Orders(ctx context.Context, userID uuid.UUID) ([]Order, error)
 	return s.trading.ListOrders(ctx, account.ID)
 }
 
+// DefaultTradeLimit and MaxTradeLimit bound GET /trading/trades, mirroring
+// market-data's DefaultHistoryLimit/MaxHistoryLimit convention rather than
+// inventing a second one.
+//
+// There is no principled number here. 10000 is comfortably above what any
+// paper-trading account plausibly accumulates, so the cap exists to stop one
+// request reading an unbounded table, not to paginate -- real pagination is
+// deferred until an account can actually exceed it (Step 20 SPEC.md §3).
+const (
+	DefaultTradeLimit = 1000
+	MaxTradeLimit     = 10000
+)
+
+// Trades returns the caller's own executions, oldest first.
+//
+// Scoped through AccountForUser like Orders, which is what makes reading
+// someone else's trade log impossible to express rather than merely forbidden.
+func (s *Service) Trades(ctx context.Context, userID uuid.UUID, limit int) ([]Trade, error) {
+	account, err := s.accounts.AccountForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.trading.ListTrades(ctx, account.ID, normalizeTradeLimit(limit))
+}
+
+// normalizeTradeLimit clamps a requested limit into range.
+//
+// Anything non-positive means "the caller did not usefully ask" -- absent,
+// zero, negative, or unparseable at the HTTP boundary -- and gets the default.
+// Anything above the cap is clamped rather than rejected: a caller asking for
+// more history than exists wants all of it, and a 400 would be pedantry.
+//
+// This lives in the service, not the handler, so the rule is one function with
+// one set of tests rather than something only reachable through HTTP.
+func normalizeTradeLimit(limit int) int {
+	switch {
+	case limit <= 0:
+		return DefaultTradeLimit
+	case limit > MaxTradeLimit:
+		return MaxTradeLimit
+	default:
+		return limit
+	}
+}
+
 // Positions returns the caller's open holdings priced at the current market.
 //
 // This is the fail-OPEN path, and it is deliberately the opposite posture from

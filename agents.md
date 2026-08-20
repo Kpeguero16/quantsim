@@ -342,8 +342,12 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
   run. See `docs/NEXT_SESSION.md` for current status
 
 ## Phase 4 — AI Insights + Infra
-- Portfolio analytics
-- Insight generation
+- Portfolio analytics — done (Step 20), `services/ai-insights` and
+  `GET /insights/portfolio`: risk, benchmarking and behavior, every number
+  derived and reconciled against the live account. No LLM — see below
+- Insight generation — the LLM layer that *phrases* Step 20's numbers. Step 20
+  computed them first on purpose: a model may only phrase figures it is handed
+  and may never produce one, so no number a user reads can be a hallucination
 - Dockerization
 - Cloud deployment
 - Work through **docs/deferred-tuning.md** — timeouts, connection pooling, and

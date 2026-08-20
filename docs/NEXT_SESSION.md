@@ -1,66 +1,68 @@
 # Next session — state of play
 
-Last updated **2026-08-19**, right after Step 19 (portfolio backtests) was reviewed and merged to `main`. **Phase 3 is complete.**
+Last updated **2026-08-20**, with Step 20 (portfolio analytics) reviewed and merged to `main`. **Phase 4 is underway; its first roadmap item is done.**
 
 This file answers three questions on picking the project back up: *is anything half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not appended to.
 
 ---
 
-## Step 19 is merged. Nothing is half-finished.
-
-Phase 3's last named item is done, which closes the phase. The next work is Phase 4 (AI Insights + Infra), and `services/ai-insights` is still a stub `go.mod`.
+## Step 20 is merged. Nothing is half-finished.
 
 | | |
 |---|---|
-| Branch | `step19-portfolio-backtests` — 27 commits squashed to one `feat(step19)` commit (`fa47004`), merged via `Merge Step 19: portfolio backtests` (`410e5fb`), matching Steps 16–18's precedent. Feature branches in this project stay local; only `main` is pushed. |
-| Pre-merge review | An independent five-axis review (correctness, readability, architecture, security, performance) found **no Critical or Important defects** — the first step in a while where it didn't. Its one actionable suggestion, `alignBars`' daily-bar assumption (it fails *silently* if intraday bars ever reach it, since several bars would share one `dayKey`), is now recorded in the code. Four other suggestions were left unaddressed as recorded judgment calls, not oversights — see `PHASE3_CHECKLIST.md`. One theory the review formed (malformed symbols surfacing as a 502 rather than a 400) was tested against the live stack and **disproved**: all such inputs return a clean 400 `symbol_unavailable`. |
-| Tests | `make vet`/`test`/`test-integration` green across all five services. `go test -count=1 -race` green on `services/backtesting`, with and without `-tags=integration`. Frontend: `tsc -b` clean, `npm run build` ✓, `npm run test` 61/61, `npm run lint` with only the four pre-existing `exhaustive-deps` warnings (none in a file this step touched). |
-| Dev database | `users=20`, `accounts=20`, `backtests=0` — restored to baseline after the manual pass. Migration **`009_backtest_portfolios` is applied** (`schema_migrations` 9, not dirty): `backtests.symbols TEXT[]`, `backtest_trades.symbol`, `backtest_trades.seq`, and `backtests.symbol` **dropped**. |
-| Local processes | `auth` and `market-data` were already running and were left alone. **`gateway`, `backtesting`, `trading-engine`, and the frontend dev server were started during Step 19's manual pass and left running** — unlike previous sessions, they were not killed. Check `lsof -i :8080-8084` and `:5173` and kill what you don't want before assuming any port's state. |
+| Branch | `step20-portfolio-analytics` — squashed to one `feat(step20)` commit and merged to `main` with `--no-ff`, matching Steps 16–19. Feature branches stay local; only `main` is pushed. The pre-squash branch is kept at `backup/step20-pre-squash` and can be deleted once the merge has been pushed and looks right. |
+| Tests | `make vet`/`test` green across all seven modules; `make test-integration` 63 passed / 0 failed. `go test -race -count=1 ./...` clean on `ai-insights`, `trading-engine` and `backtesting`. All re-run at the pre-merge review rather than carried over. |
+| D1's proof | `git diff --exit-code main -- services/backtesting/internal/service/metrics_test.go` is **empty** — the `pkg/portfoliomath` extraction changed no behavior, re-checked at the end of the step rather than only at the start. |
+| Dev database | `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices` at 3507 rows across seven symbols — restored after the manual pass and **verified by query**, not assumed. |
+| Local processes | All six services were started for the manual pass and **killed afterwards**. Postgres and Redis containers are up. `lsof -nP -iTCP -sTCP:LISTEN | grep 808` should show nothing. |
 
-`docs/archive/phase3-step19-portfolio-backtests/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo — root `SPEC.md` and `tasks/` live only on a feature branch and are not carried on `main`. The todo is unusually detailed: it records what each mutation caught and what each verification actually proved.
+`docs/archive/phase4-step20-portfolio-analytics/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo — root `SPEC.md` and `tasks/` live only on a feature branch and are not carried on `main`. The todo records what each mutation caught and what each verification actually proved.
 
 ---
 
-## What Step 19 shipped
+## What Step 20 shipped
 
-One backtest run over **N symbols drawing on a single shared pool of capital** — the last named item in `agents.md` §3's backtesting scope, deferred by both Step 16 and Step 18 as "a materially different simulator."
+`services/ai-insights` as the sixth service, serving one endpoint — `GET /insights/portfolio` — with three sections: **risk**, **benchmarking**, **behavior**. Deterministic and rule-based: **no LLM**, no frontend, and no database.
 
-Deliberately *not* N independent single-symbol runs stapled together: that would have been a loop around the existing engine and would have answered a different question. The symbols genuinely compete for the same cash.
+Every figure is derived from an equity curve **reconstructed on demand**, because QuantSim stores no portfolio history — there is a trade log and there are daily bars, and nothing recording what the account was worth on any past day.
 
-- `alignBars` — the intersection of every symbol's dates, alphabetically ordered, so bar index `i` is the same trading day for every symbol.
-- `SimulatePortfolio` — sells settle first into the shared pool, one `target := equityAtOpen / N` per bar, then buys in symbol order capped at `min(cash, target)`. `Simulate` was proven equivalent at N=1 and then **deleted**.
-- `symbol TEXT` → `symbols TEXT[]`, per-trade `symbol`, and a stored trade-log `seq` (migration `009`).
-- `normalizeSymbols` — trim/upper/sort, rejecting empty, >10, and case-insensitive duplicates outright; mirrored client-side by `validateSymbols`.
-- Frontend: a comma-separated Symbols field, a Symbol column in the trade log, and `symbols.join(', ')` wherever a run's symbol was shown.
-- `ComputeMetrics` is **untouched** and still does not know how many symbols produced the curve it is handed.
+- `pkg/portfoliomath` — `Sharpe`, `MaxDrawdownPct`, `DailyReturns`, `Mean`, `StdevPopulation`, extracted from `backtesting` and landed first and alone.
+- `GET /trading/trades` on `trading-engine`, **ascending** (its only consumer replays the log chronologically), deliberately unlike `ListOrders`.
+- `Calendar` → `Reconstruct` → `Reconcile` — intersection of every ever-held symbol's dates plus both benchmarks, no carry-forward, and a runtime invariant that **refuses rather than repairs**.
+- Risk (HHI over *invested* positions, cash separate), benchmarking (buy-and-hold `SPY` and `QQQ` over the identical calendar), behavior (three rules with named thresholds and **evidence trade IDs attached**).
+- Redis cache, `insights:{user_id}`, 5-minute TTL, fail-open both ways.
 
-Full writeup — mutation results, integration additions, and the manual pass — in `PHASE3_CHECKLIST.md`'s Step 19 entry.
+Full writeup — the §2.12 amendment, every mutation survivor, and the manual pass — in `PHASE4_CHECKLIST.md`'s Step 20 entry.
 
 ### Four things worth knowing about
 
-1. **An `ORDER BY` over row values cannot express a sequence those values don't determine.** This was Step 19's one real bug (R1), found in the Checkpoint B review. The trade SELECT was `ORDER BY bar_timestamp, id` with `id` a random UUID, and it worked only because one run meant one symbol and so at most one fill per bar. A portfolio run fills several symbols on the same bar routinely, so a same-bar group came back shuffled differently on every read — a sell could be listed beneath the same-bar buy it funded. The fix stores the order (`seq INTEGER NOT NULL` + `UNIQUE (backtest_id, seq)`) rather than re-deriving it; re-deriving would have been a second copy of the engine's within-bar rules, free to drift from them.
-2. **`[]string` binds and scans against `TEXT[]` through pgx v5 with no `pgtype` wrapper.** This is the repo's first array column, so it had no precedent here. It was verified against real Postgres in the integration suite rather than trusted to compile — a `Scan` that compiles proves nothing about an array codec.
-3. **A zero-value `errgroup.Group` is sometimes the right choice over `WithContext`.** `fetchHistories` deliberately does *not* cancel siblings on the first failure: a sibling cancelled mid-flight would report a context error in place of the real one it was about to return, which would reintroduce exactly the scheduling-dependent nondeterminism the ordered error scan exists to remove. Errors are collected per-index and scanned in symbol order, so two unavailable symbols always name the same one.
-4. **`NUMERIC(20,4)` bites harder at N>1 than it did at N=1.** A position is now funded by `equity/N`, so the same fixed 0.0001 granularity covers a larger share of a smaller position. Quantity assertions in the integration suite read the column as text via the existing `numeric()` helper and compare against what Postgres actually kept — comparing `float64`s would be checking Go's arithmetic against itself.
+**The spec was wrong and real data proved it.** §2.12's reconciliation guard blanked the *entire* report for a portfolio with 39 clean days and one buy placed that morning. The cause is worth keeping: **"the curve is truncated" and "the user traded after the last stored close" are arithmetically the same event** — both look like derived cash disagreeing with `accounts.balance`. §2.12 was amended in place, with a dated subsection recording what was given back.
+
+**That amendment then created a defect, caught before merge.** Making post-calendar trades survivable made them routine, and `panicSelling` read the calendar without bounding itself by `as_of_date` the way `overtrading` already did — so a recent sell could be flagged as panic selling, with its trade ID attached as evidence, on a price move weeks earlier. **The live run did not expose it** (the last stored session happened to rise); reading the code did.
+
+**`risk.positions` are as of `as_of_date`, not as of now**, and can legitimately disagree with the live `positions` table. The manual pass shows a reported GOOGL holding of 10 against a live 6.
+
+**Five separate defects in this step had the same cause**: two paths to one outcome hide each other's boundary unless a test isolates them. Four were mutation survivors, each with green tests and correct behavior; what was missing was the ability to tell which mechanism produced the result. The fifth was the pre-merge review's own finding, and it was a real bug rather than a coverage gap — `panicSelling` returned a bare `false` both for "there is no pair of prior sessions to judge this against" and for "the prior session did not drop", so sells it had refused to judge were counted in the denominator of its share test and kept the finding quiet. **The post-`as_of` case had already been excluded with that exact reasoning written in a comment four lines away.** A principle stated in one branch and not applied to its sibling is the shape to look for.
 
 ---
 
 ## What to do next
 
-**1. Phase 4 — AI Insights + Infra** is the next major work: portfolio analytics, insight generation, Dockerization, cloud deployment. `services/ai-insights` is a stub `go.mod` and nothing else. This is the first phase with no existing service to extend, so it wants its own spec before any code.
+**1. Phase 4 continues** — the remaining roadmap items, in the order `agents.md` lists them:
 
-Two things Step 19 left deliberately undone, both recorded rather than forgotten:
+- **Insight generation** — the LLM layer that phrases Step 20's numbers. Its contract is already fixed by Step 20's design: **it may phrase only numbers it is handed, and may never produce one.** That is why the analytics shipped first.
+- **Insights frontend** — Step 21, per the Step 16 → 17 precedent.
+- **Dockerization**, then **cloud deployment** (AWS free tier: EC2 + docker-compose; Redis stays containerized since ElastiCache has no free tier).
+- **`docs/deferred-tuning.md`** — timeouts and pooling defaults left unset because the right values depend on traffic shape that only exists once deployed. Deployment is what unblocks this.
 
-- **`009`'s backfill has no automated coverage and should not get any.** The integration harness always migrates a freshly created empty database, so the `UPDATE` there always runs against zero rows — a test would assert nothing while appearing to assert something (plan D2). It was verified by hand in both directions instead, including a live down/up against the real dev database.
-- **The trade-log batch write is unbounded and now up to 10× larger** (`postgres_backtest_store.go`) — worst case ~20,000 queued statements in one transaction, against ~2,000 before Step 19. Fine at today's 501 bars of history; worth chunking if that grows.
+**2. One thing Step 20 recorded rather than fixed.** With Redis down the insights endpoint returns 502 — not a fail-open bug (the cache logs "cache read failed, computing" and proceeds correctly), but because `trading-engine` degrades *slowly*: `GET /trading/portfolio` takes **8.7s against 5.8ms healthy**, tripping the 5s upstream timeout. So a Redis outage takes the report down even though every figure in it comes from Postgres. Fixing it means changing `trading-engine`'s retry behaviour.
 
-**2. The two long-standing small items**, both still open and both still lower priority:
+**3. The two long-standing small items**, both still open and both still lower priority:
 
-- `market-data`'s store has no tests (`historical_price_store.go`). The integration harness exists in **three** copies (auth, trading-engine, backtesting); a fourth use is the point to actually extract to `pkg/testutil/` — see `docs/deferred-tuning.md` §11 and `docs/TESTING_STRUCTURE.md` §6a.
+- `market-data`'s store has no tests (`historical_price_store.go`). The integration harness still exists in **three** copies — `ai-insights` owns no database, so it did not become the fourth and the extraction trigger in `docs/TESTING_STRUCTURE.md` §6a is still unfired.
 - Pre-existing `gofmt` drift in `services/auth/internal/service/{interfaces.go,types.go}`, untouched since Step 11. Worth a one-line cleanup commit before any `fmt` check lands in CI.
 
-**3. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
+**4. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
 
 ---
 
@@ -72,6 +74,7 @@ make run-auth             # :8081
 make run-market-data      # :8082
 make run-trading-engine   # :8083
 make run-backtesting      # :8084
+make run-ai-insights      # :8085
 make run-gateway          # :8080
 make run-frontend         # :5173
 ```
@@ -80,11 +83,11 @@ Each `run-*` target runs in the foreground, so they need separate terminals. `ma
 
 Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff after 5 consecutive failed logins). `RATE_LIMIT_ENABLED=false` turns it off if it gets in the way during development.
 
-`services/auth` requires `REDIS_URL` to boot (`log.Fatal` if unset). **Do not put `PORT=8083` or `PORT=8084` in `.env`**: the Makefile exports that file to every target, so it would move every service onto the same port. Override per process instead.
+`services/auth` requires `REDIS_URL` to boot (`log.Fatal` if unset). **`services/ai-insights` does not** — without it every request is computed from scratch and the service says so at startup. **Do not put `PORT=` in `.env`**: the Makefile exports that file to every target, so it would move every service onto the same port. Override per process instead.
 
-**Register a fresh password with something that isn't your username, email, or "quantsim."** Auth's password validator rejects any password containing the username, the email, or the service name as a substring, case-insensitively. A generic throwaway phrase with no connection to the account's own name/email sidesteps it. Registration also requires a `username` — a body with only `email`/`password` is rejected.
+**Register a fresh password with something that isn't your username, email, or "quantsim."** Auth's password validator rejects any password containing the username, the email, or the service name as a substring, case-insensitively. Registration also requires a `username` — a body with only `email`/`password` is rejected.
 
-**The `migrate` CLI is installed to `$(go env GOPATH)/bin`, not on the default `PATH`.** `make migrate-up`/`migrate-down` will report `migrate: command not found` from a plain shell unless `$(go env GOPATH)/bin` is on `PATH` — export it first, or run the `migrate` binary by its full path. Every migration in this repo is plain SQL with no migrate directives, so applying a file directly via `psql` and updating `schema_migrations` by hand is an equivalent fallback (that is how T18's down/up was run), but prefer the CLI when it's reachable.
+**The `migrate` CLI is installed to `$(go env GOPATH)/bin`, not on the default `PATH`.** `make migrate-up`/`migrate-down` will report `migrate: command not found` from a plain shell unless that directory is on `PATH`. Every migration here is plain SQL with no migrate directives, so applying a file via `psql` and updating `schema_migrations` by hand is an equivalent fallback — but prefer the CLI when it's reachable. **Step 20 added no migration**; `ai-insights` owns no tables.
 
 ---
 
@@ -93,31 +96,49 @@ Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff a
 **`DATABASE_URL` points at the `postgres` database, not `quantsim`.** An empty database named `quantsim` also exists. `psql -d quantsim` connects successfully and shows no `users` table, which reads like data loss and is not. The user is **`quantsim`** and the database is **`postgres`**:
 
 ```bash
-docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
+docker exec quantsim-postgres psql -U quantsim -d postgres -tAc \
   "SELECT count(*) FROM users"     # 20, as of this session
 ```
 
-**`backtests.user_id` has no `ON DELETE CASCADE`, unlike `backtest_trades.backtest_id`.** Deleting a throwaway user who has run any backtests fails with a foreign-key violation unless their `backtests` rows are deleted first. `backtest_trades` cascades fine from `backtests` — it's only the `users → backtests` edge that needs the extra step.
+**`historical_prices` has no `date` column** — the column is `timestamp` (`timestamptz`), and a bar's calendar day is `timestamp::date`. Grouping or joining on a `date` column that doesn't exist is the first thing that fails when poking at bars by hand.
 
-**The frontend holds both tokens in memory only, never in `localStorage`/`sessionStorage`/a cookie** (`SPEC.md` §2.5). A page refresh logs you out, and there is no way to hand a browser session a token out of band — any browser-driven verification has to go through the login form.
+**`docker exec` without `-i` silently discards a heredoc.** `docker exec quantsim-postgres psql ... <<'SQL'` connects, reads nothing, and exits 0 — so a batch of `UPDATE`s appears to run and changes nothing. Use `docker exec -i`.
 
-**An `ORDER BY` over row values cannot impose an order those values don't determine.** See R1 above. If a read needs a specific order and the columns can tie, store the order explicitly; do not add tie-breaker columns that re-derive a rule owned elsewhere in the code.
+**The `insights:{user_id}` cache is not invalidated on trade** (5-minute TTL). Placing trades and re-reading the endpoint returns the *previous* report, and `computed_at` is the field that tells you so. Flush with `redis-cli DEL insights:<uuid>` when testing by hand. Errors are never cached, so a 404 or 502 does not stick.
 
-**A `go run` service started before a code change keeps serving the old binary.** Kill the whole `make run-*` / `go run` process tree and restart rather than assuming a long-running dev process reflects the code currently on disk. The frontend's `vite` dev server is the exception — it has HMR and picks up changes live, so it doesn't need restarting between edits the way the Go services do.
+**A Redis outage takes `/insights/portfolio` down with a 502**, despite the cache being fail-open — see item 3 above. If the endpoint 502s, check Redis before suspecting the service.
 
-**A gateway wildcard route (`/prefix/*`) does not match the bare prefix with no trailing segment.** This was Step 16's routing bug. If a new backend service has a collection endpoint at its own root (no sub-path, unlike `trading-engine`'s `/trading/orders` etc.), the gateway needs both `r.Handle("/prefix", proxy)` and `r.Handle("/prefix/*", proxy)`.
+**`risk.positions` are as of `as_of_date`, not as of now.** A trade placed after the last stored bar is reflected in the reconciliation (which projects past the calendar) but *not* in the reported positions. A reported holding disagreeing with the live `positions` table is expected behavior, not a bug.
 
-**The integration harness now exists in three copies** (`services/{auth,trading-engine,backtesting}/integration/`), not extracted to `pkg/testutil/` yet — see `docs/deferred-tuning.md` §11 for why, and what should trigger doing it for real.
+**`omitempty` cannot tell "absent" from "zero".** Every figure whose zero is a reachable measurement — an all-cash portfolio's `concentration_hhi`, a flat curve's `annualized_volatility_pct` — must not carry it, and a test that only checks a struct field will never notice, because the loss happens at marshalling. Use it only where zero is genuinely unreachable.
 
-**A nil Go slice and an empty one are `len()`-identical but `encoding/json`-different.** `var s []T` marshals as `null`; `s := []T{}` marshals as `[]`. Every list-shaped response field needs the latter, deliberately, even when every existing test only ever checks `len(s)` — that check cannot tell the two apart. This is what Step 17's `Simulate` bug was, and why `scanBacktest` guards `Symbols == nil` even though the column is `NOT NULL` and cannot currently produce it.
+**Percentage-form threshold comparisons are untestable at their own boundary.** `(95.0/100.0 - 1) * 100 == -5.000000000000004` for *every* clean 5% fall, because `0.95` has no exact binary representation — so `<=` and `<` are indistinguishable there and a test claiming to pin "exactly −5%" pins nothing. Compare **prices against a threshold price** instead: `100.0 * (1 - 5.0/100) == 95.0` exactly. See `previousTradingDayDropped`.
 
-**`toLocaleDateString()` with no `timeZone` option uses the *browser's* local zone, not UTC.** Any value that's a calendar date rather than a real instant (a form's `start_date`/`end_date`, a daily bar's `bar_timestamp`) needs `{timeZone: 'UTC'}` passed explicitly, or it can render a day off depending on where the browser sits relative to UTC. `frontend/src/format.ts`'s `formatDate` is the one place in this app that does this correctly — reuse it rather than calling `toLocaleDateString()` directly on a calendar-date field.
+**A mutant that doesn't compile, or no longer applies, is not a caught mutant.** Both report as something other than SURVIVED and both look like passing coverage. Re-point stale mutants when the code moves under them, and rewrite non-compiling ones (e.g. `asOf.AddDate(100, 0, 0)` in place of a bare `false`) so they actually run.
 
-**A bare `tsc --noEmit` silently no-ops against this project's `tsconfig` setup and reports zero errors regardless of what's broken.** Use `npm run build` (which runs `tsc -b`) or `npx tsc -b` directly to actually typecheck this frontend.
+**`backtests.user_id` has no `ON DELETE CASCADE`, unlike `backtest_trades.backtest_id`.** Deleting a throwaway user who has run any backtests fails with a foreign-key violation unless their `backtests` rows go first. The same applies to `trades`/`orders`/`positions` → `accounts` → `users`: delete children before parents when cleaning up a test account.
 
-**`Pick<UnionType, K>` does not distribute over a union in TypeScript** — it collapses a discriminated union's fields into one flat shape and loses the pairing a `switch` on the discriminant needs to narrow the other field. See `strategy-display.ts`'s `BacktestParamsByKind` for the fix (a direct union, not a `Pick`).
+**The frontend holds both tokens in memory only, never in `localStorage`/`sessionStorage`/a cookie.** A page refresh logs you out, and there is no way to hand a browser session a token out of band — any browser-driven verification has to go through the login form.
 
-**A generic bound checked on a sum doesn't protect against the addends overflowing first.** `maxWarmupBars` is checked once as `WarmupBars() > 500`, but each strategy constructor also bounds its own period-like fields individually before feeding them into that arithmetic — see Step 18's overflow bug. Any future "one check covers every case" design over integer inputs derived by arithmetic needs the same treatment.
+**`go build` succeeding says nothing about whether a module builds outside the workspace.** `go.work` supplies requirements that an individual `go.mod`/`go.sum` may be missing, so `make vet` and `make test` can be green while `cd <module> && GOWORK=off go build ./...` fails with `missing go.sum entry for go.mod file`. `pkg` and `services/gateway` were both in that state until the Step 20 review; all seven modules pass now. **Check it before Dockerization** — a standard Go Dockerfile copies one module's `go.mod`/`go.sum` and runs `go mod download`, which is exactly the off-workspace case:
+
+```bash
+for m in pkg services/*; do printf '%-28s ' "$m"; (cd $m && GOWORK=off go build ./... >/dev/null 2>&1 && echo OK || echo FAILS); done
+```
+
+**A `go run` service started before a code change keeps serving the old binary.** Kill the whole process tree and restart rather than assuming a long-running dev process reflects the code on disk. A stale `ai-insights` on `:8085` cost real time in this step: it served a pre-`T8` router, so the new route looked missing. The frontend's `vite` dev server is the exception — it has HMR.
+
+**A gateway wildcard route (`/prefix/*`) does not match the bare prefix with no trailing segment.** This was Step 16's routing bug. `/insights/*` is fine because `ai-insights` has no collection endpoint at its own root, but any future service that does needs both `r.Handle("/prefix", proxy)` and `r.Handle("/prefix/*", proxy)`.
+
+**A nil Go slice and an empty one are `len()`-identical but `encoding/json`-different.** `var s []T` marshals as `null`; `s := []T{}` marshals as `[]`. Every list-shaped response field needs the latter deliberately — including the degraded paths, where it's easiest to forget.
+
+**`toLocaleDateString()` with no `timeZone` option uses the *browser's* local zone, not UTC.** Any value that's a calendar date rather than a real instant needs `{timeZone: 'UTC'}`. `frontend/src/format.ts`'s `formatDate` is the one place that does this correctly — reuse it.
+
+**A bare `tsc --noEmit` silently no-ops against this project's `tsconfig` setup** and reports zero errors regardless of what's broken. Use `npm run build` (which runs `tsc -b`) or `npx tsc -b`.
+
+**`Pick<UnionType, K>` does not distribute over a union in TypeScript** — it collapses a discriminated union's fields into one flat shape and loses the pairing a `switch` needs to narrow. See `strategy-display.ts`'s `BacktestParamsByKind`.
+
+**A generic bound checked on a sum doesn't protect against the addends overflowing first.** See Step 18's overflow bug: each strategy constructor bounds its own period-like fields individually before the arithmetic that feeds the single `WarmupBars() > 500` check.
 
 ---
 
@@ -128,6 +149,7 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 | Phase 1 (auth + market data) | `docs/archive/phase1-step4-auth/` through Step 7's archive |
 | Phase 2 (trading engine) — complete | `PHASE2_CHECKLIST.md`, archived specs `docs/archive/phase2-step*` |
 | Phase 3 (backtesting engine) — complete | `PHASE3_CHECKLIST.md`, archived specs `docs/archive/phase3-step*` |
+| Phase 4 (AI insights + infra) — in progress | `PHASE4_CHECKLIST.md`, archived specs `docs/archive/phase4-step*` |
 | Deferred tuning / known trade-offs | `docs/deferred-tuning.md` |
 | Testing conventions | `docs/TESTING_STRUCTURE.md` |
 | Security backlog | `docs/security-backlog.md` |
