@@ -10,7 +10,7 @@ This file answers three questions on picking the project back up: *is anything h
 
 | | |
 |---|---|
-| Branch | `step20-portfolio-analytics` — squashed to one `feat(step20)` commit and merged to `main` with `--no-ff`, matching Steps 16–19. Feature branches stay local; only `main` is pushed. The pre-squash branch is kept at `backup/step20-pre-squash` and can be deleted once the merge has been pushed and looks right. |
+| Branch | `step20-portfolio-analytics` — squashed to one `feat(step20)` commit and merged to `main` with `--no-ff`, matching Steps 16–19. Feature branches stay local; only `main` is pushed. |
 | Tests | `make vet`/`test` green across all seven modules; `make test-integration` 63 passed / 0 failed. `go test -race -count=1 ./...` clean on `ai-insights`, `trading-engine` and `backtesting`. All re-run at the pre-merge review rather than carried over. |
 | D1's proof | `git diff --exit-code main -- services/backtesting/internal/service/metrics_test.go` is **empty** — the `pkg/portfoliomath` extraction changed no behavior, re-checked at the end of the step rather than only at the start. |
 | Dev database | `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices` at 3507 rows across seven symbols — restored after the manual pass and **verified by query**, not assumed. |
