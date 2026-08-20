@@ -8,7 +8,7 @@ Any AI agent referencing this document should treat it as the single source of t
 
 # Working Agreement (Architect / Implementer)
 
-As of 2026-07-29, QuantSim resumed development under a different workflow than Phase 1 started with. See `docs/intent/quantsim-resume.md` for the full rationale.
+As of 2026-07-29, QuantSim resumed development under a different workflow than Phase 1 started with. The terms of that workflow are below and are the operative version; this file, not any other, is what a session should be run against.
 
 > **Starting a session? Read `docs/NEXT_SESSION.md` first.** It records what is in flight (usually nothing), what to pick up next and why, how to restart the local stack, and the environment gotchas that have already cost time once. It is rewritten at the end of each working session rather than appended to.
 
@@ -421,9 +421,9 @@ Always optimize for:
 
 # Author Context
 
-Computer science student building a flagship fintech system as a portfolio piece, alongside coursework — roughly 3-5 hrs/week of available time.
+Computer science student building a flagship fintech system as a portfolio piece, alongside coursework — roughly 3-5 hrs/week of available time, which is why the workflow above trades implementation volume for review depth.
 
-Role on this project: **architect**, not implementer. Directs scope, reviews specs and checkpoints, makes architecture calls. Prefers to spend limited hours on system design and decision-making rather than hand-writing implementation — see `docs/intent/quantsim-resume.md` for how this was decided.
+Role on this project: **architect**, not implementer. Directs scope, reviews specs and checkpoints, makes architecture calls. Prefers to spend limited hours on system design and decision-making rather than hand-writing implementation.
 
 Still cares about:
 - Finance-related systems

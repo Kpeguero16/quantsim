@@ -1,7 +1,7 @@
 # SPEC — QuantSim Minimal Frontend (Phase 1, Step 8)
 
 Status: **Approved 2026-07-29** — all nine proposed decisions accepted as drafted (§9), on top of the four settled before drafting (§2.1 scope, §2.2 polling, §2.5 token storage, §2.8 charting). One item remains open and does not block this step: the auth-service validation gap in §2.12. Implementation is unblocked; checkpoint slicing is in `tasks/plan.md`.
-Scope: `frontend/` — the minimal React UI that proves Phase 1 works end to end. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service), `docs/archive/phase1-step5-market-data/` (historical ingestion), `docs/archive/phase1-step6-market-data-live/` (live polling + Redis), `docs/archive/phase1-step7-gateway/` (API Gateway) — all complete.
+Scope: `frontend/` — the minimal React UI that proves Phase 1 works end to end. Not a whole-project spec — see `agents.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service), `docs/archive/phase1-step5-market-data/` (historical ingestion), `docs/archive/phase1-step6-market-data-live/` (live polling + Redis), `docs/archive/phase1-step7-gateway/` (API Gateway) — all complete.
 
 ---
 

@@ -1,7 +1,7 @@
 # SPEC — QuantSim Identity Lookup Consistency (Step 10)
 
 Status: **Approved 2026-07-31.** Khalil resolved the open decisions as recommended, and reordered the work: Step 10 lands **before** Step 9 is merged, since it fixes Step 9's own review findings. §9 records the resolutions.
-Scope: one query in `services/auth/internal/store`, one migration, one unit test, one documentation note. Small — deliberately so. Not a whole-project spec; see `agents.md` and `docs/intent/quantsim-resume.md`.
+Scope: one query in `services/auth/internal/store`, one migration, one unit test, one documentation note. Small — deliberately so. Not a whole-project spec; see `agents.md`.
 
 Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase1-step9-auth-validation/` — all complete. **Phase 1 is closed.**
 

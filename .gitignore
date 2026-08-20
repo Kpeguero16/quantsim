@@ -12,6 +12,11 @@ secrets/
 *.pem
 *.key
 
+# Private working notes. Kept locally, deliberately not published: these record
+# personal context behind project decisions rather than the decisions themselves,
+# which live in agents.md and the archived specs.
+docs/intent/
+
 # -----------------------------------------------------------------------------
 # Go
 # -----------------------------------------------------------------------------
@@ -22,7 +27,6 @@ secrets/
 *.so
 *.dylib
 /bin/
-/dist/
 
 # Test and coverage
 *.test
@@ -35,8 +39,14 @@ coverage.txt
 # Go workspace and vendor (uncomment if using go mod vendor)
 # /vendor/
 
-# Dependency and build cache
-go.work
+# Dependency and build cache.
+#
+# go.work itself is tracked on purpose, so this does not list it. Builds do not
+# need it -- every service module carries `replace ... => ../../pkg` and the
+# Makefile builds each module from its own directory -- but committing it gives
+# a fresh clone working cross-module resolution in gopls without setup. It holds
+# only relative paths, so there is nothing machine-specific to leak. Only the
+# generated sum file is ignored.
 go.work.sum
 
 # -----------------------------------------------------------------------------
@@ -64,6 +74,7 @@ storybook-static/
 # -----------------------------------------------------------------------------
 # IDE & editors
 # -----------------------------------------------------------------------------
+.claude/
 .cursor/
 .idea/
 .vscode/
@@ -89,7 +100,6 @@ Desktop.ini
 # Local overrides (keep docker-compose.yml tracked)
 docker-compose.override.yml
 docker-compose.*.local.yml
-*.log
 
 # -----------------------------------------------------------------------------
 # Terraform (infra/)
@@ -121,11 +131,9 @@ logs/
 *.log
 tmp/
 temp/
-.cache/
 *.tmp
 *.temp
 *.bak
-*.swp
 
 # Local DB dumps and dev data (do not commit)
 *.sql.gz
@@ -147,7 +155,6 @@ env/
 .env/
 *.egg-info/
 .eggs/
-dist/
 *.egg
 
 # -----------------------------------------------------------------------------
@@ -163,7 +170,3 @@ dist/
 *.pid
 *.seed
 *.pid.lock
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local

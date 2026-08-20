@@ -1,7 +1,7 @@
 # SPEC — QuantSim Market Data Service (Phase 1, Step 5)
 
 Status: **Approved 2026-07-29**
-Scope: Alpaca REST client + historical ingestion for the Market Data Service. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior spec/plan/todo for the Auth Service (Step 4, complete) archived at `docs/archive/phase1-step4-auth/`.
+Scope: Alpaca REST client + historical ingestion for the Market Data Service. Not a whole-project spec — see `agents.md` for that context. Prior spec/plan/todo for the Auth Service (Step 4, complete) archived at `docs/archive/phase1-step4-auth/`.
 
 ---
 
