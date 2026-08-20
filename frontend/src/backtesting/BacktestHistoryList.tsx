@@ -67,7 +67,9 @@ export default function BacktestHistoryList({
             }`}
           >
             <div className="flex items-center justify-between">
-              <span className="font-medium text-ink">{backtest.symbol}</span>
+              <span className="font-medium text-ink">
+                {backtest.symbols.join(', ')}
+              </span>
               <span
                 className={`tabular font-mono text-sm ${signClassName(backtest.metrics.total_return_pct)}`}
               >

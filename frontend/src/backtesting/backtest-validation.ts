@@ -25,6 +25,10 @@ import type {
 // OrderTicket.tsx already follows for its own bounds.
 const MAX_WARMUP_BARS = 500
 
+// Mirrors maxSymbols in services/backtesting/internal/service/backtest.go
+// (Step 19 SPEC.md 2.4).
+const MAX_SYMBOLS = 10
+
 const MA_MIN_SHORT_WINDOW = 2
 const RSI_MIN_PERIOD = 2
 const MACD_MIN_FAST_PERIOD = 2
@@ -35,7 +39,10 @@ const MACD_MIN_SIGNAL_PERIOD = 2
  * switching strategies never loses what was typed into a now-hidden field
  * (BacktestForm.tsx). */
 export interface BacktestFormValues {
-  symbol: string
+  /** Comma-separated, as typed. One field rather than a repeater or a tag
+   * input (Step 19 SPEC.md 2.9) -- validateSymbols is what turns it into the
+   * array the API takes. */
+  symbols: string
   strategy: StrategyKind
   shortWindow: string
   longWindow: string
@@ -61,10 +68,8 @@ type FieldValidation<T> =
 export function validateBacktestForm(
   values: BacktestFormValues,
 ): BacktestFormValidation {
-  const symbol = values.symbol.trim()
-  if (symbol === '') {
-    return { ok: false, error: 'Symbol is required.' }
-  }
+  const symbols = validateSymbols(values.symbols)
+  if (!symbols.ok) return symbols
 
   if (values.startDate.trim() === '' || values.endDate.trim() === '') {
     return { ok: false, error: 'Start date and end date are required.' }
@@ -83,7 +88,7 @@ export function validateBacktestForm(
   }
 
   const base = {
-    symbol: symbol.toUpperCase(),
+    symbols: symbols.value,
     start_date: values.startDate,
     end_date: values.endDate,
     starting_capital: startingCapital,
@@ -109,6 +114,51 @@ export function validateBacktestForm(
       return { ok: true, value: { ...base, strategy: 'macd', params: params.value } }
     }
   }
+}
+
+/** Mirrors normalizeSymbols in
+ * services/backtesting/internal/service/backtest.go: uppercase, reject an
+ * empty list, more than MAX_SYMBOLS, or a case-insensitive duplicate, and
+ * sort what survives.
+ *
+ * One deliberate difference. The backend rejects an empty ENTRY, because by
+ * the time it sees the list someone has already built an array containing
+ * one. Here the input is a line a human typed, where a trailing or doubled
+ * comma is a typing artifact rather than a request for a nameless symbol, so
+ * empty entries are dropped and only an entirely empty list is an error.
+ * Nothing the backend would reject is sent either way.
+ *
+ * Duplicates are NOT dropped the same way: quietly running a one-symbol
+ * backtest for someone who asked for two is a different run than the one
+ * requested, which is exactly why the backend refuses it too.
+ */
+function validateSymbols(raw: string): FieldValidation<string[]> {
+  const entries = raw
+    .split(',')
+    .map((entry) => entry.trim().toUpperCase())
+    .filter((entry) => entry !== '')
+
+  if (entries.length === 0) {
+    return { ok: false, error: 'At least one symbol is required.' }
+  }
+  if (entries.length > MAX_SYMBOLS) {
+    return {
+      ok: false,
+      error: `At most ${MAX_SYMBOLS} symbols per backtest (got ${entries.length}).`,
+    }
+  }
+
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    if (seen.has(entry)) {
+      return { ok: false, error: `${entry} is listed more than once.` }
+    }
+    seen.add(entry)
+  }
+
+  // Sorted to match what the backend stores and returns (Step 19 plan D4),
+  // so the request and the run that comes back agree.
+  return { ok: true, value: [...entries].sort() }
 }
 
 function validateMACrossoverParams(

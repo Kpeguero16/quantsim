@@ -333,13 +333,13 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
   - Refresh-token revocation and a real server-side logout — done (Step 13)
   - A gateway-wide request body cap — done (Step 14)
 
-## Phase 3 — Backtesting Engine — in progress
+## Phase 3 — Backtesting Engine — done
 - Historical ingestion — done (Phase 1's market-data ingestion covers it)
 - Strategy simulator (MA crossover) — done (Step 16)
 - Metrics dashboards — done (Step 17, frontend)
 - RSI/MACD strategies — done (Step 18)
-- Multi-symbol backtests — not started, see `docs/NEXT_SESSION.md` for
-  current status
+- Multi-symbol backtests — done (Step 19), one shared pool of capital per
+  run. See `docs/NEXT_SESSION.md` for current status
 
 ## Phase 4 — AI Insights + Infra
 - Portfolio analytics

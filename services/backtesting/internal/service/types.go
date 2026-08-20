@@ -49,19 +49,31 @@ const (
 // Strategy itself (SPEC.md Step 18 §2.1), rather than raw parameters, is
 // what lets RunBacktest call WarmupBars() and GenerateSignals() without
 // caring which strategy it got.
+//
+// Symbols is validateRequest's normalized list -- uppercased, duplicate-free
+// and sorted alphabetically (Step 19 plan D4) -- never the order a client
+// sent. The same symbol set in a different order therefore produces an
+// identical run, down to the stored row (SPEC.md Step 19 §2.2).
 type StrategyParams struct {
-	Symbol          string
+	Symbols         []string
 	Strategy        Strategy
 	StartDate       time.Time
 	EndDate         time.Time
 	StartingCapital float64
 }
 
-// TradeRecord is one simulated fill, produced by Simulate and returned as
-// part of BacktestDetail. RealizedPL is set only on sells -- the same "at
-// most one of these is ever meaningful, encode it as a pointer rather than a
-// plausible-looking zero" rule trading-engine's Trade already follows.
+// TradeRecord is one simulated fill, produced by SimulatePortfolio and
+// returned as part of BacktestDetail. RealizedPL is set only on sells -- the
+// same "at most one of these is ever meaningful, encode it as a pointer rather
+// than a plausible-looking zero" rule trading-engine's Trade already follows.
+//
+// Symbol is populated for every trade, including a single-symbol run's (Step
+// 19 SPEC.md §2.3): a single-symbol backtest is the len(symbols)==1 case of a
+// portfolio run, not a separate mode, so there is no trade this engine can
+// produce that legitimately lacks a symbol. One honest shape, no field that is
+// meaningful only sometimes.
 type TradeRecord struct {
+	Symbol       string    `json:"symbol"`
 	Side         Side      `json:"side"`
 	BarTimestamp time.Time `json:"bar_timestamp"`
 	Price        float64   `json:"price"`
@@ -99,10 +111,15 @@ type Metrics struct {
 // Params is always the canonical re-encoding Strategy.Params() produced,
 // never the raw bytes a client sent, so a stored run is always readable by
 // NewStrategy.
+//
+// Symbols is a JSON array, never null: every write path validates a non-empty
+// list, and the store's scan path materializes an empty array as []string{}
+// rather than a nil slice, so a client never has to distinguish "no symbols"
+// from "the field is absent".
 type Backtest struct {
 	ID              uuid.UUID       `json:"id"`
 	UserID          uuid.UUID       `json:"-"`
-	Symbol          string          `json:"symbol"`
+	Symbols         []string        `json:"symbols"`
 	Strategy        StrategyKind    `json:"strategy"`
 	Params          json.RawMessage `json:"params"`
 	StartDate       time.Time       `json:"start_date"`
@@ -127,7 +144,7 @@ type BacktestDetail struct {
 // on Strategy, and NewStrategy is the only place that relationship is
 // interpreted; this type carries Params as raw, undecoded bytes.
 type RunBacktestRequest struct {
-	Symbol          string          `json:"symbol"`
+	Symbols         []string        `json:"symbols"`
 	Strategy        StrategyKind    `json:"strategy"`
 	Params          json.RawMessage `json:"params"`
 	StartDate       string          `json:"start_date"`

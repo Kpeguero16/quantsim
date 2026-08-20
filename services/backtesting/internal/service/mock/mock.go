@@ -5,6 +5,7 @@ package mock
 
 import (
 	"context"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -16,22 +17,57 @@ var (
 	_ service.BacktestStore = (*BacktestStore)(nil)
 )
 
+// HistoryClient answers per symbol. A portfolio run's error cases are all
+// per-symbol ones -- "AAPL has bars, MSFT does not", "these two trade on
+// different calendars" -- and a single shared Bars/Err field cannot express
+// either (Step 19 plan D3).
+//
+// Bars/Err are consulted symbol-first, falling back to the symbol-less
+// defaults, so a single-symbol test still reads as one assignment and does
+// not have to name a symbol it does not care about.
 type HistoryClient struct {
 	Bars []service.Bar
 	Err  error
 
-	// Calls records every symbol History was asked for, so a test can assert
+	BarsBySymbol map[string][]service.Bar
+	ErrBySymbol  map[string]error
+
+	// mu guards Calls: RunBacktest fetches N symbols concurrently (SPEC.md
+	// Step 19 §2.6), so this append runs on N goroutines at once.
+	mu sync.Mutex
+
+	// calls records every symbol History was asked for, so a test can assert
 	// the service never fetched history for a request it should have
-	// rejected during validation first.
-	Calls []string
+	// rejected during validation first. Read it through Calls() -- an
+	// exported slice field could not be read safely while a run is in
+	// flight.
+	calls []string
 }
 
 func (c *HistoryClient) History(_ context.Context, symbol string) ([]service.Bar, error) {
-	c.Calls = append(c.Calls, symbol)
+	c.mu.Lock()
+	c.calls = append(c.calls, symbol)
+	c.mu.Unlock()
+
+	if err, ok := c.ErrBySymbol[symbol]; ok {
+		return nil, err
+	}
+	if bars, ok := c.BarsBySymbol[symbol]; ok {
+		return bars, nil
+	}
 	if c.Err != nil {
 		return nil, c.Err
 	}
 	return c.Bars, nil
+}
+
+// Calls returns the symbols History was asked for, in call order. The order
+// across concurrently fetched symbols is not deterministic -- assert on the
+// set, or sort first.
+func (c *HistoryClient) Calls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.calls...)
 }
 
 type BacktestStore struct {

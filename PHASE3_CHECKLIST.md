@@ -534,11 +534,154 @@ running as they were, untouched by this step.
 
 ---
 
+## Step 19: Portfolio Backtests
+
+The item "Still open" had carried since Step 16, and the one Phase 3 could
+not end without: one run, N symbols, **one shared pool of capital**. Not N
+independent single-symbol runs stapled together — that would have been a
+loop around the existing engine and would have answered a different
+question. `symbol TEXT` became `symbols TEXT[]`, `Simulate` was replaced by
+`SimulatePortfolio` and then deleted, and every trade learned which symbol
+it belongs to. `ComputeMetrics` is **untouched** and still does not know how
+many symbols produced the curve it is handed — the same "new code sits
+upstream of the shared pipeline" payoff Step 18 got, one stage further down.
+
+- [x] Spec drafted and reviewed — §2.2's position sizing was revised *during*
+      review: the target had been `startingCapital / N`, which silently
+      breaks compounding and makes a 1-symbol run diverge from the engine it
+      replaces. It is `equityAtOpen / N` (`SPEC.md` §5)
+- [x] Plan (`tasks/plan.md`) — 19 tasks across 5 phases, sequenced so the
+      A/B equivalence test between old and new engines is written **first**,
+      before either the wire format or the schema moves
+- [x] `alignBars` — the intersection of every symbol's dates, returned
+      alphabetically, so bar index `i` is the same trading day for every
+      symbol. At N=1 its output is exactly the old `sliceRange`'s. The sort
+      guard needed rewriting: three symbols in a map land sorted by luck
+      about one run in six, so it now uses six symbols across repeated calls
+- [x] `SimulatePortfolio` — sells settle first into the shared pool, one
+      `target := equityAtOpen / N` per bar, then buys in symbol order each
+      capped at `min(cash, target)`. Sells precede buys so the pool is
+      genuinely shared *within* a bar and behavior does not depend on where
+      the seller falls in the alphabet
+- [x] A/B equivalence written before the engine it validates — a 1-symbol run
+      through `SimulatePortfolio` asserted **exactly float-equal** to
+      `Simulate` on a 2-profitable-round-trip fixture. This is what made
+      deleting `Simulate` (T7) a safe operation rather than a hopeful one
+- [x] `normalizeSymbols` — trim/upper/sort, rejecting empty, >10, and
+      case-insensitive duplicates outright. A duplicate is refused, not
+      silently collapsed: quietly running a 1-symbol backtest for someone
+      who asked for 2 is a worse answer than saying no
+- [x] `RunBacktest` fans out via a **zero-value** `errgroup.Group`, not
+      `WithContext` — cancelling siblings on the first failure would let a
+      context error stand in for the real one and reintroduce exactly the
+      nondeterminism the ordered error scan exists to remove
+- [x] `Simulate` and the transient A/B test deleted once the equivalence had
+      been demonstrated; Step 16's six call sites now route through a
+      `simulateSingle` helper with **no expectation touched**
+- [x] Migration `009_backtest_portfolios` — `symbols TEXT[]`, `symbol` and
+      `seq` on `backtest_trades`, with the trade backfill ordered **before**
+      `backtests.symbol` is dropped. That statement order is load-bearing and
+      was tested rather than assumed: reordered, it fails with
+      `column b.symbol does not exist`
+- [x] Store — `[]string` binds and scans against `TEXT[]` with no `pgtype`
+      wrapper (the repo's first array column, so proven against real
+      Postgres rather than trusted to compile)
+- [x] Handler — confirmed **zero** changes needed; it decodes
+      `RunBacktestRequest` whole and never named the renamed field
+- [x] Frontend — `symbols: string[]` through the wire types, a
+      `validateSymbols` mirror of the backend rule, the form taking a
+      comma-separated list, a Symbol column in the trade log, and
+      `symbols.join(', ')` wherever a run's symbol was shown
+
+**R1 — a real bug the Checkpoint B review found.** Same-bar trades came back
+in a **random order**. The trade SELECT was `ORDER BY bar_timestamp, id` with
+`id` a random UUID, and ties had been impossible only while one run meant one
+symbol and so at most one fill per bar. A portfolio run fills several symbols
+on the same bar routinely — a sell could be listed beneath the same-bar buy
+it funded. It was probed before it was fixed: the same three same-bar trades
+written six times read back in six different orders. `009` gained
+`seq INTEGER NOT NULL` + `UNIQUE (backtest_id, seq)`, the store writes the
+slice index and reads `ORDER BY seq`, and the log is now stored as the
+sequence it is rather than re-derived from row values that cannot express it.
+
+**Mutation testing**, four controls broken and confirmed caught, then
+reverted to a byte-identical tree (`git diff` against the pre-mutation commit
+empty, `gofmt` silent, full `make vet`/`test` green plus a forced
+`-count=1 -race` run, since `make test` reported `(cached)`):
+`min(cash, target)` → `target` (1 test); **`equityAtOpen / N` →
+`startingCapital / N`** (3 tests); sells-before-buys → one alphabetical
+sell-or-buy pass (1 test); and the validation controls removed one at a time
+— the 10-symbol cap (the `eleven_symbols` subtest) and the duplicate check
+(all three duplicate subtests). The second of those is the one worth having
+run: T7 deleted the A/B test that originally caught it and asserted three
+portfolio tests still would, and that assertion had been carried on trust
+until this point.
+
+**Checkpoint B** (after the backend): `make vet`/`test`/`test-integration`
+green, plus `-race` and `-tags=integration` on `services/backtesting`.
+`009` applied to the real dev database (`schema_migrations` 9, not dirty),
+baseline `users=20 backtests=0` held either side. Live against real
+market-data: `{"symbols":["msft","aapl"]}` came back `["AAPL","MSFT"]` with
+13 interleaved trades each carrying its symbol.
+
+**Checkpoint C** (after the frontend): `tsc -b` clean, `npm run build` ✓,
+`npm run test` 61/61, `npm run lint` with only the four pre-existing
+`exhaustive-deps` warnings, none in a file this step touched.
+
+**Integration.** The plan's `testBacktest`-becomes-symbols-aware and
+3-symbol-round-trip items were already satisfied by earlier tasks, so T17
+was scoped to what was genuinely uncovered — precision. Four fills across
+three symbols with no two adjacent rows sharing a symbol, quantities
+asserted through `numeric()` against the 4-decimal value `NUMERIC(20,4)`
+actually keeps *and* against what `GetBacktest` returns. This bites harder
+at N>1 than it ever did at N=1: a position is funded by `equity/N`, so a
+fixed 0.0001 granularity covers more of a smaller position. The harness
+guard also now asserts `backtests.symbol` is **gone** — `009` drops it last,
+so a part-applied migration leaves both columns present and every store
+statement still runs, against a table quietly holding a stale singular
+answer. Both new tests were mutated before being believed.
+
+**Manual browser pass**, full stack, real ingested history (7 symbols ×
+501 bars), one throwaway account:
+
+- The dev database sits at `backtests=0`, so there was no legacy run to
+  reopen — one was **manufactured**: `009` rolled back, an old-shape
+  single-symbol row inserted with its two trades in **reverse chronological
+  order**, `009` re-applied. `seq 0` came out as the *earlier* buy, so the
+  backfill's `ORDER BY bar_timestamp` is genuinely sorting rather than
+  inheriting insertion order — previously shown only in a scratch database.
+  It then reopened from history and rendered correctly, which is the only
+  thing that proves a *migrated* row survives into the UI
+- Typing `tsla, googl,` produced `GOOGL, TSLA` — uppercased, sorted, and the
+  trailing comma **dropped rather than rejected**, the one deliberate
+  divergence the frontend validator has from the backend's
+- A duplicate (`AAPL, aapl`) and an 11th symbol were both refused
+  client-side, before any network call
+- 10/29/2024 carried two fills in one bar, alphabetically ordered — same-bar
+  contention rendered
+- Across a 7-symbol run's 168 trades and 28 contended bars, 2025-02-13 has
+  **AMZN selling before AAPL buys**. AMZN is alphabetically later, so a
+  single alphabetical pass would invert it: the sells-before-buys rule
+  confirmed against real market data, not a fixture. Six re-reads of that
+  log were byte-identical — R1's fix under the probe that once produced six
+  different orders
+- The zero-trade path still renders "No trades were simulated for this run."
+
+Throwaway rows were deleted **before** their user (`backtests.user_id` is
+`NO ACTION`, confirmed in `information_schema` rather than assumed), and the
+baseline re-verified: `users=20 backtests=0 trades=0`, migration 9 clean.
+Two caveats recorded rather than smoothed over — `migrate(1)` is not on the
+working shell's PATH, so the down/up ran the real migration SQL directly with
+`schema_migrations` updated to match; and console tracking began after page
+load, so there is **no console evidence in either direction** for this pass.
+
+---
+
 ## Still open
 
-- [ ] **Multi-symbol / portfolio-level backtests.** One symbol per run today
-      (`SPEC.md` §1 Non-goals) — a materially different simulator
-      (correlation, cross-symbol position sizing), not a small extension.
+- [x] **Multi-symbol / portfolio-level backtests** — done (Step 19). One run,
+      N symbols, one shared pool of capital; `symbols TEXT[]`, per-trade
+      `symbol`, and a stored trade-log `seq`.
 - [ ] **market-data's store still has no tests** — `historical_price_store.go`.
       `docs/deferred-tuning.md` §11 records that `backtesting`, not
       `market-data`, ended up being the harness's third copy; a fourth use

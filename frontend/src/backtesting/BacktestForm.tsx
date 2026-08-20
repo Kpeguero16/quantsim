@@ -29,7 +29,7 @@ import {
 } from './backtest-validation'
 
 const INITIAL_VALUES: BacktestFormValues = {
-  symbol: '',
+  symbols: '',
   strategy: 'ma_crossover',
   shortWindow: '5',
   longWindow: '20',
@@ -105,16 +105,16 @@ export default function BacktestForm({
       noValidate
     >
       <div>
-        <label htmlFor="backtest-symbol" className="block text-sm text-ink-muted">
-          Symbol
+        <label htmlFor="backtest-symbols" className="block text-sm text-ink-muted">
+          Symbols
         </label>
         <input
-          id="backtest-symbol"
+          id="backtest-symbols"
           type="text"
-          value={values.symbol}
-          onChange={(e) => setField('symbol', e.target.value)}
+          value={values.symbols}
+          onChange={(e) => setField('symbols', e.target.value)}
           className="mt-1 w-full rounded-md border border-line-strong bg-canvas px-3 py-2 uppercase text-ink"
-          placeholder="AAPL"
+          placeholder="AAPL, MSFT"
         />
       </div>
 
