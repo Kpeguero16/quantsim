@@ -1,6 +1,6 @@
 # QuantSim — Project Structure for Testing
 
-This document describes how to structure the repo so you can add **unit tests** (and later integration tests) without major refactors. It aligns with [AGENTS.md](../AGENTS.md) and [PHASE1_CHECKLIST.md](../PHASE1_CHECKLIST.md): Phase 1 uses manual/curl verification; automated tests are optional or Phase 2+. The goal here is to **restructure once** so that when you add tests, the code is already test-friendly.
+This document describes how to structure the repo so you can add **unit tests** (and later integration tests) without major refactors. It aligns with [agents.md](../agents.md) and [PHASE1_CHECKLIST.md](PHASE1_CHECKLIST.md): Phase 1 uses manual/curl verification; automated tests are optional or Phase 2+. The goal here is to **restructure once** so that when you add tests, the code is already test-friendly.
 
 ---
 
