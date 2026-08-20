@@ -43,7 +43,7 @@ func newGateway(t *testing.T) (http.Handler, *backendCall, *backendCall) {
 
 func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall) {
 	t.Helper()
-	gw, authCall, mdCall, _, _ := newGatewayBackends(t, rateLimit)
+	gw, authCall, mdCall, _, _, _ := newGatewayBackends(t, rateLimit)
 	return gw, authCall, mdCall
 }
 
@@ -53,7 +53,7 @@ func newGatewayWithRateLimit(t *testing.T, rateLimit handler.RateLimitConfig) (h
 // their existing call shape.
 func newTradingGateway(t *testing.T) (http.Handler, *backendCall) {
 	t.Helper()
-	gw, _, _, tradingCall, _ := newGatewayBackends(t, noRateLimit)
+	gw, _, _, tradingCall, _, _ := newGatewayBackends(t, noRateLimit)
 	return gw, tradingCall
 }
 
@@ -61,17 +61,25 @@ func newTradingGateway(t *testing.T) (http.Handler, *backendCall) {
 // backend's recorder -- the Step 16 counterpart to newTradingGateway.
 func newBacktestingGateway(t *testing.T) (http.Handler, *backendCall) {
 	t.Helper()
-	gw, _, _, _, backtestingCall := newGatewayBackends(t, noRateLimit)
+	gw, _, _, _, backtestingCall, _ := newGatewayBackends(t, noRateLimit)
 	return gw, backtestingCall
 }
 
-func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall, *backendCall, *backendCall) {
+// newInsightsGateway is the Step 20 counterpart.
+func newInsightsGateway(t *testing.T) (http.Handler, *backendCall) {
+	t.Helper()
+	gw, _, _, _, _, insightsCall := newGatewayBackends(t, noRateLimit)
+	return gw, insightsCall
+}
+
+func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.Handler, *backendCall, *backendCall, *backendCall, *backendCall, *backendCall) {
 	t.Helper()
 
 	authCall := &backendCall{}
 	mdCall := &backendCall{}
 	tradingCall := &backendCall{}
 	backtestingCall := &backendCall{}
+	insightsCall := &backendCall{}
 
 	record := func(c *backendCall) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +100,8 @@ func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.H
 	t.Cleanup(tradingBackend.Close)
 	backtestingBackend := httptest.NewServer(record(backtestingCall))
 	t.Cleanup(backtestingBackend.Close)
+	insightsBackend := httptest.NewServer(record(insightsCall))
+	t.Cleanup(insightsBackend.Close)
 
 	authURL, err := url.Parse(authBackend.URL)
 	if err != nil {
@@ -109,6 +119,10 @@ func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.H
 	if err != nil {
 		t.Fatalf("parsing backtesting backend URL: %v", err)
 	}
+	insightsURL, err := url.Parse(insightsBackend.URL)
+	if err != nil {
+		t.Fatalf("parsing insights backend URL: %v", err)
+	}
 
 	transport := proxy.NewTransport()
 	r := handler.NewRouter(
@@ -116,11 +130,12 @@ func newGatewayBackends(t *testing.T, rateLimit handler.RateLimitConfig) (http.H
 		proxy.New(mdURL, transport, "market-data"),
 		proxy.New(tradingURL, transport, "trading-engine"),
 		proxy.New(backtestingURL, transport, "backtesting"),
+		proxy.New(insightsURL, transport, "ai-insights"),
 		testSecret,
 		testOrigin,
 		rateLimit,
 	)
-	return r, authCall, mdCall, tradingCall, backtestingCall
+	return r, authCall, mdCall, tradingCall, backtestingCall, insightsCall
 }
 
 // noRateLimit leaves the limiter out of the chain, so the existing routing,
@@ -397,6 +412,7 @@ func TestTradingEngineDownIs502(t *testing.T) {
 		proxy.New(backendURL, proxy.NewTransport(), "market-data"),
 		proxy.New(backendURL, proxy.NewTransport(), "trading-engine"),
 		proxy.New(backendURL, proxy.NewTransport(), "backtesting"),
+		proxy.New(backendURL, proxy.NewTransport(), "ai-insights"),
 		testSecret, testOrigin, noRateLimit,
 	)
 
@@ -608,11 +624,13 @@ func gatewayWithLimits(t *testing.T, ipLimit, failures int) http.Handler {
 	return handler.NewRouter(
 		proxy.New(authURL, transport, "auth"),
 		proxy.New(mdURL, transport, "market-data"),
-		// This suite only exercises the login limiter; the trading and
-		// backtesting backends are never reached, so both point at
-		// market-data's stub rather than standing up servers for nothing.
+		// This suite only exercises the login limiter; the trading,
+		// backtesting and insights backends are never reached, so all three
+		// point at market-data's stub rather than standing up servers for
+		// nothing.
 		proxy.New(mdURL, transport, "trading-engine"),
 		proxy.New(mdURL, transport, "backtesting"),
+		proxy.New(mdURL, transport, "ai-insights"),
 		testSecret,
 		testOrigin,
 		handler.RateLimitConfig{
@@ -826,5 +844,72 @@ func TestNormalBodyStillReachesTheBackend(t *testing.T) {
 	}
 	if !authCall.hit {
 		t.Error("a normal login body did not reach auth")
+	}
+}
+
+// The Step 20 counterpart to TestBacktestsReachesTheBacktestingEngine.
+func TestInsightsReachesTheInsightsService(t *testing.T) {
+	gw, insightsCall := newInsightsGateway(t)
+
+	// Captured once: accessToken mints a fresh JTI on every call, so a second
+	// call would not produce the string this one sent.
+	token := accessToken(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/insights/portfolio", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if !insightsCall.hit {
+		t.Fatal("/insights/portfolio did not reach the insights service")
+	}
+	if insightsCall.path != "/insights/portfolio" {
+		t.Errorf("backend saw path %q, want /insights/portfolio unchanged", insightsCall.path)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want the backend's 200", rec.Code)
+	}
+	if insightsCall.userID != testUserID {
+		t.Errorf("backend saw X-User-ID %q, want the token subject %q", insightsCall.userID, testUserID)
+	}
+	// Load-bearing twice over here: ai-insights revalidates the token itself
+	// like the other engines, AND forwards this very header onward to
+	// trading-engine to read the caller's trades (SPEC.md Step 20 §6.5).
+	// Stripping it would turn every insights request into a 401 from a
+	// service two hops away.
+	if insightsCall.auth != "Bearer "+token {
+		t.Errorf("backend saw Authorization %q, want the caller's own token unchanged", insightsCall.auth)
+	}
+}
+
+func TestInsightsIgnoresAClientSuppliedUserID(t *testing.T) {
+	gw, insightsCall := newInsightsGateway(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/insights/portfolio", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken(t))
+	req.Header.Set("X-User-ID", "99999999-9999-9999-9999-999999999999")
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if insightsCall.userID != testUserID {
+		t.Errorf("backend saw X-User-ID %q, want the token subject %q -- a forged header survived",
+			insightsCall.userID, testUserID)
+	}
+}
+
+// The gateway rejects before ai-insights ever sees the request, so an
+// unauthenticated caller cannot make it fan out to two other services.
+func TestInsightsWithoutATokenNeverReachesTheService(t *testing.T) {
+	gw, insightsCall := newInsightsGateway(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/insights/portfolio", nil)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("got status %d, want 401", rec.Code)
+	}
+	if insightsCall.hit {
+		t.Error("an unauthenticated request reached the insights service")
 	}
 }

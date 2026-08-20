@@ -52,7 +52,7 @@ type RateLimitConfig struct {
 // RateLimitByIP is inside CORS for exactly the same reason, and scoped to
 // /auth/* because that is the surface worth protecting -- /healthz must stay
 // answerable to a load balancer no matter how busy the box is.
-func NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy http.Handler, jwtSecret []byte, allowedOrigin string, rateLimit RateLimitConfig) *chi.Mux {
+func NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy, insightsProxy http.Handler, jwtSecret []byte, allowedOrigin string, rateLimit RateLimitConfig) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Use(middleware.StripUserID())
@@ -124,6 +124,14 @@ func NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy http.H
 		// no trailing segment.
 		r.Handle("/backtests", backtestingProxy)
 		r.Handle("/backtests/*", backtestingProxy)
+
+		// The AI insights service, live since Step 20. Same posture again:
+		// it revalidates the token itself (SPEC.md Step 20 §2.11), and it
+		// needs the Authorization header to survive this hop for a second
+		// reason the others do not have -- it forwards that same token
+		// onward to trading-engine to read the caller's own trades (§6.5).
+		// X-User-ID would not be enough for it even if it trusted it.
+		r.Handle("/insights/*", insightsProxy)
 	})
 
 	return r

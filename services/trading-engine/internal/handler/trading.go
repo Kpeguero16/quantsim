@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -85,6 +86,36 @@ func (h *TradingHandler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusOK, service.OrdersResponse{Orders: orders})
+}
+
+// ListTrades returns the caller's executions, oldest first.
+//
+// Like ListOrders, an account that has never traded is 200 with an empty
+// array. The `limit` query parameter is parsed leniently: anything that is not
+// a usable positive integer falls back to the default rather than 400-ing,
+// because there is no interpretation of "limit=banana" that a caller is better
+// off having refused than defaulted.
+func (h *TradingHandler) ListTrades(w http.ResponseWriter, r *http.Request) {
+	userID, ok := userID(r)
+	if !ok {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return
+	}
+
+	// A parse failure yields 0, which normalizeTradeLimit already maps to the
+	// default -- so the unparseable and absent cases need no separate branch.
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	trades, err := h.service.Trades(r.Context(), userID, limit)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if trades == nil {
+		trades = []service.Trade{}
+	}
+
+	WriteJSON(w, http.StatusOK, service.TradesResponse{Trades: trades})
 }
 
 // ListPositions returns the caller's open holdings, priced where possible.

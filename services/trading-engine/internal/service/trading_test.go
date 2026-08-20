@@ -550,3 +550,77 @@ func TestPortfolio_StoreFailurePropagates(t *testing.T) {
 		t.Fatal("a store failure was swallowed")
 	}
 }
+
+// --- GET /trading/trades (Step 20 T2) ---
+
+// The limit reaching the store is normalized, never the caller's raw value:
+// a 0 or a 99999 passed straight into a LIMIT clause is either an empty
+// response or an unbounded read.
+func TestTrades_NormalizesTheLimitBeforeItReachesTheStore(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested int
+		want      int
+	}{
+		{"absent or unparseable arrives as zero", 0, service.DefaultTradeLimit},
+		{"negative", -5, service.DefaultTradeLimit},
+		{"one is honoured, not treated as unset", 1, 1},
+		{"below the cap passes through", 500, 500},
+		{"exactly the default", service.DefaultTradeLimit, service.DefaultTradeLimit},
+		{"exactly the cap", service.MaxTradeLimit, service.MaxTradeLimit},
+		{"one over the cap is clamped, not rejected", service.MaxTradeLimit + 1, service.MaxTradeLimit},
+		{"far over the cap", 99999, service.MaxTradeLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, _, trading, _, userID := newService(t)
+
+			if _, err := svc.Trades(context.Background(), userID, tt.requested); err != nil {
+				t.Fatalf("Trades: %v", err)
+			}
+
+			if len(trading.TradeLimits) != 1 {
+				t.Fatalf("got %d ListTrades calls, want 1", len(trading.TradeLimits))
+			}
+			if got := trading.TradeLimits[0]; got != tt.want {
+				t.Errorf("store received limit %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// Scoping runs through AccountForUser, which is what makes reading another
+// user's trade log impossible to express rather than merely forbidden.
+func TestTrades_ScopesThroughTheAccountLookup(t *testing.T) {
+	svc, accounts, _, _, userID := newService(t)
+
+	if _, err := svc.Trades(context.Background(), userID, 0); err != nil {
+		t.Fatalf("Trades: %v", err)
+	}
+
+	if len(accounts.Calls) != 1 || accounts.Calls[0] != userID {
+		t.Errorf("account lookup calls = %v, want exactly [%v]", accounts.Calls, userID)
+	}
+}
+
+func TestTrades_PropagatesAnAccountLookupFailure(t *testing.T) {
+	svc, accounts, trading, _, userID := newService(t)
+	accounts.Err = service.ErrAccountNotFound
+
+	if _, err := svc.Trades(context.Background(), userID, 0); !errors.Is(err, service.ErrAccountNotFound) {
+		t.Fatalf("got %v, want ErrAccountNotFound", err)
+	}
+	if len(trading.TradeLimits) != 0 {
+		t.Error("the store was queried despite the account lookup failing")
+	}
+}
+
+func TestTrades_PropagatesAStoreFailure(t *testing.T) {
+	svc, _, trading, _, userID := newService(t)
+	trading.TradesErr = errors.New("boom")
+
+	if _, err := svc.Trades(context.Background(), userID, 0); err == nil {
+		t.Fatal("got nil, want the store's error")
+	}
+}

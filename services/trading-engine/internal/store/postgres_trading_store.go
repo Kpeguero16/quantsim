@@ -307,6 +307,45 @@ func (s *PostgresTradingStore) ListHoldings(ctx context.Context, accountID uuid.
 	return holdings, rows.Err()
 }
 
+// ListTrades returns the account's executions oldest first, capped at limit.
+//
+// ORDER BY executed_at ASC, id ASC -- ascending, unlike ListOrders just above,
+// because this log is replayed forward rather than displayed. See the
+// interface comment for why truncating a forward replay from the wrong end
+// would be a correctness bug and not a display quirk.
+//
+// id breaks exact executed_at ties only so the output is stable across reads.
+// It is NOT execution order: a UUID sorts arbitrarily. Every consumer today
+// aggregates by day and is insensitive to within-timestamp ordering; one that
+// is not needs a stored sequence, the fix migration 009 already applied to
+// backtest_trades.seq.
+func (s *PostgresTradingStore) ListTrades(ctx context.Context, accountID uuid.UUID, limit int) ([]service.Trade, error) {
+	rows, err := s.pool.Query(ctx, `
+	SELECT id, order_id, symbol, side, quantity, price, realized_pl, executed_at
+	FROM trades
+	WHERE account_id = $1
+	ORDER BY executed_at ASC, id ASC
+	LIMIT $2
+	`, accountID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Non-nil for the same reason ListOrders is: an account that has never
+	// traded has an empty history, not a missing one.
+	trades := []service.Trade{}
+	for rows.Next() {
+		var t service.Trade
+		if err := rows.Scan(&t.ID, &t.OrderID, &t.Symbol, &t.Side, &t.Quantity,
+			&t.Price, &t.RealizedPL, &t.ExecutedAt); err != nil {
+			return nil, err
+		}
+		trades = append(trades, t)
+	}
+	return trades, rows.Err()
+}
+
 // querier is whatever can run a statement: the pool for single writes, a
 // transaction for everything inside an order. Having the helpers take this
 // rather than one or the other is what lets insertOrder serve both the fill
