@@ -1,23 +1,24 @@
 # Next session — state of play
 
-Last updated **2026-08-19**, at the end of Step 19 (portfolio backtests) — **built and verified, not yet reviewed or merged.**
+Last updated **2026-08-19**, right after Step 19 (portfolio backtests) was reviewed and merged to `main`. **Phase 3 is complete.**
 
 This file answers three questions on picking the project back up: *is anything half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not appended to.
 
 ---
 
-## Step 19 is complete on its branch and waiting on review
+## Step 19 is merged. Nothing is half-finished.
 
-This is the one difference from how the last few sessions ended: **nothing has been merged.** All 19 tasks are done and every checkpoint is green, but the independent adversarial review that `SPEC.md` §4 requires before merge has **not** been run yet. That review is the next action, not a formality — Step 18's found a real integer-overflow bug, and this step's shared-cash arithmetic and first-ever array column are at least as good a place to look.
+Phase 3's last named item is done, which closes the phase. The next work is Phase 4 (AI Insights + Infra), and `services/ai-insights` is still a stub `go.mod`.
 
 | | |
 |---|---|
-| Branch | `step19-portfolio-backtests`, local only, **unmerged**. 24 commits, one per task plus the review-finding fix (R1). `main` is untouched since Step 18. |
+| Branch | `step19-portfolio-backtests` — 27 commits squashed to one `feat(step19)` commit (`fa47004`), merged via `Merge Step 19: portfolio backtests` (`410e5fb`), matching Steps 16–18's precedent. Feature branches in this project stay local; only `main` is pushed. |
+| Pre-merge review | An independent five-axis review (correctness, readability, architecture, security, performance) found **no Critical or Important defects** — the first step in a while where it didn't. Its one actionable suggestion, `alignBars`' daily-bar assumption (it fails *silently* if intraday bars ever reach it, since several bars would share one `dayKey`), is now recorded in the code. Four other suggestions were left unaddressed as recorded judgment calls, not oversights — see `PHASE3_CHECKLIST.md`. One theory the review formed (malformed symbols surfacing as a 502 rather than a 400) was tested against the live stack and **disproved**: all such inputs return a clean 400 `symbol_unavailable`. |
 | Tests | `make vet`/`test`/`test-integration` green across all five services. `go test -count=1 -race` green on `services/backtesting`, with and without `-tags=integration`. Frontend: `tsc -b` clean, `npm run build` ✓, `npm run test` 61/61, `npm run lint` with only the four pre-existing `exhaustive-deps` warnings (none in a file this step touched). |
 | Dev database | `users=20`, `accounts=20`, `backtests=0` — restored to baseline after the manual pass. Migration **`009_backtest_portfolios` is applied** (`schema_migrations` 9, not dirty): `backtests.symbols TEXT[]`, `backtest_trades.symbol`, `backtest_trades.seq`, and `backtests.symbol` **dropped**. |
 | Local processes | `auth` and `market-data` were already running and were left alone. **`gateway`, `backtesting`, `trading-engine`, and the frontend dev server were started during Step 19's manual pass and left running** — unlike previous sessions, they were not killed. Check `lsof -i :8080-8084` and `:5173` and kill what you don't want before assuming any port's state. |
 
-`docs/archive/phase3-step19-portfolio-backtests/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo. The todo is unusually detailed — it records what each mutation caught and what each verification actually proved, which is the material a reviewer wants.
+`docs/archive/phase3-step19-portfolio-backtests/{SPEC.md,plan.md,todo.md}` hold this step's spec, plan and todo — root `SPEC.md` and `tasks/` live only on a feature branch and are not carried on `main`. The todo is unusually detailed: it records what each mutation caught and what each verification actually proved.
 
 ---
 
@@ -47,22 +48,19 @@ Full writeup — mutation results, integration additions, and the manual pass �
 
 ## What to do next
 
-**1. Review and merge Step 19.** The independent adversarial review (`SPEC.md` §4) is the blocking item. Highest-value places to look, in order:
+**1. Phase 4 — AI Insights + Infra** is the next major work: portfolio analytics, insight generation, Dockerization, cloud deployment. `services/ai-insights` is a stub `go.mod` and nothing else. This is the first phase with no existing service to extend, so it wants its own spec before any code.
 
-- `SimulatePortfolio`'s shared-cash arithmetic — plausible-looking and wrong is the failure mode here, and the A/B equivalence test that originally guarded it was deleted in T7 once `Simulate` went (three portfolio tests now cover it; that was re-proven by mutation, not assumed).
-- `009`'s backfill. It is structurally **uncoverable** by the integration harness, which always migrates a freshly created empty database — the `UPDATE` there always runs against zero rows. It was verified by hand instead, in both directions, including a live down/up against the real dev database during T18. Do not add a test that appears to cover it (plan D2).
-- The `[]string ⇄ TEXT[]` round trip, as the first array column in the repo.
+Two things Step 19 left deliberately undone, both recorded rather than forgotten:
 
-Then squash to a single `feat(step19): …` commit and merge, matching Steps 16–18's precedent.
+- **`009`'s backfill has no automated coverage and should not get any.** The integration harness always migrates a freshly created empty database, so the `UPDATE` there always runs against zero rows — a test would assert nothing while appearing to assert something (plan D2). It was verified by hand in both directions instead, including a live down/up against the real dev database.
+- **The trade-log batch write is unbounded and now up to 10× larger** (`postgres_backtest_store.go`) — worst case ~20,000 queued statements in one transaction, against ~2,000 before Step 19. Fine at today's 501 bars of history; worth chunking if that grows.
 
-**2. Phase 3 is finished once that merge lands.** `agents.md` §3's backtesting scope has no remaining named items. The next major work is **Phase 4 — AI Insights + Infra** (portfolio analytics, insight generation, Dockerization, cloud deployment), and `services/ai-insights` is still a stub `go.mod`.
-
-**3. The two long-standing small items**, both still open and both still lower priority:
+**2. The two long-standing small items**, both still open and both still lower priority:
 
 - `market-data`'s store has no tests (`historical_price_store.go`). The integration harness exists in **three** copies (auth, trading-engine, backtesting); a fourth use is the point to actually extract to `pkg/testutil/` — see `docs/deferred-tuning.md` §11 and `docs/TESTING_STRUCTURE.md` §6a.
 - Pre-existing `gofmt` drift in `services/auth/internal/service/{interfaces.go,types.go}`, untouched since Step 11. Worth a one-line cleanup commit before any `fmt` check lands in CI.
 
-**4. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
+**3. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is the cheap one left from the Phase 2 set and gets more expensive as real accounts accumulate. Item **3** (Argon2id) is the next substantive one and wants its own step, since it carries a migration strategy.
 
 ---
 
@@ -129,7 +127,7 @@ docker compose exec -T postgres psql -U quantsim -d postgres -tAc \
 |---|---|
 | Phase 1 (auth + market data) | `docs/archive/phase1-step4-auth/` through Step 7's archive |
 | Phase 2 (trading engine) — complete | `PHASE2_CHECKLIST.md`, archived specs `docs/archive/phase2-step*` |
-| Phase 3 (backtesting engine) — code complete, Step 19 pending merge | `PHASE3_CHECKLIST.md`, archived specs `docs/archive/phase3-step*` |
+| Phase 3 (backtesting engine) — complete | `PHASE3_CHECKLIST.md`, archived specs `docs/archive/phase3-step*` |
 | Deferred tuning / known trade-offs | `docs/deferred-tuning.md` |
 | Testing conventions | `docs/TESTING_STRUCTURE.md` |
 | Security backlog | `docs/security-backlog.md` |

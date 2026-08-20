@@ -675,6 +675,49 @@ working shell's PATH, so the down/up ran the real migration SQL directly with
 `schema_migrations` updated to match; and console tracking began after page
 load, so there is **no console evidence in either direction** for this pass.
 
+**Pre-merge review** across correctness, readability, architecture, security
+and performance. **No Critical or Important findings** — the first step in a
+while without one, having gone looking specifically at the shared-cash
+arithmetic, the array codec, the concurrency and the auth path. What it
+confirmed by checking rather than reading: the loop-variable capture in
+`fetchHistories` is safe (`go 1.25`, per-iteration semantics); `alignBars`'
+equal-length invariant is genuinely asserted, which matters because the
+warm-up check trusts `len(aligned[0])` alone; and T7's "no expectation
+touched" claim is exactly true of the diff.
+
+One theory the review formed and then **disproved by running it**: that a
+malformed symbol would surface as a 502 blaming market-data for what is a
+client input error. Tested live with `!!!!`, a 300-character symbol, and an
+unknown ticker — all three return a clean 400 `symbol_unavailable`, because
+a failed fetch returns before `SaveBacktest` and market-data's own empty-body
+convention maps to `ErrSymbolUnavailable`. Recorded because a plausible
+finding that survives reading and dies on execution is worth remembering.
+
+Acted on: **S1**, `alignBars`' daily-bar assumption — it keys the
+intersection by calendar date, so if intraday bars ever reach it several
+would share one `dayKey`, `byDay` would keep only the last, and the driver
+symbol would still emit one row per bar. Mismatched series, **no error**.
+`historical_prices` already has a `timeframe` column, so this is reachable by
+a future change rather than hypothetical. Now documented at the assumption.
+
+Left unaddressed as recorded judgment calls, not oversights:
+
+- **S2** — the trade-log `pgx.Batch` is unbounded and Step 19 multiplied it
+  by N: worst case ~20,000 queued statements in one transaction against
+  ~2,000 before. Fine at today's 501 bars; chunk it if history grows.
+- **S3** — `alignBars` allocates a `matches` slice per driver bar. Hoisting
+  one reusable buffer is safe (the values are copied by `append`) and would
+  drop ~2,000 allocations on a large run. Micro-optimization.
+- **S4** — the persisted `symbols` come from `params.Symbols` while the trade
+  log's come from `alignBars`' derived list. Identical today, and nothing
+  enforces it; a divergence would put trades under symbols absent from their
+  own run.
+- **S5** — no length or format bound on a symbol, where `trading-engine`
+  has `maxSymbolLength = 16`. Its stated rationale does **not** transfer:
+  it bounds junk because a *rejected order persists verbatim*, whereas here
+  a failed fetch returns before anything is written. Noted so the divergence
+  from the sibling service is a decision on the record.
+
 ---
 
 ## Still open

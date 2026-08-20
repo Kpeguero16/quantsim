@@ -224,7 +224,26 @@ during review — see SPEC §5). One commit per task.
       the same as a verified-clean console.
 
 ## Phase 5 — Close-out
-- [ ] T19 `PHASE3_CHECKLIST.md` Step 19 entry + "Still open" tick;
-      `docs/NEXT_SESSION.md` rewrite; `agents.md:341`, `README.md:23,397`;
-      archive to `docs/archive/phase3-step19-portfolio-backtests/`
+- [x] T19 `PHASE3_CHECKLIST.md` Step 19 entry written and the "Still open"
+      multi-symbol item ticked (it had carried since Step 16).
+      `docs/NEXT_SESSION.md` rewritten — it states plainly that the branch is
+      **unmerged and unreviewed**, since that is the one way this session ends
+      differently from the last few. Four new trip-ups recorded: R1's
+      "an ORDER BY over row values cannot express a sequence those values
+      don't determine", `[]string ⇄ TEXT[]` needing no pgtype wrapper, the
+      zero-value-errgroup-over-WithContext reasoning, and `NUMERIC(20,4)`
+      biting harder at N>1. Also noted that the frontend keeps tokens in
+      memory only, so browser verification must go through the login form.
+      Roadmap lines updated: `agents.md` and `README.md` Phase 3 → done,
+      README's service table (portfolio runs, 1..10 symbols), migration
+      version 8 → 9, frontend test count 58 → 61, and the closing summary
+      paragraph. Archived `SPEC.md`/`plan.md`/`todo.md` **verbatim** to
+      `docs/archive/phase3-step19-portfolio-backtests/` — Step 18's archived
+      SPEC likewise still reads "not started", because the archived spec
+      records what was agreed, not what happened; the checklist carries the
+      outcome.
+      One deliberate inconsistency: the roadmap files say Phase 3 is done
+      while `NEXT_SESSION.md` says the branch is unmerged. Those files land
+      on `main` only via the merge, so they are accurate the moment they
+      arrive; `NEXT_SESSION.md` is the file that tracks branch state.
 - [ ] Independent adversarial review before merge (SPEC §4)
