@@ -1,7 +1,7 @@
 # SPEC — QuantSim Market Data Service (Phase 1, Step 6)
 
 Status: **Approved 2026-07-29 — implemented, Step 6 complete**
-Scope: live price polling + Redis for the Market Data Service. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service) and `docs/archive/phase1-step5-market-data/` (historical ingestion — same service, complete).
+Scope: live price polling + Redis for the Market Data Service. Not a whole-project spec — see `agents.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service) and `docs/archive/phase1-step5-market-data/` (historical ingestion — same service, complete).
 
 ---
 

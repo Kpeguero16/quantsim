@@ -1,7 +1,7 @@
 # SPEC — QuantSim Auth Service (Phase 1, Step 4)
 
 Status: **Draft — awaiting architect review**
-Scope: finish the Auth Service HTTP layer only. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context.
+Scope: finish the Auth Service HTTP layer only. Not a whole-project spec — see `agents.md` for that context.
 
 ---
 

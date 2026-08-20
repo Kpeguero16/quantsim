@@ -1,7 +1,7 @@
 # SPEC — QuantSim Auth Input Validation (Phase 1, Step 9)
 
 Status: **Approved 2026-07-30** — open decisions delegated to the implementer with the instruction to decide against cybersecurity standards. §9 records the resolutions, including **three reversals of my own draft** after checking the draft's claims against the current text of NIST SP 800-63B rather than recalling it.
-Scope: `services/auth/` input validation, one migration, and a small frontend follow-up. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md`. Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase1-step8-frontend/` — all complete.
+Scope: `services/auth/` input validation, one migration, and a small frontend follow-up. Not a whole-project spec — see `agents.md`. Prior specs archived at `docs/archive/phase1-step4-auth/` through `phase1-step8-frontend/` — all complete.
 
 ---
 

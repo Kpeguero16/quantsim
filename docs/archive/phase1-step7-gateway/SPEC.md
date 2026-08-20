@@ -1,7 +1,7 @@
 # SPEC — QuantSim API Gateway (Phase 1, Step 7)
 
 Status: **Approved 2026-07-29** — open decisions in §9 delegated to the implementer with the instruction to decide with a security mindset; §2.4, §2.5, and §2.7 below reflect the resulting calls (two of which reverse the original draft).
-Scope: the API Gateway service — reverse proxy, JWT enforcement, CORS. Not a whole-project spec — see `agents.md` and `docs/intent/quantsim-resume.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service), `docs/archive/phase1-step5-market-data/` (historical ingestion), `docs/archive/phase1-step6-market-data-live/` (live polling + Redis) — all complete.
+Scope: the API Gateway service — reverse proxy, JWT enforcement, CORS. Not a whole-project spec — see `agents.md` for that context. Prior specs archived at `docs/archive/phase1-step4-auth/` (Auth Service), `docs/archive/phase1-step5-market-data/` (historical ingestion), `docs/archive/phase1-step6-market-data-live/` (live polling + Redis) — all complete.
 
 ---
 
