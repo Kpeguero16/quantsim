@@ -41,6 +41,12 @@ func insightsKey(userID string) string {
 // treats both as "compute", but they are not the same event: a miss is the
 // cache working, and an error is worth a log line.
 func (c *RedisInsightsCache) Get(ctx context.Context, userID string) (service.PortfolioInsights, bool, error) {
+	// Bounded for the reason redisTimeout documents: this read is where a
+	// hung Redis cost the report endpoint 6.05s while failing open perfectly
+	// correctly. Fail-open is only useful if it is also fast.
+	ctx, cancel := context.WithTimeout(ctx, redisTimeout)
+	defer cancel()
+
 	data, err := c.client.Get(ctx, insightsKey(userID)).Result()
 	if errors.Is(err, redis.Nil) {
 		return service.PortfolioInsights{}, false, nil
@@ -60,6 +66,9 @@ func (c *RedisInsightsCache) Get(ctx context.Context, userID string) (service.Po
 }
 
 func (c *RedisInsightsCache) Set(ctx context.Context, userID string, insights service.PortfolioInsights, ttl time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, redisTimeout)
+	defer cancel()
+
 	data, err := json.Marshal(insights)
 	if err != nil {
 		return fmt.Errorf("marshal insights: %w", err)

@@ -20,7 +20,7 @@ import (
 // backtesting's precedent -- and, since this service forwards that same token
 // onward to trading-engine (SPEC.md §6.5), validating it here is also what
 // stops an invalid token being relayed to a service that moves money.
-func NewRouter(insights *InsightsHandler, jwtSecret []byte) *chi.Mux {
+func NewRouter(insights *InsightsHandler, narrative *NarrativeHandler, jwtSecret []byte) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +32,11 @@ func NewRouter(insights *InsightsHandler, jwtSecret []byte) *chi.Mux {
 		r.Use(pkgauth.RequireAuth(jwtSecret))
 
 		r.Get("/insights/portfolio", insights.PortfolioInsights)
+
+		// A sub-path of the gateway's existing /insights/* wildcard, so no
+		// gateway change is needed. Step 16's routing bug was the bare-prefix
+		// case, which does not apply to a path with a further segment.
+		r.Get("/insights/portfolio/narrative", narrative.PortfolioNarrative)
 	})
 
 	return r

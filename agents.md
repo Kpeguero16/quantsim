@@ -345,9 +345,14 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
 - Portfolio analytics — done (Step 20), `services/ai-insights` and
   `GET /insights/portfolio`: risk, benchmarking and behavior, every number
   derived and reconciled against the live account. No LLM — see below
-- Insight generation — the LLM layer that *phrases* Step 20's numbers. Step 20
-  computed them first on purpose: a model may only phrase figures it is handed
-  and may never produce one, so no number a user reads can be a hallucination
+- Insight generation — done (Step 21), `GET /insights/portfolio/narrative`:
+  the model writes prose containing named placeholders and Go substitutes every
+  figure from the report struct, so a surviving digit rejects the draft. Step 20
+  computed the numbers first on purpose, and this is what that bought — the
+  guarantee is structural rather than a prompt-level instruction
+- Insights frontend — Step 22. Must follow Step 21's percent convention
+  (halfway cases round away from zero); `frontend/src/format.ts` has no percent
+  formatter of its own
 - Dockerization
 - Cloud deployment
 - Work through **docs/deferred-tuning.md** — timeouts, connection pooling, and

@@ -6,6 +6,8 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -225,34 +227,79 @@ func (s *Service) positionsFor(ctx context.Context, accountID uuid.UUID) ([]Posi
 	return s.price(ctx, holdings), nil
 }
 
-// price values each holding independently.
+// PricingBudget bounds one whole pricing pass -- every holding together, not
+// each lookup within it.
+//
+// It is deliberately equal to the per-lookup timeout in internal/client rather
+// than a multiple of it. A single degraded symbol may spend the entire budget;
+// what it may not do is add its timeout to another symbol's.
+//
+// It must stay comfortably under ai-insights' 5s upstream timeout, which is
+// what turned a slow answer here into a 502 there.
+const PricingBudget = 3 * time.Second
+
+// price values each holding independently and concurrently, under one budget
+// for the whole pass.
 //
 // Independently is the point: one symbol market-data cannot price must not
 // blank the others. A single failed lookup that aborted the loop, or that set
 // a shared "prices unavailable" flag, would turn one missing quote into a
 // portfolio that reports every position as unvalued.
+//
+// Concurrently, and under one budget, is what keeps the endpoint's worst case
+// flat in the number of holdings. This loop used to be sequential, and its
+// per-symbol timeouts composed additively: N holdings that market-data could
+// not price cost N x the client's 3s timeout, and three of them made
+// GET /trading/portfolio take 8.7s against 5.8ms healthy. That tripped
+// ai-insights' 5s upstream timeout and took GET /insights/portfolio down with
+// a 502 -- for a report whose every figure comes from Postgres, during a Redis
+// outage. The per-call timeout was correct throughout. Nothing bounded the
+// loop, and a bound on each item is not a bound on the request.
+//
+// The budget is a context deadline rather than a cap on outstanding
+// goroutines: the symbol count is bounded by the distinct symbols an account
+// holds, which is bounded by the tradable watchlist, so there is no fan-out
+// here worth throttling.
 func (s *Service) price(ctx context.Context, holdings []Holding) []Position {
-	positions := make([]Position, 0, len(holdings))
-	for _, h := range holdings {
-		p := Position{Symbol: h.Symbol, Quantity: h.Quantity, AvgCost: h.AvgCost}
-
-		latest, err := s.prices.LatestPrice(ctx, h.Symbol)
-		if err != nil {
-			// Logged rather than silent: a portfolio quietly reporting no P/L
-			// is exactly the kind of degradation nobody notices until someone
-			// asks why their numbers look wrong.
-			log.Printf("trading-engine: pricing %s failed, returning it unpriced: %v", h.Symbol, err)
-			positions = append(positions, p)
-			continue
-		}
-
-		// Taking the address of the loop-local copy, so every position points
-		// at its own price.
-		price := latest
-		p.LatestPrice = &price
-		p.UnrealizedPL = (latest - h.AvgCost) * h.Quantity
-		positions = append(positions, p)
+	// Pre-sized and written by index. Appending from the goroutines would put
+	// results in completion order, so the same portfolio would come back in a
+	// different order run to run -- and the positions endpoint's order is the
+	// holdings' order.
+	positions := make([]Position, len(holdings))
+	for i, h := range holdings {
+		positions[i] = Position{Symbol: h.Symbol, Quantity: h.Quantity, AvgCost: h.AvgCost}
 	}
+	if len(holdings) == 0 {
+		return positions
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, PricingBudget)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := range holdings {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			h := holdings[i]
+
+			latest, err := s.prices.LatestPrice(ctx, h.Symbol)
+			if err != nil {
+				// Logged rather than silent: a portfolio quietly reporting no
+				// P/L is exactly the kind of degradation nobody notices until
+				// someone asks why their numbers look wrong.
+				log.Printf("trading-engine: pricing %s failed, returning it unpriced: %v", h.Symbol, err)
+				return
+			}
+
+			// Each goroutine writes only its own index, and takes the address
+			// of its own local, so every position points at its own price.
+			price := latest
+			positions[i].LatestPrice = &price
+			positions[i].UnrealizedPL = (latest - h.AvgCost) * h.Quantity
+		}(i)
+	}
+	wg.Wait()
 	return positions
 }
 
