@@ -1,8 +1,8 @@
 # Next session — state of play
 
-Last updated **2026-08-20**, with Step 21 (insight generation) complete on
-`step21-insight-generation` and **not yet merged**. **Phase 4's two AI items are
-both done; the infra half is what remains.**
+Last updated **2026-08-21**, with Step 21 (insight generation) merged to `main`
+and pushed. **Phase 4's two AI items are both done; the infra half is what
+remains.**
 
 This file answers three questions on picking the project back up: *is anything
 half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to
@@ -10,20 +10,22 @@ be rewritten each time, not appended to.
 
 ---
 
-## Step 21 is complete but unmerged. Nothing else is half-finished.
+## Step 21 is merged. Nothing is half-finished.
 
 | | |
 |---|---|
-| Branch | `step21-insight-generation`, 17 commits, **not yet squashed or merged**. Steps 16–20's pattern is squash to one `feat(step21)` commit, then `--no-ff` into `main`. Feature branches stay local; only `main` is pushed. |
-| Tests | `make vet`/`test` green across all seven modules. `go test -race` clean on `ai-insights`. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. **374 tests** in `ai-insights`. |
-| Mutations | **24 run, 24 killed.** Three real defects came out of it; see `PHASE4_CHECKLIST.md`'s Step 21 entry. |
+| Branch | `step21-insight-generation` — squashed to one `feat(step21)` commit and merged with `--no-ff` (`033a4de`), matching Steps 16–20. **Branch deleted; `main` pushed.** Pre-squash history is at `da29793` in the reflog until it expires. |
+| Tests | `make vet`/`test` green across all seven modules, re-run on `main` after the merge. `go test -race` clean on `ai-insights`; `make test-integration` 63/0. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. **397 tests** in `ai-insights`. |
+| Mutations | **28 run, 28 killed.** Three real defects came out of it; see `PHASE4_CHECKLIST.md`'s Step 21 entry. |
+| Pre-merge review | Two more defects, found by attacking the code rather than reading it — hostile symbols reaching token names, and byte-sliced UTF-8 in the error fragment. Both fixed and covered before the merge. |
 | Manual pass | Done against a real portfolio. **25 of 25 figures verified by eye**, no advisory language. ~10 billable calls, roughly **$0.20**. |
 | Dev database | `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices` at 3507 rows — restored after the manual pass and **verified by query**. Redis has no leftover `narrative:*` keys. |
 | Local processes | All services killed. Postgres and Redis containers up. `lsof -nP -iTCP -sTCP:LISTEN \| grep 808` shows nothing. |
 
 Spec, plan and todo are archived at
 `docs/archive/phase4-step21-insight-generation/`. Root `SPEC.md` and `tasks/`
-live only on the feature branch and are not carried on `main`.
+are **not** carried on `main` — they survive only as untracked working-tree
+files, and deleting them loses nothing.
 
 ---
 
@@ -56,10 +58,7 @@ hung Redis with 5 holdings).
 
 ## What to do next
 
-**1. Merge Step 21.** Squash to one `feat(step21)` commit, `--no-ff` into
-`main`, then a docs follow-up — matching Steps 16–20.
-
-**2. Phase 4's remaining roadmap items**, in `agents.md`'s order:
+**1. Phase 4's remaining roadmap items**, in `agents.md`'s order:
 
 - **Insights frontend** — Step 22. Two hard requirements from Step 21: it must
   follow the **percent convention** (below), and it should render the numbers
@@ -71,7 +70,7 @@ hung Redis with 5 holdings).
 - **`docs/deferred-tuning.md`** — unblocked by deployment. Step 21 added nothing
   to it.
 
-**3. The long-standing small items.**
+**2. The long-standing small items.**
 
 - `market-data`'s store still has no tests (`historical_price_store.go`). The
   integration harness is still in **three** copies; `ai-insights` owns no
@@ -80,7 +79,7 @@ hung Redis with 5 holdings).
   re-confirmed in Step 21 rather than assumed.
 - The `gofmt` drift is **closed**.
 
-**4. Security backlog:** items 1, 2 and 4 are closed. Item **8**
+**3. Security backlog:** items 1, 2 and 4 are closed. Item **8**
 (Unicode-normalise passwords) is the cheap one left and gets more expensive as
 accounts accumulate. Item **3** (Argon2id) is next substantive and wants its own
 step, since it carries a migration strategy.
@@ -205,6 +204,14 @@ nothing, and exits 0.
 **`timeout` is not installed on macOS.** A loop using it reports every case as
 failing, which looks like a catastrophic result and is just a missing binary.
 Use `go test -timeout` instead.
+
+**Symbols and finding codes are interpolated into placeholder token names**,
+and nothing in `internal/narrative` constrains them — they arrive over HTTP from
+`trading-engine`. `safeName` drops anything outside `[A-Za-z0-9._-]{1,32}`, so a
+symbol containing a brace cannot split one token into two and a symbol
+containing a sentence cannot be injected into the prompt as data. Unreachable
+today because a position only exists for a symbol `market-data` could price, but
+that constraint lives two services away. Found in the pre-merge review.
 
 **Careless `pkill -f` patterns kill sibling services.** In Step 21 one killed
 `market-data` mid-measurement and produced an 8ms reading that looked like a

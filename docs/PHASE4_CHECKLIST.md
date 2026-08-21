@@ -340,8 +340,9 @@ accepts that case has become a whitelist.
 
 ### What the verifications actually proved
 
-**374 tests** in `ai-insights`; `vet`, `test`, `-race` and `GOWORK=off` all
-green across seven modules. **24 mutations run**; every one killed.
+**397 tests** in `ai-insights`; `vet`, `test`, `-race`, `test-integration`
+(63/0) and `GOWORK=off` all green across seven modules, re-run on `main` after
+the merge. **28 mutations run**; every one killed.
 
 Three defects were found by mutation testing or by asserting on call counts —
 **none by a test that was failing beforehand**:
@@ -396,6 +397,28 @@ Four defects that unit tests could not have found:
 4. **The prompt was inviting the rejection it punishes** — it called HHI "an
    index between zero and one", then a draft was discarded for "a value near
    one".
+
+### The pre-merge review, by attacking rather than reading
+
+Two more defects, neither of which any test was failing on:
+
+- **A hostile symbol corrupts the token vocabulary and reaches the prompt as
+  data.** Symbols and finding codes arrive over HTTP from `trading-engine` and
+  are interpolated straight into token names, so `X} {risk.max_drawdown_pct`
+  produced a token the renderer parses as *two*, and a symbol containing a
+  sentence would be injected verbatim into the prompt — the one
+  prompt-injection surface this design has. It fails closed (an error, not a
+  leaked figure) and is unreachable today, because a position only exists for a
+  symbol `market-data` could price — but that constraint lives two services away
+  and is not this package's to assume. `safeName` now drops anything outside
+  `[A-Za-z0-9._-]{1,32}`.
+- **The offending fragment was byte-sliced**, so a window around an offence
+  could cut a multi-byte rune in half — and that fragment goes into the retry
+  prompt sent to the API and into the log line. `around` and `truncate` snap to
+  rune boundaries.
+
+Also confirmed in review: `price()` is reachable only from `Positions` and
+`Portfolio`, so Step 21's concurrency change cannot touch the order path.
 
 ### §6.1 answered with evidence
 
