@@ -37,7 +37,9 @@ func newRouter(trading *mock.TradingClient, history *mock.HistoryClient) http.Ha
 	// nil cache: these tests are about HTTP, and a cache would make a second
 	// request in one test invisible to the mocks the assertions read.
 	svc := service.NewService(trading, history, nil)
-	return handler.NewRouter(handler.NewInsightsHandler(svc), jwtSecret)
+	// nil generator: these tests are about the report endpoint, which does not
+	// reach the narrative handler at all.
+	return handler.NewRouter(handler.NewInsightsHandler(svc), handler.NewNarrativeHandler(svc, nil, nil, nil, ""), jwtSecret)
 }
 
 // get issues GET /insights/portfolio with the given Authorization value

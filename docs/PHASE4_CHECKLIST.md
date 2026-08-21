@@ -293,12 +293,158 @@ distinguishable from "nobody looked":
 
 ---
 
+## Step 21 — Insight generation: the LLM narrative layer
+
+**Done.** `GET /insights/portfolio/narrative` on `services/ai-insights`: three
+short paragraphs, one per Step 20 section, in which **every figure was rendered
+by Go from the report struct and none was produced by the model.**
+
+Branch `step21-insight-generation`, squashed and merged `--no-ff`. Spec, plan
+and todo archived at `docs/archive/phase4-step21-insight-generation/`.
+
+### How the guarantee is enforced
+
+The model is handed the report *with* its values — it has to know a 34%
+drawdown is severe and a 2% one is not — and must write prose in which every
+figure is a named placeholder. Go substitutes from the struct. A surviving
+digit rejects the draft.
+
+Step 20 computed the numbers first so this step would not have to trust a model
+with arithmetic; spending that on a prompt-level instruction would have wasted
+it. The checks (`internal/narrative/validate.go`) are: no Arabic digit
+anywhere, no number word or bare unit word, no placeholder that was not
+offered, plus per-section and total caps. One retry quoting the offending
+fragment, then refusal. **Nothing is ever repaired** — stripping a stray number
+leaves a sentence that still parses, still reads fluently, and now claims
+something its author did not write.
+
+The test that states the property: **a draft carrying a *correct* figure — the
+true drawdown, formatted exactly as the renderer would format it — is still
+rejected.** Correctness is not the criterion; provenance is. A validator that
+accepts that case has become a whitelist.
+
+### Two carry-over items landed first
+
+- **`gofmt` drift in `services/auth`** (open since Step 11) — cleared. Note
+  that `git diff --ignore-all-space` alone does *not* prove such a commit is
+  formatting-only: it ignores whitespace *within* a line but still reports an
+  added blank line and a trailing newline. Proved instead by comparing each
+  file's whitespace-normalised token multiset.
+- **`trading-engine`'s portfolio pricing** — the Redis-outage 502 recorded at
+  the end of Step 20. **The recorded diagnosis was wrong:** there is no retry.
+  `Service.price` was a sequential loop issuing one lookup per holding at 3s
+  each, so per-symbol timeouts **composed additively** and the endpoint's worst
+  case was N × 3s, unbounded in N. Now concurrent under one `PricingBudget`.
+  Measured against 5 holdings with a hung Redis: **15.014s → 3.007s**, exactly
+  5 × 3s versus 1 × 3s.
+
+### What the verifications actually proved
+
+**374 tests** in `ai-insights`; `vet`, `test`, `-race` and `GOWORK=off` all
+green across seven modules. **24 mutations run**; every one killed.
+
+Three defects were found by mutation testing or by asserting on call counts —
+**none by a test that was failing beforehand**:
+
+- **The daily cap was reserved before discovering there was nothing to
+  generate.** A no-trade account polling the endpoint would burn its entire
+  quota on zero API calls, then be refused the day it finally had something to
+  describe — a cost control turning into a denial of service against the users
+  it costs nothing to serve. The response was correct throughout; only the
+  counter's call count showed it.
+- **`context.WithTimeout` around Redis did nothing.** go-redis v9's
+  `ContextTimeoutEnabled` defaults to `false`, and while it is false the client
+  ignores deadlines entirely and waits its own `ReadTimeout`. That is the real
+  cause of the 6.05s measured at Checkpoint 0 — code that reads as bounded,
+  compiles, and waits the full default anyway. Both caches are bounded now via
+  a constructor that makes it impossible to get wrong at a call site.
+- **A mock that reimplements the logic it stands in for cannot test it.** The
+  handler's cap-boundary tests drove the *mock* counter, so the real
+  implementation's comparison and its INCR-as-reservation were exercised by
+  nothing; two mutations survived and exposed it. miniredis now drives the real
+  counter.
+
+**SPEC §2.3's single-source claim was resting on a test that could not fail.**
+Every `BuildPrompt` test handed it exactly what `Placeholders` would produce,
+so rebuilding the vocabulary internally changed nothing — the tests proved the
+two agree *when built the same way*, which is the drift they were written to
+preclude. Now pinned with a vocabulary `Placeholders` would never return.
+
+**A mutant that does not apply is not a caught mutant**, and it looks exactly
+like coverage. Two reported as SURVIVED purely because a replacement string
+did not match — one had dropped a `§`, one had wrong regex escaping.
+
+### The manual pass, and what only a real report could show
+
+Against a real portfolio (2 holdings, 3 trades, 40 trading days), **25 of 25
+figures verified by eye against the JSON**, no advisory language, and the
+degraded, cached, capped and Redis-outage paths all exercised. ~10 billable
+calls, roughly $0.20.
+
+Four defects that unit tests could not have found:
+
+1. **`max_drawdown_pct` rendered as a signed percentage.** `pkg/portfoliomath`
+   reports drawdown "as a positive percentage", so a 1.7% fall printed as
+   **"+1.7%"** and read as a gain — in a sentence that said "fell". The unit
+   fixture had used `-12.4`, *a value no code path can produce*, which made the
+   wrong kind look right. Fixtures now mirror a real response.
+2. **A rejection quoted only the bare word.** "three" cannot tell you whether
+   the model was counting trades (which has a token) or benchmarks (which did
+   not), and those want different fixes.
+3. **No token existed for the benchmark count**, so "all three" had no legal
+   alternative and cost a whole generation.
+4. **The prompt was inviting the rejection it punishes** — it called HHI "an
+   index between zero and one", then a draft was discarded for "a value near
+   one".
+
+### §6.1 answered with evidence
+
+The banned-word list bans `couple` and `pair`: "a couple of names" for a
+two-holding portfolio is true, checkable, and still a figure the model wrote
+itself. **`both` was banned for exactly one run and removed** — it cost a
+generation for "the two figures are both small", where both figures had already
+been named by their own placeholders. The rule is *the model states no figure*,
+not *the model uses no number-ish word*; widening past that costs real drafts
+and buys nothing. `few`, `several` and `many` stay allowed. Ordinals other than
+fraction words were never banned.
+
+First-draft rejection rate went from **3 of 4 drafts to 0 of 1** after the
+vocabulary and prompt fixes.
+
+### Things worth knowing
+
+- **`docker stop` does not reproduce a Redis outage.** A stopped container
+  *refuses* connections in microseconds, so the unfixed sequential pricing loop
+  finished in 2.5s and looked fixed while still broken. `docker pause` is the
+  right shape: connections accepted, never answered.
+- **The percent format is set by this step and Step 22 must follow it.**
+  `frontend/src/format.ts` has `formatPrice`, `formatQuantity` and `formatDate`
+  but **no percent formatter**. Every numeric kind here rounds halfway cases
+  **away from zero**, because Go's `FormatFloat` rounds them to even while
+  `toFixed`, `toLocaleString` and `Intl.NumberFormat` all round away — an exact
+  7.25 is `7.2` under Go's rule and `7.3` in a browser. The parity test found
+  this; matching the browser is what lets Step 22 write the obvious one-liner
+  and still agree with the sentence beside it.
+- **A cache hit returns no `generated_at`**, which is how a hit is told from a
+  fresh generation. Identical figures give identical prose, word for word —
+  correct, and it will read as staleness to someone expecting a new take.
+- **`SPEC.md` §2.9's unconfirmed `effort` binding exists**:
+  `anthropic-sdk-go` v1.66.0 has `OutputConfigParam.Effort`. Nothing was
+  deferred to `docs/deferred-tuning.md`.
+- **A refusal is an HTTP 200 with a stop reason**, not an error. Reading the
+  content first turns it into an empty draft and burns the retry on something a
+  retry cannot fix.
+- **An `httptest` handler that blocks on the request's own context deadlocks
+  the test** — `Close` waits for outstanding requests. It needs a release
+  channel closed by a function `defer`, which runs before any `t.Cleanup`.
+
+---
+
 ## Still open
 
-- [ ] **Insight generation** — the LLM layer that phrases Step 20's numbers.
-      The contract is already fixed by Step 20's design: it may phrase only
-      numbers it is given, and may never produce one.
-- [ ] **Insights frontend** — Step 21, per the Step 16 → 17 precedent.
+- [ ] **Insights frontend** — Step 22, per the Step 16 → 17 precedent. Must
+      follow this step's percent convention (round halfway cases **away from
+      zero**), or the same figure appears two ways on one screen.
 - [ ] **Dockerization** and **cloud deployment** (AWS free tier).
 - [ ] **Work through `docs/deferred-tuning.md`** — timeouts, connection
       pooling, and other defaults deliberately left unset because the right
@@ -307,6 +453,8 @@ distinguishable from "nobody looked":
       Carried over from `PHASE3_CHECKLIST.md`; `ai-insights` owns no database
       (§2.9) so it did **not** become the harness's fourth copy, and the
       extraction trigger in `docs/TESTING_STRUCTURE.md` §6a is still unfired.
-- [ ] Pre-existing `gofmt` drift in `services/auth/internal/service/{interfaces.go,types.go}`,
-      untouched since Step 11 — carried over from `PHASE2_CHECKLIST.md` and
-      `PHASE3_CHECKLIST.md`.
+- [x] ~~Pre-existing `gofmt` drift in `services/auth`~~ — cleared in Step 21.
+- [ ] **Security backlog item 8** (Unicode-normalise passwords) — the cheap one
+      left, and it gets more expensive as accounts accumulate. Its own step.
+- [ ] **Security backlog item 3** (Argon2id) — its own step; carries a
+      migration strategy.

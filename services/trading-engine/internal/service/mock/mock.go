@@ -13,6 +13,8 @@ package mock
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -149,11 +151,69 @@ type PriceClient struct {
 	// service.ErrUpstreamUnavailable and no order may fill.
 	Err error
 
+	// Delay, when set, holds each lookup open for that long before answering,
+	// and abandons it if the context is cancelled first. It exists to model
+	// the degraded market-data this mock could not otherwise represent: a
+	// service that is reachable and slow, rather than one that is down.
+	Delay time.Duration
+
+	// Barrier, when > 0, holds every lookup until that many callers have
+	// arrived, then releases them all at once.
+	//
+	// This is what makes concurrency provable rather than probable. A timing
+	// assertion says "this was fast enough", which a slow machine can
+	// falsify and a lucky one can pass by accident; a barrier of N can only
+	// be crossed if N lookups are genuinely in flight together. A sequential
+	// caller waits at it alone until its context expires, so the two
+	// implementations differ in the result, not merely in the duration.
+	Barrier int
+
+	// mu guards Calls and arrived. The service prices holdings concurrently,
+	// so an unsynchronised append here is a data race in the mock that would
+	// be reported against the code under test.
+	mu      sync.Mutex
+	arrived int
+	release chan struct{}
+
 	Calls []string
 }
 
-func (c *PriceClient) LatestPrice(_ context.Context, symbol string) (float64, error) {
+func (c *PriceClient) LatestPrice(ctx context.Context, symbol string) (float64, error) {
+	c.mu.Lock()
 	c.Calls = append(c.Calls, symbol)
+	if c.Barrier > 0 {
+		if c.release == nil {
+			c.release = make(chan struct{})
+		}
+		c.arrived++
+		if c.arrived == c.Barrier {
+			close(c.release)
+		}
+		release := c.release
+		c.mu.Unlock()
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return 0, service.ErrUpstreamUnavailable
+		}
+	} else {
+		c.mu.Unlock()
+	}
+
+	if c.Delay > 0 {
+		select {
+		case <-time.After(c.Delay):
+		case <-ctx.Done():
+			return 0, service.ErrUpstreamUnavailable
+		}
+	}
+
+	// Checked after the waits, not before: a lookup that the context
+	// cancelled must report the upstream failure rather than a stale answer
+	// this mock happens to hold.
+	if err := ctx.Err(); err != nil {
+		return 0, service.ErrUpstreamUnavailable
+	}
 	if c.Err != nil {
 		return 0, c.Err
 	}
@@ -162,4 +222,12 @@ func (c *PriceClient) LatestPrice(_ context.Context, symbol string) (float64, er
 		return 0, service.ErrSymbolUnavailable
 	}
 	return price, nil
+}
+
+// CallCount reports how many lookups were made, safely under concurrency.
+// Tests that only need the count should use this rather than len(Calls).
+func (c *PriceClient) CallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.Calls)
 }

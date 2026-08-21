@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -622,5 +623,129 @@ func TestTrades_PropagatesAStoreFailure(t *testing.T) {
 
 	if _, err := svc.Trades(context.Background(), userID, 0); err == nil {
 		t.Fatal("got nil, want the store's error")
+	}
+}
+
+// --- Pricing is bounded by one timeout, not by the number of holdings -------
+//
+// The bug these cover: price() issued one HTTP lookup per holding in sequence,
+// each bounded by the client's own 3s timeout. Per-symbol timeouts compose
+// additively, so the endpoint's worst case was N x 3s with no bound on N --
+// which is how a Redis outage turned GET /trading/portfolio into an 8.7s
+// response (against 5.8ms healthy) and tripped ai-insights' 5s upstream
+// timeout, taking /insights/portfolio down with a 502 for data that never
+// came from Redis at all.
+//
+// The per-call timeout was never the problem. Nothing bounded the loop.
+
+// A barrier of N can only be crossed if N lookups are in flight together, so
+// this distinguishes concurrent from sequential by result rather than by
+// duration. Sequential: the first caller waits alone until the context
+// expires, and every position comes back unpriced. Concurrent: all N arrive,
+// the barrier releases, and all N are priced.
+func TestPositions_HoldingsArePricedConcurrently(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+	const n = 10
+	prices.Prices = map[string]float64{}
+	prices.Barrier = n
+	for i := 0; i < n; i++ {
+		symbol := string(rune('A' + i))
+		prices.Prices[symbol] = 100
+		trading.Holdings = append(trading.Holdings, service.Holding{Symbol: symbol, Quantity: 1, AvgCost: 50})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	positions, err := svc.Positions(ctx, userID)
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if len(positions) != n {
+		t.Fatalf("got %d positions, want %d", len(positions), n)
+	}
+	for i, p := range positions {
+		if p.LatestPrice == nil {
+			t.Fatalf("position %d (%s) came back unpriced: the %d lookups never overlapped, "+
+				"so pricing is still sequential", i, p.Symbol, n)
+		}
+	}
+}
+
+// The whole loop is bounded, not each call within it -- and the bound is the
+// service's own, which is what this asserts. The parent context here carries
+// NO deadline on purpose: an earlier draft of this test passed a 900ms parent
+// and passed against the unfixed sequential code, because the parent was
+// supplying the bound and the service was never exercised at all. A test whose
+// deadline is tighter than the budget it means to check is testing its own
+// setup.
+func TestPositions_PricingImposesItsOwnBudget(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+	// Longer than any budget the service may impose, so the lookup is still
+	// outstanding when the budget expires.
+	prices.Delay = time.Hour
+	trading.Holdings = []service.Holding{{Symbol: "AAPL", Quantity: 1, AvgCost: 50}}
+
+	start := time.Now()
+	positions, err := svc.Positions(context.Background(), userID)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("got %d positions, want 1 -- a timed-out lookup dropped its holding", len(positions))
+	}
+	if positions[0].LatestPrice != nil {
+		t.Error("AAPL was priced despite its lookup never answering")
+	}
+	if limit := 2 * service.PricingBudget; elapsed > limit {
+		t.Errorf("pricing took %v with no deadline from the caller, want under %v -- "+
+			"the service imposes no budget of its own", elapsed, limit)
+	}
+}
+
+// Independence is the property price()'s existing comment is about, and
+// concurrency is exactly where it would be lost -- one shared error variable
+// across the goroutines would reintroduce it silently, and every other test
+// here would stay green.
+func TestPositions_ConcurrentPricingKeepsHoldingsIndependentAndOrdered(t *testing.T) {
+	svc, _, trading, prices, userID := newService(t)
+	prices.Prices = map[string]float64{"AAPL": 150, "TSLA": 200, "MSFT": 90}
+	trading.Holdings = []service.Holding{
+		{Symbol: "AAPL", Quantity: 10, AvgCost: 100},
+		{Symbol: "DELISTED", Quantity: 3, AvgCost: 50},
+		{Symbol: "TSLA", Quantity: 2, AvgCost: 180},
+		{Symbol: "ALSOGONE", Quantity: 1, AvgCost: 10},
+		{Symbol: "MSFT", Quantity: 4, AvgCost: 80},
+	}
+
+	positions, err := svc.Positions(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+
+	// Order is the holdings' order, not completion order. Concurrent appends
+	// would scramble this, and the response would reorder run to run.
+	want := []string{"AAPL", "DELISTED", "TSLA", "ALSOGONE", "MSFT"}
+	for i, symbol := range want {
+		if positions[i].Symbol != symbol {
+			t.Fatalf("position %d is %s, want %s -- results were collected in completion order",
+				i, positions[i].Symbol, symbol)
+		}
+	}
+	for _, i := range []int{1, 3} {
+		if positions[i].LatestPrice != nil {
+			t.Errorf("%s was priced at %v", positions[i].Symbol, *positions[i].LatestPrice)
+		}
+	}
+	for _, i := range []int{0, 2, 4} {
+		if positions[i].LatestPrice == nil {
+			t.Fatalf("two unpriceable symbols blanked %s: %+v", positions[i].Symbol, positions)
+		}
+	}
+	if positions[0].UnrealizedPL != 500 || positions[2].UnrealizedPL != 40 || positions[4].UnrealizedPL != 40 {
+		t.Errorf("P/L of the priced positions is wrong: %v, %v, %v",
+			positions[0].UnrealizedPL, positions[2].UnrealizedPL, positions[4].UnrealizedPL)
 	}
 }

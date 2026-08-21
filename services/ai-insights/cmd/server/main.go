@@ -11,6 +11,8 @@ import (
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/cache"
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/client"
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/handler"
+	"github.com/kpeguero/quantsim/services/ai-insights/internal/llm"
+	"github.com/kpeguero/quantsim/services/ai-insights/internal/narrative"
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/service"
 )
 
@@ -51,16 +53,22 @@ func main() {
 	// but a loud one, because running uncached in production is a performance
 	// surprise nobody asked for rather than a decision anyone made.
 	var insightsCache service.InsightsCache
+	var narrativeCache narrative.Cache
+	var generationCounter narrative.Counter
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		redisOpts, err := redis.ParseURL(redisURL)
 		if err != nil {
 			log.Fatalf("invalid REDIS_URL: %v", err)
 		}
-		redisClient := redis.NewClient(redisOpts)
+		redisClient := cache.NewClient(redisOpts)
 		defer redisClient.Close()
 		insightsCache = cache.NewRedisInsightsCache(redisClient)
+		narrativeCache = cache.NewRedisNarrativeCache(redisClient)
+		generationCounter = cache.NewRedisGenerationCounter(redisClient)
 	} else {
-		log.Print("REDIS_URL is not set: every request will be computed from scratch")
+		log.Print("REDIS_URL is not set: every request will be computed from scratch, " +
+			"and GET /insights/portfolio/narrative will return no prose -- uncached and " +
+			"uncapped generation is the one combination with no cost ceiling")
 	}
 
 	svc := service.NewService(
@@ -68,7 +76,30 @@ func main() {
 		client.NewMarketDataClient(marketDataURL),
 		insightsCache,
 	)
-	router := handler.NewRouter(handler.NewInsightsHandler(svc), []byte(jwtSecret))
+
+	// ANTHROPIC_API_KEY is optional here for the same reason REDIS_URL is:
+	// this service answers correctly without it. The narrative is an
+	// enhancement over a report that is already complete and already served
+	// at GET /insights/portfolio, so an unset key degrades one endpoint's
+	// prose rather than stopping the service -- but it is a loud degradation,
+	// because running without narrative generation in production is a
+	// surprise nobody chose rather than a decision somebody made.
+	//
+	// generator stays nil until the client lands; the handler treats nil as
+	// "not configured" and says so in the response.
+	var generator narrative.Generator
+	model := envOrDefault("ANTHROPIC_MODEL", defaultModel)
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		generator = llm.NewClient(apiKey, model)
+	} else {
+		log.Print("ANTHROPIC_API_KEY is not set: GET /insights/portfolio/narrative will return no prose")
+	}
+
+	router := handler.NewRouter(
+		handler.NewInsightsHandler(svc),
+		handler.NewNarrativeHandler(svc, generator, narrativeCache, generationCounter, model),
+		[]byte(jwtSecret),
+	)
 
 	addr := bindAddr + ":" + port
 	log.Printf("ai-insights service listening on %s (trading-engine=%s market-data=%s)",
@@ -77,6 +108,10 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+// defaultModel is SPEC.md §2.9's choice, overridable for experimentation and
+// echoed in every response so a narrative can be attributed to what wrote it.
+const defaultModel = "claude-opus-5"
 
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
