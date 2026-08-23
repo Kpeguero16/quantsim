@@ -642,16 +642,66 @@ Four billable generations, about $0.08.
 
 ---
 
+## Step 23 — ReportHash stability
+
+Closes the defect Step 22 called the one that mattered most. `ReportHash` was not stable for unchanged data, so the narrative cache never hit, every view billed a fresh generation, and Step 22 §2.3's report-versus-narrative check warned about disagreements it had invented itself.
+
+### The cause was two loops, and neither looked wrong
+
+`Reconstruct` summed each date's equity over `range holdings`, and `ComputeRisk` summed `invested` over `range r.Holdings`. Go randomizes map iteration order per pass and float64 addition is not associative, so identical holdings at identical closes summed to results differing in their last bits. The equity loop runs once per date, so a 79 day window compounds it.
+
+Nothing displayed ever changed. Every figure rounds the difference away at 1, 2, 3 or 4 decimals. `ReportHash` is defined on the serialized bytes and saw all of it.
+
+### Why it survived three steps of review
+
+**The existing order test asserted a tolerance the hash does not have.** `TestReconstruct_SameTimestampTradesAreOrderInsensitive` compares through `assertFloats` at `eps = 1e-9`. The drift is around 1e-11 on values near 1e5. The test was right about what it checked.
+
+**`TestReportHash_IsStableAcrossCalls` already existed and passed throughout.** It hashes one struct value twice, which proves the function is pure and says nothing about whether computing a report twice yields the same struct. Its name claimed the property the system lacked. It now carries a comment pointing at the test that owns the real one.
+
+**The codebase had the right instinct, aimed one step short.** `calendar.go` and `risk.go` both already say results must never be left in map iteration order. Both are about ordering something a reader sees. Neither anticipated that an accumulation nobody sees needs the same discipline for a different reason.
+
+### The fixture nearly proved the wrong thing
+
+The first bit-stability fixture showed 1 distinct equity curve over 200 runs against the **unfixed** code, which reads as "no bug here". `bars()` closes at whole dollars, whole dollars are exact in binary, and Go's small-map randomization gives rotations rather than permutations, so seven rotations of seven exact values agreed. Rounding the closes to cents took the same test from 1 distinct curve to 199. `driftBars` carries that in its comment, because the next person writing a stability test here will reach for `bars()`.
+
+### Rounding the hash was rejected
+
+`NEXT_SESSION.md` proposed rounding each figure to its published precision before hashing. Published precision is per `Kind`, so that needs every float field mapped to one, which is an include-list, and `hash.go` spends a paragraph explaining why this struct is hashed by exclusion. It would also put a third copy of the precision rule beside `narrative/render.go` and `frontend/src/format.ts`. Sorting the accumulation is four lines, removes the cause rather than the symptom, and fixes the figures too rather than only the hash. SPEC §4.1.
+
+### What the verifications actually proved
+
+| | |
+|---|---|
+| Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven |
+| Tests | Three added, each confirmed to fail against the unfixed code, and each owning a different loop. Reverting only `risk.go` leaves the reconstruction test green and the other two red. |
+| Mutations | **5 run, 4 killed, 1 intentional survivor.** Reversing the sort order survives and should: the spec asks for reproducibility, not a particular order. |
+| Live stack | Seeded three-position account, 79 trading days, `insights:{user_id}` cleared between calls. **Unfixed: 9 distinct hashes over 10 recomputes. Fixed: 1 over 12.** |
+| Cost | **$0.00.** The narrative endpoint was never called. |
+| Dev database | Restored and verified by query: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3525`. No `insights:*` or `narrative:*` keys. |
+
+The live run also settled a question the spec had left open: two separately started processes produced the same hash for the same account, so it is stable across restarts.
+
+### Things worth knowing
+
+**A three-position account hides half this bug.** `weight_pct` and `concentration_hhi` were bit-identical across all ten unfixed live runs while `portfolio_sharpe` drifted every time. That account would have cleared a `risk.go` audit completely. It is why the invested loop has its own test rather than riding the end-to-end one.
+
+**A passing `/healthz` proves a server is there, not that it is yours.** Restoring the fix and restarting produced 11 distinct hashes out of 12, which reads as the fix failing. `pkill -f "ai-insights/cmd/server"` matched nothing, because `go run` compiles to a temp binary whose process is named `server`. The old process kept port 8085, the replacement died with `bind: address already in use`, and the health check returned 200 from the wrong build throughout. Confirm the log says `listening` and that the PID holding the port is new.
+
+**An equivalent mutant is a design signal.** A scratch slice threaded through `sortedSymbols` to avoid per-date allocation produced a mutant that could not be killed, because the scratch was length zero and never reassigned, making `scratch[:0]` and `scratch` the same slice. Benchmarking said it saved 23 allocations and nothing measurable in time. Removed.
+
+**Determinism tests and correctness tests do not cover for each other.** Mutating `equity += holdings[symbol] * px` to `equity += px` survives all three new tests, which only ever ask whether two runs agree, and dies against eight existing ones. Same property Step 22 recorded for `format.test.ts` and `parity.live.test.ts`.
+
+---
+
 ## Still open
 
 - [x] ~~**Insights frontend** — Step 22~~ — done. The percent convention was
       followed by porting `roundHalfAway` into `format.ts` rather than by the
       one-liner Step 21 expected; see the Step 22 entry for why.
-- [ ] **`ReportHash` is not stable for unchanged data** — six distinct hashes
-      from twelve recomputes of one untouched account. Costs real money through
-      the narrative cache and makes §2.3's check raise false alarms. The most
-      consequential thing this phase leaves open. Its own step, in
-      `services/ai-insights`.
+- [x] ~~**`ReportHash` is not stable for unchanged data**~~ — Step 23. The
+      cause was two float64 accumulations running in map iteration order, not
+      the rounding `NEXT_SESSION.md` expected; see the Step 23 entry for why
+      rounding the hash was rejected.
 - [ ] **A fill's report refetch is defeated by the 5-minute report cache** —
       the reader sees figures predating their own trade, unmarked. Fix is to
       invalidate `insights:{user_id}` when a trade is recorded.

@@ -78,13 +78,25 @@ func Reconstruct(trades []Trade, barsBySymbol map[string][]Bar, calendar []time.
 
 	// Sorted by DAY, not by timestamp, and stably.
 	//
-	// Within-day order is irrelevant to the fold below -- cash and holding
-	// deltas are additive, so any permutation of one day's trades reaches the
-	// same state -- and sorting by day only makes that explicit instead of
-	// relying on it. This is what makes the curve insensitive to the arbitrary
-	// order two trades sharing an executed_at come back in, which
-	// GET /trading/trades cannot determine (its ORDER BY breaks such ties on a
-	// random UUID; see trading-engine's ListTrades).
+	// Within-day order does not change the state the fold reaches to any
+	// precision anyone reads: cash and holding deltas are additive, so any
+	// permutation of one day's trades lands on the same figures. Sorting by
+	// day makes that explicit instead of relying on it, and it is what makes
+	// the curve insensitive to the arbitrary order two trades sharing an
+	// executed_at come back in, which GET /trading/trades cannot determine
+	// (its ORDER BY breaks such ties on a random UUID; see trading-engine's
+	// ListTrades).
+	//
+	// "Same state" is a statement about figures, NOT about bits. Float64
+	// addition is not associative, so a different within-day order shifts
+	// cash in its last bits, exactly as map iteration order used to shift
+	// equity (see sortedSymbols). It is not a source of hash drift only
+	// because those tie-breaking UUIDs are fixed per row, so the same trades
+	// come back in the same arbitrary order every time. That makes the
+	// guarantee BORROWED from trading-engine's query rather than intrinsic
+	// here. Sorting the fold by trade ID would make it intrinsic; it would
+	// also change every existing report hash, so it waits for a defect that
+	// actually bites (SPEC.md Step 23 §4.3).
 	ordered := make([]Trade, len(trades))
 	copy(ordered, trades)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -120,12 +132,12 @@ func Reconstruct(trades []Trade, barsBySymbol map[string][]Bar, calendar []time.
 		}
 
 		equity := cash
-		for symbol, qty := range holdings {
+		for _, symbol := range sortedSymbols(holdings) {
 			px, ok := closes[symbol][date]
 			if !ok {
 				return Reconstruction{}, missingCloseError(symbol, date)
 			}
-			equity += qty * px
+			equity += holdings[symbol] * px
 		}
 
 		out.Dates = append(out.Dates, date)
@@ -134,6 +146,29 @@ func Reconstruct(trades []Trade, barsBySymbol map[string][]Bar, calendar []time.
 	}
 
 	return out, nil
+}
+
+// sortedSymbols returns m's keys in ascending order.
+//
+// Summing a portfolio in map iteration order is the one thing that made
+// ReportHash useless. Go randomizes that order per pass, and float64 addition
+// is NOT associative, so the same holdings at the same closes sum to results
+// that differ in the last bits depending on where the iteration happened to
+// start. Every displayed figure rounds that difference away and every test
+// with a tolerance passes; the hash is defined on the exact bytes and sees all
+// of it. Measured before the fix: 199 distinct equity curves over 200
+// reconstructions of identical input (Step 23).
+//
+// Note this is a DIFFERENT concern from the sorts in Calendar and ComputeRisk,
+// which order a result a reader sees. This one orders an accumulation nobody
+// sees, and it is load-bearing for exactly that reason.
+func sortedSymbols(m map[string]float64) []string {
+	dst := make([]string, 0, len(m))
+	for symbol := range m {
+		dst = append(dst, symbol)
+	}
+	sort.Strings(dst)
+	return dst
 }
 
 // applyTrade folds one execution into a running cash balance and holdings
