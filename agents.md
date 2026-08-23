@@ -350,9 +350,22 @@ Portfolio + Trade Data → Analytics Engine → Insight Generator → Dashboard
   figure from the report struct, so a surviving digit rejects the draft. Step 20
   computed the numbers first on purpose, and this is what that bought — the
   guarantee is structural rather than a prompt-level instruction
-- Insights frontend — Step 22. Must follow Step 21's percent convention
-  (halfway cases round away from zero); `frontend/src/format.ts` has no percent
-  formatter of its own
+- Insights frontend — done (Step 22), a sixth dashboard tab: the report's
+  figures render first and the narrative fills in beneath each section as it
+  arrives. `report_hash` was added to the report response so prose can be
+  checked against the figures actually on screen. The percent convention was
+  matched by PORTING the backend's rounding into `frontend/src/format.ts`, not
+  by the browser one-liner Step 21 expected — `toFixed` rounds the exact binary
+  value and disagrees with the backend on 960 of 60,002 measured cases
+- **`ReportHash` is not stable for unchanged data** — six distinct hashes from
+  twelve recomputes of one untouched account, from float drift in the
+  reconstruction. It costs money through the narrative cache, which is keyed on
+  it, and makes the report/narrative agreement check raise false alarms. Found
+  in Step 22, which could not fix it from the frontend. **The most consequential
+  thing Phase 4 leaves open**
+- Report-cache invalidation on a fill — a fill's refetch is served the cached
+  report for up to five minutes, so the reader can see figures that predate
+  their own trade
 - Dockerization
 - Cloud deployment
 - Work through **docs/deferred-tuning.md** — timeouts, connection pooling, and

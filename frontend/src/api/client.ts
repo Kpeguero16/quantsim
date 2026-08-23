@@ -30,10 +30,12 @@ import type {
   HistoryResponse,
   LoginRequest,
   MeResponse,
+  NarrativeResponse,
   OrdersResponse,
   PlaceOrderRequest,
   PlaceOrderResult,
   PortfolioResponse,
+  PortfolioInsightsResponse,
   Price,
   PositionsResponse,
   RegisterRequest,
@@ -313,4 +315,14 @@ export const api = {
 
   backtest: (id: string) =>
     request<BacktestDetail>(`/backtests/${encodeURIComponent(id)}`),
+
+  insights: () => request<PortfolioInsightsResponse>('/insights/portfolio'),
+
+  // A separate call from insights() on purpose, not an optional field on it
+  // (SPEC.md 2.2). The report is deterministic, costs nothing and answers in
+  // milliseconds; this is billed per call, takes seconds, and depends on a
+  // third party. Fusing them would put a paid, slow, externally-dependent
+  // step in front of figures that render correctly without it.
+  narrative: () =>
+    request<NarrativeResponse>('/insights/portfolio/narrative'),
 }

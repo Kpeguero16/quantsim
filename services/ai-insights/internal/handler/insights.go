@@ -16,6 +16,31 @@ type InsightsHandler struct {
 	service *service.Service
 }
 
+// InsightsResponse is GET /insights/portfolio: the report, plus the identity
+// of the report (Step 22 SPEC.md §2.3).
+//
+// The hash is attached HERE rather than added as a field on
+// service.PortfolioInsights, and that placement is the whole design. ReportHash
+// marshals that struct to derive the digest, so a field on it would hash
+// itself: every narrative cache key minted since Step 21 would move, for a
+// field that is not a measurement.
+//
+// Embedded, so the JSON body gains exactly one key and every existing consumer
+// parses the shape it already parses.
+//
+// WHY it exists at all: the narrative endpoint computes the report
+// independently and returns the hash of what IT saw. Without a hash on this
+// side there is nothing to compare that against, and a caller composing the two
+// -- which is exactly what Step 22's UI does -- can render a figure from one
+// report beside a sentence describing another. Both correct, no error, and
+// indistinguishable on the page. That is the failure Step 21 made structurally
+// impossible inside this service; this key is what keeps it impossible one
+// layer up.
+type InsightsResponse struct {
+	service.PortfolioInsights
+	ReportHash string `json:"report_hash"`
+}
+
 func NewInsightsHandler(svc *service.Service) *InsightsHandler {
 	return &InsightsHandler{service: svc}
 }
@@ -40,7 +65,10 @@ func (h *InsightsHandler) PortfolioInsights(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, insights)
+	WriteJSON(w, http.StatusOK, InsightsResponse{
+		PortfolioInsights: insights,
+		ReportHash:        service.ReportHash(insights),
+	})
 }
 
 // userID reads the subject RequireAuth put on the context and parses it.
