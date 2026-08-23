@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -304,5 +305,99 @@ func TestReconstruct_ATailGapTruncatesTheCurveAndHoldings_KnownLimitation(t *tes
 	if math.Abs(got.Holdings["AAPL"]-wantHoldings["AAPL"]) < eps {
 		t.Error("reconstruction agrees with the account, so this fixture no longer " +
 			"demonstrates the truncation it exists to pin")
+	}
+}
+
+// driftBars prices a symbol in cents, the way market-data stores it.
+//
+// The cents matter, and not as realism. bars() closes at whole dollars, and
+// whole dollars are exact in binary, so a portfolio priced from bars() sums to
+// the same float64 whatever order the holdings are visited in. A bit-stability
+// test built on bars() therefore passes against code with no bit stability at
+// all -- measured, on the first fixture tried for the test below: 1 distinct
+// equity curve over 200 runs BEFORE the fix, and 199 after the closes were
+// rounded to cents instead.
+func driftBars(base float64, days int) []service.Bar {
+	out := make([]service.Bar, 0, days)
+	for d := 1; d <= days; d++ {
+		out = append(out, service.Bar{
+			Timestamp: day(d),
+			Close:     math.Round((base+float64(d)*0.37)*100) / 100,
+		})
+	}
+	return out
+}
+
+// driftFixture is a portfolio whose per-date equity sum is order-sensitive:
+// cent closes, NUMERIC(20,4) quantities, five holdings over twenty-five days.
+func driftFixture() ([]service.Trade, map[string][]service.Bar) {
+	const days = 25
+	barsBySymbol := map[string][]service.Bar{
+		"AAPL":  driftBars(187.43, days),
+		"MSFT":  driftBars(411.19, days),
+		"GOOGL": driftBars(168.77, days),
+		"AMZN":  driftBars(203.31, days),
+		"TSLA":  driftBars(246.53, days),
+		"SPY":   driftBars(585.07, days),
+		"QQQ":   driftBars(498.61, days),
+	}
+	trades := []service.Trade{
+		buy("AAPL", 137.4321, 187.80, 1),
+		buy("MSFT", 73.1177, 411.56, 1),
+		buy("GOOGL", 219.4413, 169.14, 2),
+		buy("AMZN", 111.9931, 203.68, 2),
+		buy("TSLA", 59.7717, 246.90, 3),
+	}
+	return trades, barsBySymbol
+}
+
+// equityBits renders a curve as its exact bit patterns, so two curves compare
+// as identical only if every value is identical to the last bit.
+func equityBits(r service.Reconstruction) string {
+	var b strings.Builder
+	for _, e := range r.Equity {
+		fmt.Fprintf(&b, "%016x|", math.Float64bits(e))
+	}
+	return b.String()
+}
+
+// Identical input must reconstruct to an identical curve, bit for bit.
+//
+// This is the precondition ReportHash depends on and did not have. The equity
+// sum ran in map iteration order, which Go randomizes per pass, and float64
+// addition is not associative, so the same holdings at the same closes summed
+// to results differing in their last bits. Every displayed figure rounds that
+// away; the hash is defined on the exact bytes and sees all of it, and the
+// narrative cache is keyed on the hash.
+//
+// Note what this does NOT assert: that the curve equals any particular value.
+// The requirement is that two runs agree with each other, not that either
+// agrees with the exact decimal sum (SPEC.md Step 23 §4.2).
+//
+// Verified to fail against the unfixed code: 199 distinct curves over 200 runs.
+func TestReconstruct_IsBitStableAcrossRuns(t *testing.T) {
+	trades, barsBySymbol := driftFixture()
+	calendar := service.Calendar(barsBySymbol)
+
+	first, err := service.Reconstruct(trades, barsBySymbol, calendar)
+	if err != nil {
+		t.Fatalf("Reconstruct: %v", err)
+	}
+	if len(first.Equity) < 20 {
+		t.Fatalf("fixture reconstructed only %d dates; it cannot exercise "+
+			"enough map iterations to be a stability test", len(first.Equity))
+	}
+	want := equityBits(first)
+
+	const runs = 200
+	for i := 1; i < runs; i++ {
+		got, err := service.Reconstruct(trades, barsBySymbol, calendar)
+		if err != nil {
+			t.Fatalf("run %d: Reconstruct: %v", i, err)
+		}
+		if bits := equityBits(got); bits != want {
+			t.Fatalf("run %d produced a different equity curve from run 0:\n got %s\nwant %s",
+				i, bits, want)
+		}
 	}
 }

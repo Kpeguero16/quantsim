@@ -83,7 +83,11 @@ func ComputeRisk(r Reconstruction, barsBySymbol map[string][]Bar) (RiskSection, 
 
 	positions := make([]PositionWeight, 0, len(r.Holdings))
 	invested := 0.0
-	for symbol, qty := range r.Holdings {
+	// Symbol order, not map order: invested is a float64 accumulation, and
+	// summing it in a different order shifts its last bits, which moves every
+	// weight and concentration_hhi with it. See sortedSymbols.
+	for _, symbol := range sortedSymbols(r.Holdings) {
+		qty := r.Holdings[symbol]
 		px, ok := closes[symbol][asOf]
 		if !ok {
 			return RiskSection{}, missingCloseError(symbol, asOf)

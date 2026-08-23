@@ -1,7 +1,9 @@
 package service_test
 
 import (
+	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/kpeguero/quantsim/pkg/portfoliomath"
@@ -180,5 +182,51 @@ func TestComputeRisk_TooFewDaysIsInsufficientDataNotZeros(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The invested total must be bit-stable across runs, and with it every weight
+// and concentration_hhi.
+//
+// ComputeRisk summed invested in map iteration order, the same fault as the
+// equity loop and a separate instance of it. Without this test risk.go is held
+// only through the end-to-end hash test, where an unsorted invested loop would
+// show up as "the hash moved" with nothing pointing at which loop moved it.
+//
+// Verified to fail against the unfixed code.
+func TestComputeRisk_WeightsAreBitStableAcrossRuns(t *testing.T) {
+	trades, barsBySymbol := driftFixture()
+	r := reconstruct(t, trades, barsBySymbol)
+
+	bitsOf := func(s service.RiskSection) string {
+		var b strings.Builder
+		fmt.Fprintf(&b, "hhi=%016x|", math.Float64bits(s.ConcentrationHHI))
+		for _, p := range s.Positions {
+			fmt.Fprintf(&b, "%s=%016x/%016x|",
+				p.Symbol, math.Float64bits(p.WeightPct), math.Float64bits(p.MarketValue))
+		}
+		return b.String()
+	}
+
+	first, err := service.ComputeRisk(r, barsBySymbol)
+	if err != nil {
+		t.Fatalf("ComputeRisk: %v", err)
+	}
+	if len(first.Positions) < 2 {
+		t.Fatalf("fixture has %d positions; one position cannot exercise "+
+			"summation order", len(first.Positions))
+	}
+	want := bitsOf(first)
+
+	const runs = 200
+	for i := 1; i < runs; i++ {
+		got, err := service.ComputeRisk(r, barsBySymbol)
+		if err != nil {
+			t.Fatalf("run %d: ComputeRisk: %v", i, err)
+		}
+		if bits := bitsOf(got); bits != want {
+			t.Fatalf("run %d produced different weights from run 0:\n got %s\nwant %s",
+				i, bits, want)
+		}
 	}
 }

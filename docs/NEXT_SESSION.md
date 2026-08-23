@@ -1,12 +1,11 @@
 # Next session — state of play
 
-> **Step 22 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
+> **Step 23 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
 > purpose and were not carried onto `main`; the full per-task record is archived at
-> `docs/archive/phase4-step22-insights-frontend/todo.md`, including the three defects below in
-> much more detail.
+> `docs/archive/phase4-step23-report-hash-stability/todo.md`.
 
-Last updated **2026-08-23**, with Step 22 (insights frontend) finished on its branch.
-**Phase 4's three feature steps are done; the infra half is what remains.**
+Last updated **2026-08-23**, with Step 23 (ReportHash stability) finished on its branch.
+**Phase 4's feature work and its worst defect are done; the infra half is what remains.**
 
 This file answers three questions on picking the project back up: *is anything
 half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to
@@ -14,94 +13,82 @@ be rewritten each time, not appended to.
 
 ---
 
-## Step 22 is merged. Nothing is half-finished.
+## Step 23 is merged. Nothing is half-finished.
 
 | | |
 |---|---|
-| Branch | `step22-insights-frontend` — 15 commits squashed to one `feat(step22)` (`3e916a9`) and merged `--no-ff` (`cf925c9`), matching Steps 16–21. **Branch deleted; `main` pushed.** Pre-squash history is at `f8b7092` in the reflog until it expires. |
-| Frontend | **179 tests** across 9 files. `npm run build` clean. `npm run lint` 5 warnings, all pre-existing `exhaustive-deps` on sibling hooks. |
-| Backend | `make vet` clean; `make test` green across all seven modules with 0 failures; `make test-integration` **63/0**, unchanged. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. **All of it re-run on `main` after the merge.** |
-| Mutations | **31 run, 29 killed, 2 survived.** One was fixed structurally (the section guard); the other is the hook guard the browser then broke for real. |
-| Review | `/code-review ultra` over the branch diff (34 files, +3850/−78): **zero findings.** Scoped to the diff, so it says nothing about the two open backend defects, which live in untouched code. |
-| Manual pass | All states driven against the running stack: degraded, mixed, full `ok` over a 72-trading-day window, narrative unavailable, and a forced hash disagreement with its regenerate click. **4 billable generations, ~$0.08.** |
-| Dev database | Restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3507`. No `insights:*` or `narrative:*` keys in Redis. |
-| Local processes | All services and the Vite dev server killed. Postgres and Redis containers up. |
+| Branch | `step23-report-hash-stability`, one commit merged `--no-ff`. **Branch deleted; `main` pushed.** |
+| The change | Two float64 accumulations that ran in Go map iteration order now run in symbol order. Four lines and one helper, in `services/ai-insights/internal/service/`. **No published figure changes at any precision a reader sees.** |
+| Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven. All re-run on `main` after the merge. |
+| Tests | Three added, each confirmed to fail against the unfixed code, each owning a different loop. |
+| Mutations | **5 run, 4 killed, 1 intentional survivor** (reversing the sort order, which the spec explicitly does not forbid). |
+| Live stack | Seeded three-position account over 79 trading days, report cache cleared between calls. **Unfixed: 9 distinct hashes over 10 recomputes. Fixed: 1 over 12.** |
+| Cost | **$0.00.** The narrative endpoint was never called. |
+| Dev database | Restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3525`. No `insights:*` or `narrative:*` keys in Redis. |
+| Local processes | All services stopped. Postgres and Redis containers up. |
+
+**`historical_prices` is 3525, not the 3507 this file used to say.** market-data ingested more
+bars. Nothing to do with Step 23, but do not read the new number as damage.
 
 ---
 
-## What Step 22 shipped
+## What Step 23 fixed, and what it deliberately did not
 
-A sixth dashboard tab. `GET /insights/portfolio` renders as three sections of
-figures; `GET /insights/portfolio/narrative` fills in beneath each section as it
-arrives. The figures never wait for the prose. Plus one additive backend field —
-`report_hash` on the report response — so a separately-fetched narrative can be
-checked against the figures actually on screen.
+`Reconstruct` summed each date's equity over `range holdings`; `ComputeRisk` summed `invested`
+over `range r.Holdings`. Go randomizes map iteration order per pass and float64 addition is not
+associative, so identical data summed to results differing in their last bits. Nothing displayed
+ever changed, because every figure rounds that away. `ReportHash` is defined on the serialized
+bytes and saw all of it, which meant a narrative cache that never hit and a billed generation on
+every view.
 
-- `frontend/src/insights/` — the panel, three section components, the two
-  status-union hooks, and two pure modules: `narrative-state.ts` (reason → copy,
-  hash agreement, and the single producer of what goes where the prose would be)
-  and `insights-errors.ts` (error code → copy).
-- `frontend/src/format.ts` — `formatPercent`, `formatSignedPercent`,
-  `formatRatio`, `formatIndex`, all routed through one `fixed()` that ports the
-  backend's `roundHalfAway`.
-- `frontend/src/api/` — nine wire types and two client methods. **The three
-  section types are unions on `state`**, so a figure cannot be read without
-  branching first.
+**`NEXT_SESSION.md` used to recommend rounding each figure to its published precision before
+hashing. That was rejected, with reasons.** Published precision is per `Kind`, so rounding needs
+every float field mapped to one, which is an include-list, and `hash.go` argues at length that
+this struct must be hashed by exclusion so a figure added later participates by default. It would
+also put a third copy of the precision rule beside `narrative/render.go` and `format.ts`. Sorting
+the accumulation removes the cause instead of the symptom and fixes the figures too, not just the
+hash. If §2.3 false alarms ever appear in practice, rounding becomes the follow-up and will be a
+smaller change then.
 
-**Three defects came out of this step. One is fixed; two are backend work that
-this branch deliberately did not touch.** All three are written up in
-`PHASE4_CHECKLIST.md`'s Step 22 entry, and the two open ones now carry inline
-amendments in the archived `SPEC.md` at §2.9 and §9.2, because they contradict
-what those sections asserted.
-
-1. **Fixed.** `useNarrative` stranded its own request — the cleanup disowned the
-   in-flight request and the double-spend guard blocked a replacement, so the
-   panel sat on "Preparing a written summary…" forever. Dev-only in effect, but
-   it blocked every browser check of the narrative.
-2. **Open, backend.** A fill's report refetch is defeated by the five-minute
-   report cache, so for up to five minutes the reader sees figures that predate
-   their own trade, unmarked.
-3. **Open, backend, and the one that matters most.** `ReportHash` is not stable
-   for unchanged data — twelve recomputes of one untouched account produced six
-   distinct hashes, from float drift in `portfolio_sharpe`,
-   `annualized_volatility_pct` and `concentration_hhi`. It costs real money
-   through the narrative cache and makes the §2.3 check raise false alarms.
+**The trade fold was left alone.** It is order-sensitive at the bit level too, but its order comes
+from `GET /trading/trades`, whose `ORDER BY` breaks ties on a fixed row UUID, so it is arbitrary
+and identical every time. Its comment used to claim bit-level insensitivity; it now says the
+guarantee is borrowed from that query rather than intrinsic. Sorting the fold by trade ID would
+make it intrinsic and would change every existing hash, so it waits for a defect that bites.
 
 ---
 
 ## What to do next
 
-**1. `ReportHash` stability** — the most consequential thing Phase 4 leaves
-open, and it is a correctness *and* a cost bug. Either make the reconstruction
-deterministic, or round each figure to its published precision before hashing so
-the hash reflects what is actually shown. The second is smaller and closes both
-symptoms; it changes every existing narrative cache key once, which is
-acceptable for a 24-hour cache. Its own step, in `services/ai-insights`.
+**1. Report-cache invalidation on a fill** — Step 22's defect 2, and now the most consequential
+thing left. A fill's report refetch is defeated by the five-minute `insights:{user_id}` cache, so
+for up to five minutes the reader sees figures that predate their own trade, unmarked. It wants
+its own step because the design question is a service boundary: `trading-engine` invalidating a
+key it does not own, or `ai-insights` learning that a trade happened. Neither is obviously right.
 
-**2. Report-cache invalidation on a fill** — smaller, and pairs naturally with
-the above. Invalidate `insights:{user_id}` when a trade is recorded.
+Note the interaction with Step 23. Until this is fixed, a fill produces exactly the disagreement
+§2.3 was built to catch, and now that the hash is stable, that warning finally means something.
 
-**3. The remaining roadmap items**, in `agents.md`'s order:
+**2. The remaining roadmap items**, in `agents.md`'s order:
 
 - **Dockerization**, then **cloud deployment** (AWS free tier: EC2 +
   docker-compose; Redis stays containerized, ElastiCache has no free tier).
-  `GOWORK=off go build ./...` passes for all seven modules today — re-checked in
-  Step 22, not assumed.
-- **`docs/deferred-tuning.md`** — unblocked by deployment. Step 22 added nothing
+  `GOWORK=off go build ./...` passes for all seven modules today, re-checked in
+  Step 23, not assumed.
+- **`docs/deferred-tuning.md`** — unblocked by deployment. Step 23 added nothing
   to it.
 
-**4. The long-standing small items.**
+**3. The long-standing small items.**
 
-- **The frontend hooks have no tests at all.** Step 22 made this concrete rather
-  than theoretical: `use-narrative`'s double-spend guard protects a billed call,
-  and it broke without a single test noticing. Needs `renderHook`;
+- **The frontend hooks have no tests at all.** `use-narrative`'s double-spend guard protects a
+  billed call, and it broke in Step 22 without a single test noticing. Needs `renderHook`;
   `@testing-library/react` is installed and still unused.
 - `market-data`'s store still has no tests (`historical_price_store.go`). The
-  integration harness is still in **three** copies; Step 22 added no
+  integration harness is still in **three** copies; Step 23 added no
   `integration/` package, so `docs/TESTING_STRUCTURE.md` §6a's extraction
-  trigger is **still unfired** — re-confirmed in Step 22 rather than assumed.
+  trigger is **still unfired**.
 
-**5. Security backlog:** items 1, 2 and 4 are closed. Item **8**
+**4. Security backlog:** items 1, 2 and 4 are closed. Item **8**
 (Unicode-normalise passwords) is the cheap one left and gets more expensive as
 accounts accumulate. Item **3** (Argon2id) is next substantive and wants its own
 step, since it carries a migration strategy.
@@ -249,6 +236,15 @@ spectacular result. Check what is still listening before trusting a number.
 **A `go run` service started before a code change keeps serving the old
 binary.** Kill the process tree and restart. `vite` is the exception.
 
+**And a passing `/healthz` proves a server is there, not that it is yours.**
+`pkill -f "ai-insights/cmd/server"` matches nothing, because `go run` compiles
+to a temp binary whose process is named `server`. In Step 23 the old process
+kept port 8085, the replacement died with `bind: address already in use`, and
+ten minutes of measurements came off the wrong build and read as the fix having
+failed. Confirm the log line says `listening`, and that the PID from
+`lsof -nP -iTCP:<port> -sTCP:LISTEN` is the new one. Killing by that PID is also
+the version of `pkill` that cannot reach a sibling service.
+
 **A gateway wildcard route (`/prefix/*`) does not match the bare prefix.** That
 was Step 16's bug. `/insights/*` covers `/insights/portfolio/narrative` because
 it has a further segment.
@@ -294,10 +290,22 @@ suppression and watching the error appear.
 no figure a real portfolio produces lands on a halfway case. That is not a weak
 test; it is the wrong test for that fault. Know which fault each test owns.
 
-**`ReportHash` is not stable for the same account.** Twelve recomputes gave six
-hashes. Do not use it as an identity for anything until that is fixed — and be
-aware the narrative cache is keyed on it, so repeated views cost repeated
-generations.
+**Summing a map in Go is not deterministic, and no displayed figure will tell
+you.** Fixed in Step 23, and worth keeping in mind for the next accumulation
+anyone writes here. Map iteration order is randomized per pass and float64
+addition is not associative, so the same values summed over `range m` differ in
+their last bits between runs. Every figure rounds that away; `ReportHash` is
+defined on the serialized bytes and saw all of it, at 9 distinct hashes over 10
+live recomputes. **A tolerance-based test cannot catch this** -- the existing
+order test compares at `eps = 1e-9` and the drift is around 1e-11. If you write
+another one, compare `math.Float64bits`.
+
+**A stability fixture built on round numbers proves nothing.** `bars()` closes
+at whole dollars, which are exact in binary, and Go's small-map randomization
+produces rotations rather than permutations, so seven rotations of seven exact
+values agree. The first Step 23 fixture reported 1 distinct equity curve over
+200 runs against **broken** code. Rounding the closes to cents took the same
+test to 199. Use `driftBars`.
 
 **`go build` succeeding says nothing about building outside the workspace.**
 `go.work` supplies requirements an individual `go.mod` may lack:

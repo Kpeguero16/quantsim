@@ -1,10 +1,12 @@
 package service_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/service"
+	"github.com/kpeguero/quantsim/services/ai-insights/internal/service/mock"
 )
 
 func hashFixture() service.PortfolioInsights {
@@ -80,6 +82,14 @@ func TestReportHash_ChangesWithEveryMeasurement(t *testing.T) {
 	}
 }
 
+// Hashing ONE struct value twice, which is a purity check and nothing more.
+//
+// Worth being precise about, because the name reads like a guarantee this does
+// not give. It says the function is deterministic; it says nothing about
+// whether computing a report twice from the same account yields the same
+// struct to hash, which is the property that was actually broken and is where
+// the narrative cache key lives. TestReportHash_IsStableAcrossRecomputes owns
+// that one, and it drives the service to get it.
 func TestReportHash_IsStableAcrossCalls(t *testing.T) {
 	r := hashFixture()
 	if service.ReportHash(r) != service.ReportHash(r) {
@@ -96,5 +106,66 @@ func TestReportHash_IsAShortHexString(t *testing.T) {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			t.Fatalf("hash %q is not lowercase hex", got)
 		}
+	}
+}
+
+// The defect Step 22 reported, as reported: twelve recomputes of one untouched
+// account gave six distinct hashes.
+//
+// This drives the whole service rather than hashing a literal, because the
+// instability was never in ReportHash. It was in the report handed to it: two
+// float64 accumulations running in Go map iteration order, which randomizes
+// per pass (SPEC.md Step 23 §3). A test over a hand-built PortfolioInsights
+// would hash the same struct twice and pass against the unfixed code.
+//
+// A fresh cache per run is what makes each call recompute. Reusing one would
+// serve the first run's report back eleven times and prove only that a map
+// lookup is deterministic.
+//
+// Cost, not just correctness: narrative:{user_id}:{report_hash} is the
+// narrative cache key, so an unstable hash means a cache that never hits and
+// a billed generation on every view of an unchanged account.
+//
+// Verified to fail against the unfixed code: 11 distinct hashes over 12 runs.
+func TestReportHash_IsStableAcrossRecomputes(t *testing.T) {
+	trades, barsBySymbol := driftFixture()
+
+	// Cash and positions are derived from the same trades the reconstruction
+	// replays, so the account reconciles (SPEC.md §2.12). Building the live
+	// side by hand instead is the reliable way to blank every section.
+	cash := service.StartingBalance
+	live := make([]service.LivePosition, 0, len(trades))
+	for _, tr := range trades {
+		cash -= tr.Quantity * tr.Price
+		live = append(live, service.LivePosition{Symbol: tr.Symbol, Quantity: tr.Quantity})
+	}
+
+	seen := make(map[string]int)
+	const runs = 12
+	for i := 0; i < runs; i++ {
+		svc := service.NewService(
+			&mock.TradingClient{
+				TradesResult:    trades,
+				PortfolioResult: service.LivePortfolio{Balance: cash, Positions: live},
+			},
+			&mock.HistoryClient{Bars: barsBySymbol},
+			&mock.InsightsCache{},
+		)
+
+		report, err := svc.PortfolioInsights(context.Background(), "user-1", "Bearer t")
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if report.Risk.State != service.StateOK {
+			t.Fatalf("run %d: risk state %q, want ok -- a degraded section "+
+				"carries no figures and cannot exercise hash stability",
+				i, report.Risk.State)
+		}
+		seen[service.ReportHash(report)]++
+	}
+
+	if len(seen) != 1 {
+		t.Errorf("%d recomputes of identical data produced %d distinct hashes, want 1: %v",
+			runs, len(seen), seen)
 	}
 }
