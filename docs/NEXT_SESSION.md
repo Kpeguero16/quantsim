@@ -18,7 +18,7 @@ be rewritten each time, not appended to.
 
 | | |
 |---|---|
-| Branch | `step22-insights-frontend` — 15 commits squashed to one `feat(step22)` (`3e916a9`) and merged `--no-ff` (`cf925c9`), matching Steps 16–21. **Branch not yet deleted; `main` not yet pushed.** Pre-squash history is at `f8b7092` in the reflog until it expires. |
+| Branch | `step22-insights-frontend` — 15 commits squashed to one `feat(step22)` (`3e916a9`) and merged `--no-ff` (`cf925c9`), matching Steps 16–21. **Branch deleted; `main` pushed.** Pre-squash history is at `f8b7092` in the reflog until it expires. |
 | Frontend | **179 tests** across 9 files. `npm run build` clean. `npm run lint` 5 warnings, all pre-existing `exhaustive-deps` on sibling hooks. |
 | Backend | `make vet` clean; `make test` green across all seven modules with 0 failures; `make test-integration` **63/0**, unchanged. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. **All of it re-run on `main` after the merge.** |
 | Mutations | **31 run, 29 killed, 2 survived.** One was fixed structurally (the section guard); the other is the hook guard the browser then broke for real. |
@@ -71,21 +71,17 @@ what those sections asserted.
 
 ## What to do next
 
-**1. Finish putting Step 22 to bed** — delete `step22-insights-frontend` and
-push `main`, both still pending. Deleting the branch is safe once `main` is
-pushed; the pre-squash history survives at `f8b7092` in the reflog meanwhile.
-
-**2. `ReportHash` stability** — the most consequential thing Phase 4 leaves
+**1. `ReportHash` stability** — the most consequential thing Phase 4 leaves
 open, and it is a correctness *and* a cost bug. Either make the reconstruction
 deterministic, or round each figure to its published precision before hashing so
 the hash reflects what is actually shown. The second is smaller and closes both
 symptoms; it changes every existing narrative cache key once, which is
 acceptable for a 24-hour cache. Its own step, in `services/ai-insights`.
 
-**3. Report-cache invalidation on a fill** — smaller, and pairs naturally with
+**2. Report-cache invalidation on a fill** — smaller, and pairs naturally with
 the above. Invalidate `insights:{user_id}` when a trade is recorded.
 
-**4. The remaining roadmap items**, in `agents.md`'s order:
+**3. The remaining roadmap items**, in `agents.md`'s order:
 
 - **Dockerization**, then **cloud deployment** (AWS free tier: EC2 +
   docker-compose; Redis stays containerized, ElastiCache has no free tier).
@@ -94,7 +90,7 @@ the above. Invalidate `insights:{user_id}` when a trade is recorded.
 - **`docs/deferred-tuning.md`** — unblocked by deployment. Step 22 added nothing
   to it.
 
-**5. The long-standing small items.**
+**4. The long-standing small items.**
 
 - **The frontend hooks have no tests at all.** Step 22 made this concrete rather
   than theoretical: `use-narrative`'s double-spend guard protects a billed call,
@@ -105,7 +101,7 @@ the above. Invalidate `insights:{user_id}` when a trade is recorded.
   `integration/` package, so `docs/TESTING_STRUCTURE.md` §6a's extraction
   trigger is **still unfired** — re-confirmed in Step 22 rather than assumed.
 
-**6. Security backlog:** items 1, 2 and 4 are closed. Item **8**
+**5. Security backlog:** items 1, 2 and 4 are closed. Item **8**
 (Unicode-normalise passwords) is the cheap one left and gets more expensive as
 accounts accumulate. Item **3** (Argon2id) is next substantive and wants its own
 step, since it carries a migration strategy.
