@@ -1,13 +1,9 @@
 # Next session — state of play
 
-> **⚠ Step 22 is COMPLETE but NOT MERGED.** Branch `step22-insights-frontend`, 14 commits, nothing
-> pushed. All twelve tasks are done and the documentation you are reading is the last of them.
-> **What remains is Checkpoint E — the pre-merge adversarial review — then the squash and
-> `--no-ff` merge.**
->
-> `main` is untouched and still describes Step 21. Root `SPEC.md` and `tasks/` are untracked on
-> purpose and must not be carried onto `main`; `tasks/todo.md` holds the full per-task record,
-> including the three defects below in much more detail.
+> **Step 22 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
+> purpose and were not carried onto `main`; the full per-task record is archived at
+> `docs/archive/phase4-step22-insights-frontend/todo.md`, including the three defects below in
+> much more detail.
 
 Last updated **2026-08-23**, with Step 22 (insights frontend) finished on its branch.
 **Phase 4's three feature steps are done; the infra half is what remains.**
@@ -18,14 +14,15 @@ be rewritten each time, not appended to.
 
 ---
 
-## Step 22 is finished. One thing is deliberately unfinished: the merge.
+## Step 22 is merged. Nothing is half-finished.
 
 | | |
 |---|---|
-| Branch | `step22-insights-frontend`, cut from `main` at `89c48e3`. **14 commits, not squashed, not merged, not pushed.** |
+| Branch | `step22-insights-frontend` — 15 commits squashed to one `feat(step22)` (`3e916a9`) and merged `--no-ff` (`cf925c9`), matching Steps 16–21. **Branch not yet deleted; `main` not yet pushed.** Pre-squash history is at `f8b7092` in the reflog until it expires. |
 | Frontend | **179 tests** across 9 files. `npm run build` clean. `npm run lint` 5 warnings, all pre-existing `exhaustive-deps` on sibling hooks. |
-| Backend | `make vet` clean; `make test` green across all seven modules with 0 failures; `make test-integration` **63/0**, unchanged. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. |
+| Backend | `make vet` clean; `make test` green across all seven modules with 0 failures; `make test-integration` **63/0**, unchanged. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. **All of it re-run on `main` after the merge.** |
 | Mutations | **31 run, 29 killed, 2 survived.** One was fixed structurally (the section guard); the other is the hook guard the browser then broke for real. |
+| Review | `/code-review ultra` over the branch diff (34 files, +3850/−78): **zero findings.** Scoped to the diff, so it says nothing about the two open backend defects, which live in untouched code. |
 | Manual pass | All states driven against the running stack: degraded, mixed, full `ok` over a 72-trading-day window, narrative unavailable, and a forced hash disagreement with its regenerate click. **4 billable generations, ~$0.08.** |
 | Dev database | Restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3507`. No `insights:*` or `narrative:*` keys in Redis. |
 | Local processes | All services and the Vite dev server killed. Postgres and Redis containers up. |
@@ -74,10 +71,9 @@ what those sections asserted.
 
 ## What to do next
 
-**1. Merge Step 22.** Checkpoint E first — the pre-merge adversarial review, by
-attacking the branch rather than reading it. Then squash to one `feat(step22)`
-commit and merge `--no-ff`, matching Steps 16–21. Archive is already written to
-`docs/archive/phase4-step22-insights-frontend/`.
+**1. Finish putting Step 22 to bed** — delete `step22-insights-frontend` and
+push `main`, both still pending. Deleting the branch is safe once `main` is
+pushed; the pre-squash history survives at `f8b7092` in the reflog meanwhile.
 
 **2. `ReportHash` stability** — the most consequential thing Phase 4 leaves
 open, and it is a correctness *and* a cost bug. Either make the reconstruction
