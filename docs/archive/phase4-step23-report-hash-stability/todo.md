@@ -1,8 +1,8 @@
 # Todo — ReportHash stability (Step 23)
 
-Tracks `tasks/plan.md`'s 4 tasks and 1 checkpoint. **All done. What remains is documentation and the merge.**
+Tracks `tasks/plan.md`'s 4 tasks and 1 checkpoint. **All done and merged.**
 
-Branch `step23-report-hash-stability`, cut from `main` at `2e3cf12`. **One commit, `4a5623b`, nothing pushed.** Root `SPEC.md` and `tasks/` stay untracked as always.
+Branch `step23-report-hash-stability`, cut from `main` at `2e3cf12`, squashed to one `fix(step23)` (`ae0cebc`) and merged `--no-ff` (`a0d82b4`). Branch deleted, `main` pushed. Root `SPEC.md` and `tasks/` were never carried onto `main`; this file is their archived copy.
 
 ---
 

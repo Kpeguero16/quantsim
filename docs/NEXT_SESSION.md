@@ -17,7 +17,7 @@ be rewritten each time, not appended to.
 
 | | |
 |---|---|
-| Branch | `step23-report-hash-stability`, one commit merged `--no-ff`. **Branch deleted; `main` pushed.** |
+| Branch | `step23-report-hash-stability` — two commits squashed to one `fix(step23)` (`ae0cebc`) and merged `--no-ff` (`a0d82b4`), matching Steps 16-22. **Branch deleted; `main` pushed.** Pre-squash history is at `5f9f18f` in the reflog until it expires. |
 | The change | Two float64 accumulations that ran in Go map iteration order now run in symbol order. Four lines and one helper, in `services/ai-insights/internal/service/`. **No published figure changes at any precision a reader sees.** |
 | Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven. All re-run on `main` after the merge. |
 | Tests | Three added, each confirmed to fail against the unfixed code, each owning a different loop. |
