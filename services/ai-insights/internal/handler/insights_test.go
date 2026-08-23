@@ -421,3 +421,117 @@ func TestPortfolioInsights_A404WithNoSymbolStillReadsAsASentence(t *testing.T) {
 		t.Errorf("the message stops mid-thought: %s", rec.Body.String())
 	}
 }
+
+// The report carries its own identity, and that identity is the one the
+// narrative endpoint computes (Step 22 SPEC.md §2.3).
+//
+// Asserted as an equality against service.ReportHash rather than against a
+// literal digest: the value is not the point, agreement between the two
+// endpoints is. A literal would also have to be rewritten every time the
+// fixture changed, which is how a test stops being read.
+func TestPortfolioInsights_CarriesTheReportHash(t *testing.T) {
+	t.Run("a full report", func(t *testing.T) {
+		trading, history := tradedAccount()
+		rec := get(t, newRouter(trading, history), "Bearer "+accessToken(t, testUserID))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+
+		var got handler.InsightsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		if got.ReportHash == "" {
+			t.Fatal("report_hash missing from the response")
+		}
+		if want := service.ReportHash(got.PortfolioInsights); got.ReportHash != want {
+			t.Errorf("report_hash: got %q, want %q", got.ReportHash, want)
+		}
+	})
+
+	// A degraded report is exactly the case a caller most needs to identify:
+	// its figures are absent, so the hash is the only thing distinguishing
+	// the report a narrative described from the one on screen.
+	t.Run("a never-traded account", func(t *testing.T) {
+		trading := &mock.TradingClient{TradesResult: []service.Trade{}}
+		rec := get(t, newRouter(trading, &mock.HistoryClient{}), "Bearer "+accessToken(t, testUserID))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+
+		var got handler.InsightsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		if got.ReportHash == "" {
+			t.Fatal("report_hash missing from a degraded report")
+		}
+		if want := service.ReportHash(got.PortfolioInsights); got.ReportHash != want {
+			t.Errorf("report_hash: got %q, want %q", got.ReportHash, want)
+		}
+	})
+
+	// The key is additive. Every field the response carried before this one
+	// was introduced still decodes, in the same shape, at the top level --
+	// embedding flattens rather than nesting, and a "report" object appearing
+	// here would break every existing consumer silently.
+	t.Run("the existing shape is unchanged", func(t *testing.T) {
+		trading, history := tradedAccount()
+		body := get(t, newRouter(trading, history), "Bearer "+accessToken(t, testUserID)).Body.String()
+		for _, key := range []string{
+			`"computed_at":`, `"as_of_date":`, `"window":`, `"risk":`,
+			`"benchmarking":`, `"behavior":`, `"report_hash":`,
+		} {
+			if !strings.Contains(body, key) {
+				t.Errorf("expected %s at the top level, got: %s", key, body)
+			}
+		}
+		if strings.Contains(body, `"PortfolioInsights"`) {
+			t.Errorf("the embedded struct nested instead of flattening: %s", body)
+		}
+	})
+}
+
+// The invariant the whole of Step 22 §2.3 rests on: the two endpoints, asked
+// about the same account, agree on which report they are describing.
+//
+// This is the assertion the plan's Checkpoint A proposed to make by eye
+// against the live stack. Done here instead, because eyes verify one account
+// once and this verifies it on every run -- and because the thing that would
+// break it is a code change, not an environment.
+//
+// It runs with a nil generator, so the narrative comes back "unavailable".
+// That is the useful case rather than a limitation: the degraded response is
+// the one whose report_hash a reader is most likely to assume is absent, and
+// it is exactly the response a frontend has to be able to compare.
+func TestTheTwoEndpointsAgreeOnTheReportHash(t *testing.T) {
+	trading, history := tradedAccount()
+	router := newRouter(trading, history)
+	token := "Bearer " + accessToken(t, testUserID)
+
+	var report handler.InsightsResponse
+	if err := json.Unmarshal(get(t, router, token).Body.Bytes(), &report); err != nil {
+		t.Fatalf("decoding the report: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/insights/portfolio/narrative", nil)
+	req.Header.Set("Authorization", token)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("narrative: got %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var narrative handler.NarrativeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &narrative); err != nil {
+		t.Fatalf("decoding the narrative: %v", err)
+	}
+
+	if narrative.ReportHash == "" {
+		t.Fatal("the narrative carries no report_hash to compare against")
+	}
+	if report.ReportHash != narrative.ReportHash {
+		t.Errorf("the endpoints disagree: report %q, narrative %q",
+			report.ReportHash, narrative.ReportHash)
+	}
+}

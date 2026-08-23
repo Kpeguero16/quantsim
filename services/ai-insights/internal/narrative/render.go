@@ -73,13 +73,33 @@ func Render(draft string, vocab map[string]Value) (string, error) {
 //
 // Every numeric kind rounds halfway cases AWAY FROM ZERO, via roundHalfAway,
 // rather than using strconv's own rounding. That is not a stylistic
-// preference. Go's FormatFloat rounds a halfway case to even, and every
-// JavaScript formatter the frontend would reach for -- toFixed, toLocaleString,
-// Intl.NumberFormat -- rounds it away from zero. An exact 7.25 renders "7.2"
-// under Go's rule and "7.3" under the browser's, and the parity test in this
-// package caught precisely that. Matching the browser is what lets Step 22
-// format a figure with the obvious one-liner and still agree with the sentence
-// beside it.
+// preference: Go's FormatFloat rounds a halfway case to even, so an exact 7.25
+// renders "7.2" under that rule and "7.3" under the rule a browser applies.
+// The parity test in this package caught precisely that.
+//
+// CORRECTED BY STEP 22, which measured it. This comment used to say that
+// toFixed, toLocaleString and Intl.NumberFormat all round away from zero, and
+// that Step 22 could therefore match this file with an obvious one-liner. That
+// is true of the RULE and false of toFixed, and the difference is reachable.
+//
+// toFixed rounds the exact BINARY value rather than the decimal literal that
+// was written. -99.85 is really -99.8499999999999943, so toFixed(1) yields
+// "-99.8" where the scale-then-round here yields "-99.9". Measured over 60,002
+// constructed decimals in +/-100: toLocaleString disagreed with this file on 0
+// of them at one decimal place, toFixed on 960.
+//
+// toLocaleString is not a free pass either. It rounds the shortest decimal
+// form, which happens to agree here at one place but diverges at two and three
+// -- 272 and 184 mismatches over 270,002 values, all of them literals like
+// -9.995 whose double sits a hair below the halfway point. Sharpe (2dp) and
+// HHI (3dp) live at those precisions.
+//
+// So frontend/src/format.ts does not use a one-liner. It ports this function:
+// round the magnitude, reapply the sign, then render with a fixed fraction
+// digit count and no grouping. Measured at 0 mismatches over 330,004 values
+// across all three precisions. Two parity tests keep it honest and catch
+// different faults -- format.test.ts's table owns the rounding rule, and
+// insights/parity.live.test.ts owns which formatter is applied to which Kind.
 func format(v Value) (string, error) {
 	switch v.Kind {
 	case KindPercent:

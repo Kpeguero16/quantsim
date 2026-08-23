@@ -1,6 +1,7 @@
 package narrative_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -49,7 +50,7 @@ func TestRender_SubstitutesEachKind(t *testing.T) {
 // node and pasting the result. The frontend and this service format the same
 // figure in two languages, and where they disagree the user sees one number
 // written two ways on one screen (SPEC.md §2.4).
-func TestRender_MoneyAndDatesMatchTheFrontendFormatter(t *testing.T) {
+func TestRender_MatchesTheFrontendFormatter(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		v    narrative.Value
@@ -64,6 +65,58 @@ func TestRender_MoneyAndDatesMatchTheFrontendFormatter(t *testing.T) {
 		{"formatDate 2026-08-14", narrative.Value{Kind: narrative.KindDate, Text: "2026-08-14"}, "8/14/2026"},
 		{"formatDate 2026-01-02", narrative.Value{Kind: narrative.KindDate, Text: "2026-01-02"}, "1/2/2026"},
 		{"formatDate 2026-12-31", narrative.Value{Kind: narrative.KindDate, Text: "2026-12-31"}, "12/31/2026"},
+
+		// Percentages, added in Step 22 when format.ts finally grew a formatter
+		// for them. Until then this table could only pin money, quantities and
+		// dates, and the percent rule this file defines was guarded in one
+		// direction only: the frontend's table would catch the frontend drifting,
+		// and nothing at all would catch THIS file drifting. Changing `places`
+		// here from 1 to 2 used to leave every test in both languages green while
+		// the two silently disagreed on screen.
+		{"formatPercent 33.333", narrative.Value{Kind: narrative.KindPercent, Num: 33.333}, "33.3%"},
+		{"formatPercent 12.35", narrative.Value{Kind: narrative.KindPercent, Num: 12.35}, "12.4%"},
+		{"formatPercent -99.85", narrative.Value{Kind: narrative.KindPercent, Num: -99.85}, "-99.9%"},
+		{"formatPercent 0", narrative.Value{Kind: narrative.KindPercent, Num: 0}, "0.0%"},
+		// No thousands separator, unlike money -- and that asymmetry is the whole
+		// reason format.ts has to pass useGrouping: false, which is not its
+		// default and is not what formatPrice does.
+		{"formatPercent 1234.5", narrative.Value{Kind: narrative.KindPercent, Num: 1234.5}, "1234.5%"},
+		// A value too small to display, but negative. Both languages print the
+		// signed zero rather than swallowing the sign.
+		{"formatPercent -0.04", narrative.Value{Kind: narrative.KindPercent, Num: -0.04}, "-0.0%"},
+		{"formatPercent negative zero", narrative.Value{Kind: narrative.KindPercent, Num: math.Copysign(0, -1)}, "-0.0%"},
+
+		{"formatSignedPercent 12.35", narrative.Value{Kind: narrative.KindSignedPercent, Num: 12.35}, "+12.4%"},
+		{"formatSignedPercent -12.35", narrative.Value{Kind: narrative.KindSignedPercent, Num: -12.35}, "-12.4%"},
+		// The sign is decided on the raw value, not the rounded one: a positive
+		// figure too small to show still reads as a gain. format.ts matches by
+		// testing `pct > 0` rather than the formatted string.
+		{"formatSignedPercent 0.04", narrative.Value{Kind: narrative.KindSignedPercent, Num: 0.04}, "+0.0%"},
+		// An exact zero is a measurement, not a gain -- a portfolio that matched
+		// its benchmark exactly. It carries no sign in either language.
+		{"formatSignedPercent 0", narrative.Value{Kind: narrative.KindSignedPercent, Num: 0}, "0.0%"},
+
+		// Ratios and the concentration index, added alongside format.ts's
+		// formatRatio and formatIndex. These precisions are where the two
+		// languages CAN come apart: a plain toLocaleString on the raw value
+		// reads the shortest decimal form and renders -9.995 as "-10.00",
+		// where the scale-then-round below sees the double sitting just under
+		// the halfway point and renders "-9.99". format.ts ports this
+		// function rather than approximating it, and these cases are what say
+		// so from this side.
+		{"formatRatio -9.995", narrative.Value{Kind: narrative.KindRatio, Num: -9.995}, "-9.99"},
+		{"formatRatio -1.005", narrative.Value{Kind: narrative.KindRatio, Num: -1.005}, "-1.00"},
+		{"formatRatio 2.675", narrative.Value{Kind: narrative.KindRatio, Num: 2.675}, "2.68"},
+		{"formatRatio a computed sharpe", narrative.Value{Kind: narrative.KindRatio, Num: 5.298553258534417}, "5.30"},
+		{"formatRatio 0", narrative.Value{Kind: narrative.KindRatio, Num: 0}, "0.00"},
+		{"formatRatio -0.004", narrative.Value{Kind: narrative.KindRatio, Num: -0.004}, "-0.00"},
+		{"formatRatio 1234.567", narrative.Value{Kind: narrative.KindRatio, Num: 1234.567}, "1234.57"},
+		{"formatIndex -8.1885", narrative.Value{Kind: narrative.KindIndex, Num: -8.1885}, "-8.188"},
+		{"formatIndex a computed hhi", narrative.Value{Kind: narrative.KindIndex, Num: 0.3333333333333333}, "0.333"},
+		{"formatIndex 0.0005", narrative.Value{Kind: narrative.KindIndex, Num: 0.0005}, "0.001"},
+		{"formatIndex -0.0004", narrative.Value{Kind: narrative.KindIndex, Num: -0.0004}, "-0.000"},
+		{"formatIndex 1", narrative.Value{Kind: narrative.KindIndex, Num: 1}, "1.000"},
+		{"formatIndex 1234.5678", narrative.Value{Kind: narrative.KindIndex, Num: 1234.5678}, "1234.568"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := narrative.Render("{x}", map[string]narrative.Value{"x": tc.v})

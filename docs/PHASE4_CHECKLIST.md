@@ -463,11 +463,202 @@ vocabulary and prompt fixes.
 
 ---
 
+## Step 22 — Insights frontend: the report on the page, and the prose after it
+
+**Done.** A sixth dashboard tab renders `GET /insights/portfolio` as three
+sections of figures, with `GET /insights/portfolio/narrative` filled in beneath
+each section as it arrives. Plus one additive backend field, `report_hash` on
+the report response, so a separately-fetched narrative can be checked against
+the figures actually on screen.
+
+Branch `step22-insights-frontend`, squashed and merged `--no-ff`. Spec, plan
+and todo archived at `docs/archive/phase4-step22-insights-frontend/`.
+
+### The percent convention, and the note Step 21 left that was wrong
+
+Step 21 recorded that every browser formatter rounds halfway cases away from
+zero, so this step could match it "with the obvious one-liner". **That is true
+of the rule and false of `toFixed`**, and the difference is reachable.
+`toFixed` rounds the exact *binary* value: `-99.85` is really
+`-99.8499999999999943`, so `toFixed(1)` prints `-99.8` where Go's
+scale-then-round prints `-99.9`. Over 60,002 constructed decimals in ±100,
+`toLocaleString` disagreed with Go on **0** at one decimal place and `toFixed`
+on **960**.
+
+`toLocaleString` is not a free pass either. It rounds the shortest decimal
+form, which agrees at one place but diverges at two and three — 272 and 184
+mismatches over 270,002 values — and Sharpe (2dp) and HHI (3dp) live there. So
+`format.ts` **ports** `roundHalfAway` instead of calling a one-liner: round the
+magnitude, reapply the sign, render with fixed digits and no grouping. 0
+mismatches over 330,004 values across all three precisions.
+
+`render.go`'s comment has been corrected in place; it was the note most likely
+to mislead whoever touched this next.
+
+### Two parity tests, because they catch different faults
+
+- `format.test.ts`'s table owns **rounding**. Its inputs are adversarial
+  halfway cases; mutating `fixed()` to `toFixed` turns 14 of them red.
+- `insights/parity.live.test.ts` owns **formatter selection** — a signed
+  percent rendered unsigned, an HHI at two places, a Sharpe at one. Its
+  fixtures are a real report and the real narrative describing it, captured
+  from the running stack, and it asserts all 13 figures appear character for
+  character in the Go prose.
+
+Neither subsumes the other, and this was measured rather than assumed:
+**mutating `fixed()` to `toFixed` leaves the live file entirely green**,
+because no figure a real portfolio produces lands on a halfway case. Dropping
+the sign, or moving the HHI to 2 or 4 places, or the Sharpe to 1, turns the
+live file red and leaves the table green.
+
+The live assertion needed two rounds of sharpening, both found by mutating
+rather than reading: a bare `toContain` accepted `"5.9%"` inside `"+5.9%"`, and
+a left-only boundary accepted `"0.50"` inside `"0.504"`, which let a 3dp→2dp
+HHI mutation survive.
+
+### The guard nothing was holding
+
+Deleting a section's `state` check **together with its now-unused
+`SectionNotice` import** — which is what an editor's remove-unused-imports fix
+does unprompted — left `npm test`, `npm run build` and `npm run lint` all
+green while a degraded report rendered `0.0%` for all five risk figures.
+Deleting the check alone failed the build, but only on the orphaned import,
+which would not survive a tidy-up. Nothing tested, built or linted defended the
+rule the spec's "Never" list puts third.
+
+Fixed structurally rather than recorded: each section type is now a union on
+`state`, so the figures exist only on the `ok` arm and reading one without
+branching is a compile error naming the field — 12 fields across the three
+sections. No logic changed; the components already branched correctly. These
+types deliberately **model what may be READ, not what the wire sends** — the
+degraded arm hides fields the response really does carry, because Step 20 left
+them without `omitempty` on purpose. That divergence is documented at
+`DegradedSection`.
+
+`SectionState` was retired in the process. Its own comment claimed only a union
+could make the compiler enforce the branch — true, and something a state field
+on a flat interface never did.
+
+### The narrative that never appeared
+
+The first time anyone opened the tab in a browser, the panel sat on "Preparing
+a written summary…" forever. Both requests returned 200 and the console was
+clean; the response was being discarded, not awaited.
+
+The tell was the request count across one mount: **report twice, narrative
+once.** `useInsights` has no in-flight guard, so StrictMode's re-invoked effect
+simply fires a second request that lands. `useNarrative` has one, and the two
+guards deadlocked: the cleanup bumped `requestIdRef` to disown the in-flight
+request, the guard then blocked the re-run from issuing a replacement, and the
+response arrived to a bumped id and was dropped with nothing left to re-trigger
+it. `load()` now re-adopts the in-flight request's id.
+
+Development-only in effect — production does not double-invoke effects, and a
+real remount allocates fresh refs — but it blocked every browser check of the
+narrative, and the old code's correctness rested on refs being recreated.
+
+**It landed in the one place deliberately left untested.** The double-spend
+guard was recorded as a carry-over an hour earlier, on the argument that
+standing up `renderHook` late in the step cost more than it bought. The first
+bug found after that decision was in that guard's interaction with its
+neighbour.
+
+### Two backend defects this step cannot fix
+
+Both were found by driving the real stack, and both contradict something
+`SPEC.md` asserted; the spec now carries inline amendments at §2.9 and §9.2.
+
+**The fill-invalidation window.** §2.9 says a fill refetches the report and its
+hash changes. The refetch fires correctly, exactly once. But the backend serves
+the cached report from `insights:{user_id}` (TTL 300s), so the identical report
+and hash come back — after a real fill the panel still read "no trades yet".
+For up to five minutes the reader sees figures that predate their own trade,
+with nothing marking them stale.
+
+**`ReportHash` is not stable for unchanged data**, and this is the more
+consequential of the two. Twelve recomputes of one untouched account produced
+**six distinct hashes**. The figures shown were identical; the drift is in the
+last floating-point digits of `portfolio_sharpe`,
+`annualized_volatility_pct` and `concentration_hhi`. Ordering is not the cause
+— positions and benchmarks return stably, `concentrationHHI` is a sequential
+loop — and `ReportHash` correctly zeroes `ComputedAt`. The drift is upstream in
+the reconstruction, which fetches histories concurrently through an `errgroup`;
+float addition is not associative.
+
+It breaks two claims. The narrative cache key is
+`narrative:{user_id}:{report_hash}`, so a new hash is a cache miss and a cache
+miss is a **billable generation** — §9.2's "one generation per day for an
+unchanged account" is wrong, and sustained viewing can cost roughly one per
+five minutes, bounded only by the 50/day cap. And it makes §2.3 fire in the
+*false-positive* direction: two independent computations of identical data can
+disagree, so correct prose is occasionally replaced by a staleness warning. A
+mechanism built to stop a wrong number reaching the reader will sometimes
+suppress a right one.
+
+The frontend is not at fault in either case; `describesReport` failing closed
+on two disagreeing hashes is still correct.
+
+### What the verifications actually proved
+
+**179 frontend tests** across 9 files; `npm run build` and `npm run lint` clean
+(5 warnings, all pre-existing `exhaustive-deps` on sibling hooks). `make vet`
+and `make test` green across all seven modules. **31 mutations run in total**,
+21 during implementation and 10 in the adversarial pass; **29 killed, 2
+survived** — the section guard, fixed structurally above, and the double-spend
+guard, which the browser then broke for real.
+
+The manual pass drove all four states against the running stack: a degraded
+report, a mixed report with one `ok` section beside two degraded ones, a full
+`ok` report over a 72-trading-day window, a narrative made unavailable by
+unsetting the key, and a forced hash disagreement with its regenerate click.
+Four billable generations, about $0.08.
+
+### Things worth knowing
+
+- **A `git checkout --` revert inside a mutation driver will silently discard
+  an uncommitted fix in the same file.** It happened twice. Both times it was
+  caught only because mutations that had previously reported `build=PASS`
+  started reporting `build=FAIL`. Restore from a copy of the pre-mutation file,
+  not from `HEAD`, whenever the tree carries uncommitted work.
+- **`vitest` does not typecheck.** A `@ts-expect-error` proves nothing under
+  `vitest run`; it has to be confirmed with `tsc`, and confirmed by *removing*
+  the suppression and watching the error appear.
+- **Adding a `useRef` to a mounted component cannot hot-reload.** React Fast
+  Refresh raises "Rendered more hooks than during the previous render" and the
+  page goes blank. A full reload fixes it — and takes the memory-only token
+  with it, so it costs a sign-in.
+- **`docker exec` without `-i` silently discards a heredoc.** The `psql`
+  invocation returns success having run nothing.
+- **The degraded narrative path costs nothing.** `no analysis is available to
+  describe` is decided before any model call, confirmed by an untouched service
+  log and an absent cache key.
+- **oxlint's `exhaustive-deps` stopped flagging `use-narrative`'s cleanup** once
+  `requestIdRef.current` was also written in `load` — the rule only treats it as
+  a cleanup-only ref. The cleanup itself is unchanged; the comment was corrected
+  so it no longer claims a warning that does not appear.
+- **`toLocaleString('en-US')` emits an ASCII hyphen, not U+2212.** Checked in
+  the browser rather than assumed, because a typographic minus would have broken
+  character-identity with Go while looking correct on screen.
+
+---
+
 ## Still open
 
-- [ ] **Insights frontend** — Step 22, per the Step 16 → 17 precedent. Must
-      follow this step's percent convention (round halfway cases **away from
-      zero**), or the same figure appears two ways on one screen.
+- [x] ~~**Insights frontend** — Step 22~~ — done. The percent convention was
+      followed by porting `roundHalfAway` into `format.ts` rather than by the
+      one-liner Step 21 expected; see the Step 22 entry for why.
+- [ ] **`ReportHash` is not stable for unchanged data** — six distinct hashes
+      from twelve recomputes of one untouched account. Costs real money through
+      the narrative cache and makes §2.3's check raise false alarms. The most
+      consequential thing this phase leaves open. Its own step, in
+      `services/ai-insights`.
+- [ ] **A fill's report refetch is defeated by the 5-minute report cache** —
+      the reader sees figures predating their own trade, unmarked. Fix is to
+      invalidate `insights:{user_id}` when a trade is recorded.
+- [ ] **The frontend hooks have no tests at all** — `use-narrative`'s
+      double-spend guard protects a billed call and broke in Step 22 without a
+      single test noticing. Needs `renderHook`; `@testing-library/react` is
+      installed and still unused.
 - [ ] **Dockerization** and **cloud deployment** (AWS free tier).
 - [ ] **Work through `docs/deferred-tuning.md`** — timeouts, connection
       pooling, and other defaults deliberately left unset because the right

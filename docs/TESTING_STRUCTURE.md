@@ -140,6 +140,8 @@ Two details in there are load-bearing and should not be "tidied away":
 
 Implemented in Step 12 for `services/auth/internal/store`, which previously had no tests at all. See `SPEC.md` (Step 12) for the full reasoning.
 
+**Re-confirmed at Step 22: still three copies, trigger still unfired.** Step 22 was a frontend step and added no `integration/` package; `ai-insights` still owns no database. Checked rather than assumed, as in Steps 20 and 21.
+
 **As of Step 16 the harness exists in three modules** — `services/auth/integration/`, `services/trading-engine/integration/`, and `services/backtesting/integration/` — as a near-verbatim copy. Everything in this section describes all three. Full up-to-date reasoning, including why the third copy landed in `backtesting` rather than the `market-data` this section originally predicted, is in `docs/deferred-tuning.md` §11 — that file is the one kept current session to session; treat the rest of this section as the original two-copy rationale, still correct in substance.
 
 ### Why it was copied rather than shared

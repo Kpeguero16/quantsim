@@ -1,8 +1,16 @@
 # Next session — state of play
 
-Last updated **2026-08-21**, with Step 21 (insight generation) merged to `main`
-and pushed. **Phase 4's two AI items are both done; the infra half is what
-remains.**
+> **⚠ Step 22 is COMPLETE but NOT MERGED.** Branch `step22-insights-frontend`, 14 commits, nothing
+> pushed. All twelve tasks are done and the documentation you are reading is the last of them.
+> **What remains is Checkpoint E — the pre-merge adversarial review — then the squash and
+> `--no-ff` merge.**
+>
+> `main` is untouched and still describes Step 21. Root `SPEC.md` and `tasks/` are untracked on
+> purpose and must not be carried onto `main`; `tasks/todo.md` holds the full per-task record,
+> including the three defects below in much more detail.
+
+Last updated **2026-08-23**, with Step 22 (insights frontend) finished on its branch.
+**Phase 4's three feature steps are done; the infra half is what remains.**
 
 This file answers three questions on picking the project back up: *is anything
 half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to
@@ -10,76 +18,98 @@ be rewritten each time, not appended to.
 
 ---
 
-## Step 21 is merged. Nothing is half-finished.
+## Step 22 is finished. One thing is deliberately unfinished: the merge.
 
 | | |
 |---|---|
-| Branch | `step21-insight-generation` — squashed to one `feat(step21)` commit and merged with `--no-ff` (`033a4de`), matching Steps 16–20. **Branch deleted; `main` pushed.** Pre-squash history is at `da29793` in the reflog until it expires. |
-| Tests | `make vet`/`test` green across all seven modules, re-run on `main` after the merge. `go test -race` clean on `ai-insights`; `make test-integration` 63/0. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. **397 tests** in `ai-insights`. |
-| Mutations | **28 run, 28 killed.** Three real defects came out of it; see `PHASE4_CHECKLIST.md`'s Step 21 entry. |
-| Pre-merge review | Two more defects, found by attacking the code rather than reading it — hostile symbols reaching token names, and byte-sliced UTF-8 in the error fragment. Both fixed and covered before the merge. |
-| Manual pass | Done against a real portfolio. **25 of 25 figures verified by eye**, no advisory language. ~10 billable calls, roughly **$0.20**. |
-| Dev database | `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices` at 3507 rows — restored after the manual pass and **verified by query**. Redis has no leftover `narrative:*` keys. |
-| Local processes | All services killed. Postgres and Redis containers up. `lsof -nP -iTCP -sTCP:LISTEN \| grep 808` shows nothing. |
-
-Spec, plan and todo are archived at
-`docs/archive/phase4-step21-insight-generation/`. Root `SPEC.md` and `tasks/`
-are **not** carried on `main` — they survive only as untracked working-tree
-files, and deleting them loses nothing.
+| Branch | `step22-insights-frontend`, cut from `main` at `89c48e3`. **14 commits, not squashed, not merged, not pushed.** |
+| Frontend | **179 tests** across 9 files. `npm run build` clean. `npm run lint` 5 warnings, all pre-existing `exhaustive-deps` on sibling hooks. |
+| Backend | `make vet` clean; `make test` green across all seven modules with 0 failures; `make test-integration` **63/0**, unchanged. `GOWORK=off go build ./...` passes for all seven — the Dockerization case. |
+| Mutations | **31 run, 29 killed, 2 survived.** One was fixed structurally (the section guard); the other is the hook guard the browser then broke for real. |
+| Manual pass | All states driven against the running stack: degraded, mixed, full `ok` over a 72-trading-day window, narrative unavailable, and a forced hash disagreement with its regenerate click. **4 billable generations, ~$0.08.** |
+| Dev database | Restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3507`. No `insights:*` or `narrative:*` keys in Redis. |
+| Local processes | All services and the Vite dev server killed. Postgres and Redis containers up. |
 
 ---
 
-## What Step 21 shipped
+## What Step 22 shipped
 
-`GET /insights/portfolio/narrative` — three short paragraphs, one per Step 20
-section, in which **every figure was rendered by Go from the report struct and
-none was produced by the model.**
+A sixth dashboard tab. `GET /insights/portfolio` renders as three sections of
+figures; `GET /insights/portfolio/narrative` fills in beneath each section as it
+arrives. The figures never wait for the prose. Plus one additive backend field —
+`report_hash` on the report response — so a separately-fetched narrative can be
+checked against the figures actually on screen.
 
-The model is handed the report *with* its values, because it has to know a 34%
-drawdown is severe and a 2% one is not, and must write prose in which every
-figure is a named placeholder. Go substitutes. A surviving digit rejects the
-draft; one retry quoting the offending fragment, then refusal. Nothing is ever
-repaired.
+- `frontend/src/insights/` — the panel, three section components, the two
+  status-union hooks, and two pure modules: `narrative-state.ts` (reason → copy,
+  hash agreement, and the single producer of what goes where the prose would be)
+  and `insights-errors.ts` (error code → copy).
+- `frontend/src/format.ts` — `formatPercent`, `formatSignedPercent`,
+  `formatRatio`, `formatIndex`, all routed through one `fixed()` that ports the
+  backend's `roundHalfAway`.
+- `frontend/src/api/` — nine wire types and two client methods. **The three
+  section types are unions on `state`**, so a figure cannot be read without
+  branching first.
 
-- `internal/narrative/` — `Placeholders` (the vocabulary, built once and used
-  twice), `Render` (the only place a figure becomes text), `Validate` (three
-  checks plus caps), `Generate` (draft → validate → retry once → render).
-- `internal/llm/` — the frozen system prompt and the `claude-opus-5` client at
-  effort `low`. It returns the model's **raw** text and knows nothing about the
-  guarantee, which is what stops a change there from weakening it.
-- Cache `narrative:{user_id}:{report_hash}`, 24h; a daily generation cap that
-  **fails closed**; nine distinct degradation reasons, all 200s.
+**Three defects came out of this step. One is fixed; two are backend work that
+this branch deliberately did not touch.** All three are written up in
+`PHASE4_CHECKLIST.md`'s Step 22 entry, and the two open ones now carry inline
+amendments in the archived `SPEC.md` at §2.9 and §9.2, because they contradict
+what those sections asserted.
 
-Two carry-over items landed first: the `services/auth` `gofmt` drift, and
-`trading-engine`'s unbounded portfolio pricing (**15.014s → 3.007s** against a
-hung Redis with 5 holdings).
+1. **Fixed.** `useNarrative` stranded its own request — the cleanup disowned the
+   in-flight request and the double-spend guard blocked a replacement, so the
+   panel sat on "Preparing a written summary…" forever. Dev-only in effect, but
+   it blocked every browser check of the narrative.
+2. **Open, backend.** A fill's report refetch is defeated by the five-minute
+   report cache, so for up to five minutes the reader sees figures that predate
+   their own trade, unmarked.
+3. **Open, backend, and the one that matters most.** `ReportHash` is not stable
+   for unchanged data — twelve recomputes of one untouched account produced six
+   distinct hashes, from float drift in `portfolio_sharpe`,
+   `annualized_volatility_pct` and `concentration_hhi`. It costs real money
+   through the narrative cache and makes the §2.3 check raise false alarms.
 
 ---
 
 ## What to do next
 
-**1. Phase 4's remaining roadmap items**, in `agents.md`'s order:
+**1. Merge Step 22.** Checkpoint E first — the pre-merge adversarial review, by
+attacking the branch rather than reading it. Then squash to one `feat(step22)`
+commit and merge `--no-ff`, matching Steps 16–21. Archive is already written to
+`docs/archive/phase4-step22-insights-frontend/`.
 
-- **Insights frontend** — Step 22. Two hard requirements from Step 21: it must
-  follow the **percent convention** (below), and it should render the numbers
-  first and fill the prose in after, which is why they are two endpoints.
+**2. `ReportHash` stability** — the most consequential thing Phase 4 leaves
+open, and it is a correctness *and* a cost bug. Either make the reconstruction
+deterministic, or round each figure to its published precision before hashing so
+the hash reflects what is actually shown. The second is smaller and closes both
+symptoms; it changes every existing narrative cache key once, which is
+acceptable for a 24-hour cache. Its own step, in `services/ai-insights`.
+
+**3. Report-cache invalidation on a fill** — smaller, and pairs naturally with
+the above. Invalidate `insights:{user_id}` when a trade is recorded.
+
+**4. The remaining roadmap items**, in `agents.md`'s order:
+
 - **Dockerization**, then **cloud deployment** (AWS free tier: EC2 +
   docker-compose; Redis stays containerized, ElastiCache has no free tier).
-  `GOWORK=off go build ./...` passes for all seven modules today — **re-check it
-  before starting**, since that is exactly what a standard Go Dockerfile does.
-- **`docs/deferred-tuning.md`** — unblocked by deployment. Step 21 added nothing
+  `GOWORK=off go build ./...` passes for all seven modules today — re-checked in
+  Step 22, not assumed.
+- **`docs/deferred-tuning.md`** — unblocked by deployment. Step 22 added nothing
   to it.
 
-**2. The long-standing small items.**
+**5. The long-standing small items.**
 
+- **The frontend hooks have no tests at all.** Step 22 made this concrete rather
+  than theoretical: `use-narrative`'s double-spend guard protects a billed call,
+  and it broke without a single test noticing. Needs `renderHook`;
+  `@testing-library/react` is installed and still unused.
 - `market-data`'s store still has no tests (`historical_price_store.go`). The
-  integration harness is still in **three** copies; `ai-insights` owns no
-  database, so it did not become the fourth and
-  `docs/TESTING_STRUCTURE.md` §6a's extraction trigger is **still unfired** —
-  re-confirmed in Step 21 rather than assumed.
-- The `gofmt` drift is **closed**.
+  integration harness is still in **three** copies; Step 22 added no
+  `integration/` package, so `docs/TESTING_STRUCTURE.md` §6a's extraction
+  trigger is **still unfired** — re-confirmed in Step 22 rather than assumed.
 
-**3. Security backlog:** items 1, 2 and 4 are closed. Item **8**
+**6. Security backlog:** items 1, 2 and 4 are closed. Item **8**
 (Unicode-normalise passwords) is the cheap one left and gets more expensive as
 accounts accumulate. Item **3** (Argon2id) is next substantive and wants its own
 step, since it carries a migration strategy.
@@ -161,13 +191,20 @@ escaping. Verify the mutation applied before believing the result.
 setup.** Step 21's first pricing-budget test passed a 900ms parent context and
 went green against the *unfixed* sequential code.
 
-**Percentages round halfway cases AWAY FROM ZERO, and Step 22 must match.**
-`frontend/src/format.ts` has `formatPrice`, `formatQuantity` and `formatDate`
-but **no percent formatter**, so Step 21 set the convention. Go's `FormatFloat`
-rounds halves to even; `toFixed`, `toLocaleString` and `Intl.NumberFormat` all
-round away from zero. An exact 7.25 is `7.2` under Go's rule and `7.3` in a
-browser. The narrative renders server-side, so a mismatched frontend formatter
-puts the same figure on screen two ways.
+**Percentages round halfway cases AWAY FROM ZERO — but "any browser formatter
+will do" is FALSE, and Step 22 measured it.** Go's `FormatFloat` rounds halves
+to even, so the backend uses `roundHalfAway` instead. The note this file used to
+carry said `toFixed`, `toLocaleString` and `Intl.NumberFormat` all round away
+from zero and the frontend could therefore use a one-liner. That is true of the
+rule and false of `toFixed`, which rounds the exact *binary* value: `-99.85` is
+really `-99.8499999999999943`, so `toFixed(1)` gives `-99.8` where the backend
+gives `-99.9`. Over 60,002 constructed decimals, `toLocaleString` disagreed on
+**0** at one decimal place and `toFixed` on **960**. `toLocaleString` diverges
+too at two and three places, where Sharpe and HHI live. So `format.ts` **ports**
+the backend's rounding rather than calling a one-liner, and two parity tests
+guard it: `format.test.ts`'s table owns the rounding rule, and
+`insights/parity.live.test.ts` owns which formatter is applied to which `Kind`.
+Neither catches the other's faults — verified by mutation.
 
 **Drawdown is a positive magnitude.** `pkg/portfoliomath` reports "the largest
 peak-to-trough decline ... as a positive percentage", so a 1.7% fall arrives as
@@ -243,7 +280,32 @@ parents when cleaning up a test account: trades/orders/positions → accounts �
 users, and `backtests` before the user.
 
 **The frontend holds both tokens in memory only.** A page refresh logs you out,
-so browser-driven verification has to go through the login form.
+so browser-driven verification has to go through the login form. Two
+consequences found in Step 22: browser automation cannot reach a tab you opened
+by hand (the extension only drives its own tab group), and **adding a `useRef`
+to a mounted component cannot hot-reload** — React Fast Refresh raises
+"Rendered more hooks than during the previous render", the page goes blank, and
+the full reload it needs costs another sign-in.
+
+**A `git checkout --` revert inside a mutation driver silently discards an
+uncommitted fix in the same file.** It happened twice in Step 22, and both times
+it was caught only because mutations that had previously reported `build=PASS`
+started reporting `build=FAIL`. Restore from a copy of the pre-mutation file,
+not from `HEAD`, whenever the tree carries uncommitted work.
+
+**`vitest` does not typecheck.** A `@ts-expect-error` proves nothing under
+`vitest run` — confirm it with `tsc`, and confirm it by *removing* the
+suppression and watching the error appear.
+
+**A test that passes against real data may simply not discriminate.** Mutating
+`fixed()` to `toFixed` leaves Step 22's live parity file entirely green, because
+no figure a real portfolio produces lands on a halfway case. That is not a weak
+test; it is the wrong test for that fault. Know which fault each test owns.
+
+**`ReportHash` is not stable for the same account.** Twelve recomputes gave six
+hashes. Do not use it as an identity for anything until that is fixed — and be
+aware the narrative cache is keyed on it, so repeated views cost repeated
+generations.
 
 **`go build` succeeding says nothing about building outside the workspace.**
 `go.work` supplies requirements an individual `go.mod` may lack:

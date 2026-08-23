@@ -10,6 +10,7 @@ import { formatPrice } from '../format'
 import BrandMark from '../BrandMark'
 import { useAuth } from '../auth/context'
 import BacktestPanel from '../backtesting/BacktestPanel'
+import InsightsPanel from '../insights/InsightsPanel'
 import OrderTicket from '../trading/OrderTicket'
 import OrdersTable from '../trading/OrdersTable'
 import PortfolioSummary from '../trading/PortfolioSummary'
@@ -28,7 +29,13 @@ import { useSymbols } from './use-symbols'
 // on every unrelated re-render (e.g. each 15s price tick).
 const NO_SYMBOLS: string[] = []
 
-type Tab = 'chart' | 'positions' | 'orders' | 'portfolio' | 'backtest'
+type Tab =
+  | 'chart'
+  | 'positions'
+  | 'orders'
+  | 'portfolio'
+  | 'backtest'
+  | 'insights'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chart', label: 'Chart' },
@@ -36,6 +43,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'orders', label: 'Orders' },
   { id: 'portfolio', label: 'Portfolio' },
   { id: 'backtest', label: 'Backtest' },
+  { id: 'insights', label: 'Insights' },
 ]
 
 export default function Dashboard() {
@@ -47,6 +55,15 @@ export default function Dashboard() {
 
   const [selected, setSelected] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('chart')
+
+  // Bumped on every fill. The insights report is derived from the
+  // account's trade history, so a fill is what makes it stale -- and the
+  // narrative is deliberately NOT wired to this, because it is billed per
+  // call and its cache is keyed on the report's content hash, so a
+  // just-changed report is guaranteed to miss and guaranteed to cost
+  // (SPEC.md 2.9). Stale prose is hidden rather than replaced, and
+  // replacing it is a decision the reader makes with a button.
+  const [fills, setFills] = useState(0)
 
   // Default to the first symbol once the watchlist arrives, without
   // overriding a selection the user already made.
@@ -168,6 +185,7 @@ export default function Dashboard() {
           {tab === 'orders' && <OrdersTable state={orders} />}
           {tab === 'portfolio' && <PortfolioSummary state={portfolio} />}
           {tab === 'backtest' && <BacktestPanel />}
+          {tab === 'insights' && <InsightsPanel refreshKey={fills} />}
         </section>
 
         <OrderTicket
@@ -175,6 +193,7 @@ export default function Dashboard() {
           onOrderPlaced={() => {
             portfolio.refetch()
             orders.refetch()
+            setFills((n) => n + 1)
           }}
         />
       </main>
