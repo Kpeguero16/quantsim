@@ -2,7 +2,7 @@
 
 Tracks `tasks/plan.md`'s 4 tasks and 1 checkpoint. **All done. What remains is documentation and the merge.**
 
-Branch `step24-report-cache-invalidation`, cut from `main` at `e0ba025`. **One commit, `cdf7c37`, nothing pushed.** Root `SPEC.md` and `tasks/` stay untracked as always.
+Branch `step24-report-cache-invalidation`, cut from `main` at `e0ba025`, squashed to one `feat(step24)` (`5d9d685`) and merged `--no-ff` (`4bcc583`). Branch deleted, `main` pushed. Root `SPEC.md` and `tasks/` were never carried onto `main`; this file is their archived copy.
 
 ---
 

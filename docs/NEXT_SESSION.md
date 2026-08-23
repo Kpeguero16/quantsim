@@ -18,6 +18,7 @@ be rewritten each time, not appended to.
 
 | | |
 |---|---|
+| Branch | `step24-report-cache-invalidation` — one commit `feat(step24)` (`5d9d685`) merged `--no-ff` (`4bcc583`), matching Steps 16-23. **Branch deleted; `main` pushed.** |
 | The change | trading-engine deletes `insights:{user_id}` after a successful fill. It gains a Redis client and an optional `REDIS_URL`; `pkg/` gains `cachekeys`, which both services use for that one key. |
 | Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven. |
 | Tests | Ten across three packages. The invalidator runs against `miniredis`, not a mock. |
