@@ -53,11 +53,24 @@ type Service struct {
 	accounts AccountStore
 	trading  TradingStore
 	prices   PriceClient
+	insights InsightsInvalidator
 }
 
-func NewService(accounts AccountStore, trading TradingStore, prices PriceClient) *Service {
-	return &Service{accounts: accounts, trading: trading, prices: prices}
+func NewService(accounts AccountStore, trading TradingStore, prices PriceClient, insights InsightsInvalidator) *Service {
+	if insights == nil {
+		insights = noopInvalidator{}
+	}
+	return &Service{accounts: accounts, trading: trading, prices: prices, insights: insights}
 }
+
+// noopInvalidator always succeeds, so the fill path has no branch for "Redis
+// is not configured" -- the fail-open handling PlaceOrder already needs covers
+// that case for free. Running without REDIS_URL is a supported configuration:
+// orders place exactly as they do today and reports go stale for up to five
+// minutes, which is the behaviour that existed before this step.
+type noopInvalidator struct{}
+
+func (noopInvalidator) InvalidateInsights(context.Context, uuid.UUID) error { return nil }
 
 // PlaceOrder executes a market order synchronously and returns the fill.
 //
@@ -91,13 +104,48 @@ func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, req PlaceOrd
 		return PlaceOrderResult{}, err
 	}
 
-	return s.trading.ExecuteOrder(ctx, ExecuteOrderParams{
+	result, err := s.trading.ExecuteOrder(ctx, ExecuteOrderParams{
 		AccountID: account.ID,
 		Symbol:    req.Symbol,
 		Side:      req.Side,
 		Quantity:  req.Quantity,
 		Price:     price,
 	})
+	if err != nil {
+		return PlaceOrderResult{}, err
+	}
+
+	// Only after the fill committed. A rejected order writes an orders row and
+	// nothing else -- no trade, no position, no balance -- and the report
+	// reads none of those, so invalidating on one would discard a valid cached
+	// report to recompute a byte-identical replacement (SPEC.md Step 24 §2.6).
+	s.invalidateInsights(ctx, userID)
+
+	return result, nil
+}
+
+// invalidateInsights drops the caller's cached portfolio report, and cannot
+// fail the order that triggered it (SPEC.md Step 24 §2.3).
+//
+// Synchronous, and that is the whole point rather than an oversight. The event
+// this exists for is the dashboard refetching immediately after a fill, and a
+// goroutine racing that refetch has no ordering guarantee at all -- losing the
+// race restores the stale report for the full five minutes, which is the
+// defect being fixed. Moving this into the background would undo the step
+// while looking like a tidy-up.
+//
+// context.WithoutCancel for the other half of the same problem: the fill has
+// committed, so a client that hangs up now must not take the invalidation with
+// it. The request's values are kept, its cancellation is not.
+func (s *Service) invalidateInsights(ctx context.Context, userID uuid.UUID) {
+	if err := s.insights.InvalidateInsights(context.WithoutCancel(ctx), userID); err != nil {
+		// Logged, never returned. The trade is durable; there is nothing to
+		// roll back and nothing a retry could fix. A cache that is failing on
+		// every fill is invisible from the outside -- every order still
+		// succeeds -- so the log line is the only symptom there is.
+		log.Printf("trading-engine: insights cache invalidation failed for user %s, "+
+			"their report may be stale for up to the cache TTL: %v", userID, err)
+	}
 }
 
 // Orders returns the caller's own order history, newest first, with rejected

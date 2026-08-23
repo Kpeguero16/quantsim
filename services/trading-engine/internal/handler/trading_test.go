@@ -42,7 +42,7 @@ func newHandler(t *testing.T) (http.Handler, *mock.TradingStore, *mock.PriceClie
 	trading := &mock.TradingStore{}
 	prices := &mock.PriceClient{Prices: map[string]float64{"AAPL": 150}}
 
-	h := handler.NewTradingHandler(service.NewService(accounts, trading, prices))
+	h := handler.NewTradingHandler(service.NewService(accounts, trading, prices, nil))
 	return handler.NewRouter(h, []byte(testSecret)), trading, prices, accounts
 }
 

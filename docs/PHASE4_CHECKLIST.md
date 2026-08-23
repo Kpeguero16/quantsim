@@ -693,6 +693,57 @@ The live run also settled a question the spec had left open: two separately star
 
 ---
 
+## Step 24 — Report cache invalidation on a fill
+
+Closes the last of Step 22's three defects. A fill's report refetch was defeated by the five-minute `insights:{user_id}` cache, so for up to five minutes the dashboard showed figures computed before the reader's own trade, unmarked.
+
+### Write-side, and the read-side case was real
+
+trading-engine deletes the key when it fills an order. The alternative — ai-insights checking freshness before serving its cache — keeps the dependency direction as it already runs and needs no Redis in trading-engine, which is a genuine argument. It lost on two facts. `ListTrades` orders `executed_at ASC`, so `?limit=1` returns the *oldest* trade and there is no cheap freshness probe to call; read-side needs a new endpoint first. And it would pay an HTTP round trip on every cached read, forever, to catch something that happens once per fill, against a cache that exists to avoid round trips.
+
+Redis pub/sub was ruled out on the way past: it is fire-and-forget, so a subscriber that is down loses the message and the report stays stale, which is the defect being fixed wearing a different hat.
+
+### Three details, each of which would have shipped looking correct
+
+**Synchronous, not a goroutine.** The event this exists for is the dashboard refetching immediately after a fill. A goroutine racing that refetch has no ordering guarantee at all, and losing the race restores the stale report for the full TTL. This is the part most likely to be "tidied up" later into a background send, which is why the comment at the call site says so.
+
+**`context.WithoutCancel`.** The fill has committed, then the client hangs up, the request context is cancelled, the `DEL` never runs, and the stale report survives — the original defect returning through a path nobody would think to look at.
+
+**It can never fail an order.** The trade is durable before invalidation runs, so there is nothing to roll back and nothing a retry could fix. Errors are logged and swallowed, and `REDIS_URL` is optional: without it trading-engine behaves exactly as it did before this step.
+
+### The key had to stop being a literal
+
+`insightsKey` was unexported inside ai-insights. Two services produce that string now, and the obvious version — `"insights:" + userID` written out in trading-engine — leaves a format change breaking nothing at compile time and everything at runtime, in the direction that serves stale reports rather than the one that errors.
+
+It moved to `pkg/cachekeys` and takes a `uuid.UUID` rather than a string. ai-insights parses the JWT subject to a UUID before keying on it precisely so an arbitrary subject cannot become an arbitrary Redis key, and so a subject containing a colon cannot be shaped to look like another namespace. A string parameter lets a caller opt out of that; this signature does not.
+
+### What the verifications actually proved
+
+| | |
+|---|---|
+| Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven, including `pkg`'s new package |
+| Tests | Ten across three packages, including the invalidator driven against `miniredis` rather than a mock that would reimplement the delete it stands in for |
+| Mutations | **6 run, 6 killed** |
+| Live stack | With Redis: key deleted on the fill, report and database agree at 6 trades. Without: key survives, report stale at 4 while the database held 5 |
+| Cost | **$0.00.** The narrative endpoint was never called |
+| Dev database | Restored and verified by query: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3525`. No `insights:*` or `narrative:*` keys |
+
+### Things worth knowing
+
+**The narrative cache needs no invalidation, and a fill now costs a generation.** `narrative:{user_id}:{report_hash}` is keyed on content, so a fill changes the report, changes the hash, and misses. Nothing to delete. The consequence is a real cost change: after this step, the next narrative view following a fill is a fresh billed generation. That is correct, since the prose describes figures that moved, and it only became possible once Step 23 made the hash stable enough to key on.
+
+**A rejected order must not invalidate.** It writes an `orders` row and nothing else, and the report never reads that table. Invalidating would discard a valid cached report to recompute a byte-identical one. The mutation that moved the call above `ExecuteOrder` was caught by that test and nothing else.
+
+**A position quantity does not move after a fill, and it looks like a miss.** Holdings describe `as_of_date`, where the bar calendar ends, and a trade after that date is projected forward for the reconciliation guard only. §2.12's documented tail truncation. `behavior.trade_count` is the figure that moves, and it is the one to check when verifying this by hand.
+
+**A mutant that does not build is not a caught mutant, again.** Replacing `cachekeys.Insights(userID)` with a literal left the import and the parameter unused, so it failed to compile and would have read as KILLED in a results table. Re-run as `cachekeys.Insights(uuid.Nil)`. Step 21 recorded this and it still cost a cycle.
+
+**A test that cannot reach its own code path passes anyway.** Cancelling the context before `PlaceOrder` is refused at the price fetch and never reaches a fill, so the cancellation test proved nothing until `mock.TradingStore.OnExecute` let it cancel *during* the fill. Before that hook it passed against code containing no `WithoutCancel` at all.
+
+**`auth` and `market-data` build Redis clients without `ContextTimeoutEnabled`.** Found while surveying for this step, not fixed by it. Both ignore context deadlines on every Redis call, which is the same defect that cost 6.05s in Step 21, sitting unexercised in two services. Now in "Still open".
+
+---
+
 ## Still open
 
 - [x] ~~**Insights frontend** — Step 22~~ — done. The percent convention was
@@ -702,9 +753,16 @@ The live run also settled a question the spec had left open: two separately star
       cause was two float64 accumulations running in map iteration order, not
       the rounding `NEXT_SESSION.md` expected; see the Step 23 entry for why
       rounding the hash was rejected.
-- [ ] **A fill's report refetch is defeated by the 5-minute report cache** —
-      the reader sees figures predating their own trade, unmarked. Fix is to
-      invalidate `insights:{user_id}` when a trade is recorded.
+- [x] ~~**A fill's report refetch is defeated by the 5-minute report cache**~~ —
+      Step 24. trading-engine deletes `insights:{user_id}` after a fill, with
+      the key format shared through `pkg/cachekeys` so the two services cannot
+      drift apart silently.
+- [ ] **`auth` and `market-data` build Redis clients without
+      `ContextTimeoutEnabled`** — so `context.WithTimeout` around their Redis
+      calls does nothing and each waits the client's own `ReadTimeout`. The
+      defect that cost 6.05s in Step 21, latent in two services. Consolidating
+      all four construction sites is its own step; it touches auth's token
+      revocation path.
 - [ ] **The frontend hooks have no tests at all** — `use-narrative`'s
       double-spend guard protects a billed call and broke in Step 22 without a
       single test noticing. Needs `renderHook`; `@testing-library/react` is

@@ -1,11 +1,12 @@
 # Next session — state of play
 
-> **Step 23 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
+> **Step 24 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
 > purpose and were not carried onto `main`; the full per-task record is archived at
-> `docs/archive/phase4-step23-report-hash-stability/todo.md`.
+> `docs/archive/phase4-step24-report-cache-invalidation/todo.md`.
 
-Last updated **2026-08-23**, with Step 23 (ReportHash stability) finished on its branch.
-**Phase 4's feature work and its worst defect are done; the infra half is what remains.**
+Last updated **2026-08-23**, with Step 24 (report cache invalidation on a fill) finished on its
+branch. **Phase 4's feature work and all three of its defects are done. The infra half is what
+remains, and it is now the whole of what remains.**
 
 This file answers three questions on picking the project back up: *is anything
 half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to
@@ -13,85 +14,87 @@ be rewritten each time, not appended to.
 
 ---
 
-## Step 23 is merged. Nothing is half-finished.
+## Step 24 is merged. Nothing is half-finished.
 
 | | |
 |---|---|
-| Branch | `step23-report-hash-stability` — two commits squashed to one `fix(step23)` (`ae0cebc`) and merged `--no-ff` (`a0d82b4`), matching Steps 16-22. **Branch deleted; `main` pushed.** Pre-squash history is at `5f9f18f` in the reflog until it expires. |
-| The change | Two float64 accumulations that ran in Go map iteration order now run in symbol order. Four lines and one helper, in `services/ai-insights/internal/service/`. **No published figure changes at any precision a reader sees.** |
-| Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven. All re-run on `main` after the merge. |
-| Tests | Three added, each confirmed to fail against the unfixed code, each owning a different loop. |
-| Mutations | **5 run, 4 killed, 1 intentional survivor** (reversing the sort order, which the spec explicitly does not forbid). |
-| Live stack | Seeded three-position account over 79 trading days, report cache cleared between calls. **Unfixed: 9 distinct hashes over 10 recomputes. Fixed: 1 over 12.** |
+| The change | trading-engine deletes `insights:{user_id}` after a successful fill. It gains a Redis client and an optional `REDIS_URL`; `pkg/` gains `cachekeys`, which both services use for that one key. |
+| Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven. |
+| Tests | Ten across three packages. The invalidator runs against `miniredis`, not a mock. |
+| Mutations | **6 run, 6 killed.** |
+| Live stack | With Redis: the key is deleted on the fill and the refetched report agrees with the database at 6 trades. Without: the key survives and the report reads 4 while the database holds 5. |
 | Cost | **$0.00.** The narrative endpoint was never called. |
 | Dev database | Restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3525`. No `insights:*` or `narrative:*` keys in Redis. |
 | Local processes | All services stopped. Postgres and Redis containers up. |
 
-**`historical_prices` is 3525, not the 3507 this file used to say.** market-data ingested more
-bars. Nothing to do with Step 23, but do not read the new number as damage.
-
 ---
 
-## What Step 23 fixed, and what it deliberately did not
+## What Step 24 did, and what it deliberately did not
 
-`Reconstruct` summed each date's equity over `range holdings`; `ComputeRisk` summed `invested`
-over `range r.Holdings`. Go randomizes map iteration order per pass and float64 addition is not
-associative, so identical data summed to results differing in their last bits. Nothing displayed
-ever changed, because every figure rounds that away. `ReportHash` is defined on the serialized
-bytes and saw all of it, which meant a narrative cache that never hit and a billed generation on
-every view.
+A fill's report refetch was defeated by the five-minute cache, so the reader saw figures computed
+before their own trade. trading-engine now deletes that key when it fills an order.
 
-**`NEXT_SESSION.md` used to recommend rounding each figure to its published precision before
-hashing. That was rejected, with reasons.** Published precision is per `Kind`, so rounding needs
-every float field mapped to one, which is an include-list, and `hash.go` argues at length that
-this struct must be hashed by exclusion so a figure added later participates by default. It would
-also put a third copy of the precision rule beside `narrative/render.go` and `format.ts`. Sorting
-the accumulation removes the cause instead of the symptom and fixes the figures too, not just the
-hash. If §2.3 false alarms ever appear in practice, rounding becomes the follow-up and will be a
-smaller change then.
+Three details carry the step, and each would have shipped looking correct. It is **synchronous**,
+because the event being fixed is the dashboard refetching immediately after the fill and a
+goroutine racing that has no ordering guarantee. It uses **`context.WithoutCancel`**, because the
+fill has already committed and a client hanging up must not take the invalidation with it. And it
+**can never fail an order**, because the trade is durable before it runs.
 
-**The trade fold was left alone.** It is order-sensitive at the bit level too, but its order comes
-from `GET /trading/trades`, whose `ORDER BY` breaks ties on a fixed row UUID, so it is arbitrary
-and identical every time. Its comment used to claim bit-level insensitivity; it now says the
-guarantee is borrowed from that query rather than intrinsic. Sorting the fold by trade ID would
-make it intrinsic and would change every existing hash, so it waits for a defect that bites.
+**The key stopped being a literal.** Two services produce `insights:{user_id}` now, so it lives in
+`pkg/cachekeys` and takes a `uuid.UUID` rather than a string — that is what keeps ai-insights'
+guarantee that a token subject cannot become an arbitrary Redis key.
+
+**A fill now costs a narrative generation.** `narrative:{user_id}:{report_hash}` is keyed on
+content, so a fill changes the report, changes the hash, and misses. Nothing needed invalidating,
+and nothing should be added. It is correct, since the prose describes figures that moved, but it
+is a real cost change and it only became possible once Step 23 stabilised the hash.
+
+**Rejected as the read-side design**, and it was a real option: ai-insights checking freshness
+before serving its cache keeps the dependency direction as it runs and needs no Redis in
+trading-engine. It loses because `ListTrades` orders `executed_at ASC`, so `?limit=1` returns the
+oldest trade and there is no cheap probe to call, and because it would pay an HTTP round trip on
+every cached read forever to catch something that happens once per fill.
 
 ---
 
 ## What to do next
 
-**1. Report-cache invalidation on a fill** — Step 22's defect 2, and now the most consequential
-thing left. A fill's report refetch is defeated by the five-minute `insights:{user_id}` cache, so
-for up to five minutes the reader sees figures that predate their own trade, unmarked. It wants
-its own step because the design question is a service boundary: `trading-engine` invalidating a
-key it does not own, or `ai-insights` learning that a trade happened. Neither is obviously right.
+**Phase 4 has no defects left. What remains is infrastructure and long-standing small items.**
 
-Note the interaction with Step 23. Until this is fixed, a fill produces exactly the disagreement
-§2.3 was built to catch, and now that the hash is stable, that warning finally means something.
+**1. Dockerization**, then **cloud deployment** (AWS free tier: EC2 + docker-compose; Redis stays
+containerized, ElastiCache has no free tier). `GOWORK=off go build ./...` passes for all seven
+modules today, re-checked in Step 24 with `pkg`'s new package in place, not assumed.
 
-**2. The remaining roadmap items**, in `agents.md`'s order:
+Worth knowing before starting: **trading-engine now reads `REDIS_URL`**, so it belongs in the
+compose environment alongside auth's and ai-insights'. It is optional — orders place without it —
+but a deployment that omits it silently reintroduces Step 24's defect.
 
-- **Dockerization**, then **cloud deployment** (AWS free tier: EC2 +
-  docker-compose; Redis stays containerized, ElastiCache has no free tier).
-  `GOWORK=off go build ./...` passes for all seven modules today, re-checked in
-  Step 23, not assumed.
-- **`docs/deferred-tuning.md`** — unblocked by deployment. Step 23 added nothing
-  to it.
+**2. `docs/deferred-tuning.md`** — unblocked by deployment. Step 24 added nothing to it.
 
-**3. The long-standing small items.**
+**3. Consolidate the four Redis client construction sites.** `ai-insights` and now
+`trading-engine` set `ContextTimeoutEnabled`; **`auth` and `market-data` do not**, so
+`context.WithTimeout` around their Redis calls does nothing and each waits its own `ReadTimeout`.
+That is the defect that cost 6.05s in Step 21, latent in two services. Its own step, because it
+touches auth's token revocation path. Found in Step 24's survey, not fixed by it.
+
+**4. The long-standing small items.**
 
 - **The frontend hooks have no tests at all.** `use-narrative`'s double-spend guard protects a
   billed call, and it broke in Step 22 without a single test noticing. Needs `renderHook`;
   `@testing-library/react` is installed and still unused.
-- `market-data`'s store still has no tests (`historical_price_store.go`). The
-  integration harness is still in **three** copies; Step 23 added no
-  `integration/` package, so `docs/TESTING_STRUCTURE.md` §6a's extraction
-  trigger is **still unfired**.
+- `market-data`'s store still has no tests (`historical_price_store.go`). The integration harness
+  is still in **three** copies; Step 24 added no `integration/` package, so
+  `docs/TESTING_STRUCTURE.md` §6a's extraction trigger is **still unfired**.
 
-**4. Security backlog:** items 1, 2 and 4 are closed. Item **8**
-(Unicode-normalise passwords) is the cheap one left and gets more expensive as
-accounts accumulate. Item **3** (Argon2id) is next substantive and wants its own
-step, since it carries a migration strategy.
+**5. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is
+the cheap one left and gets more expensive as accounts accumulate. Item **3** (Argon2id) is next
+substantive and wants its own step, since it carries a migration strategy.
+
+**6. Worth considering, not scheduled: cache histories by symbol rather than reports by user.**
+The report math is ~25µs; essentially the entire cost the report cache avoids is HTTP, and most of
+that is per-symbol history identical for every user. That design would have deleted Step 24's
+problem rather than needing it patched, and it would get a far better hit rate. It is a rewrite of
+`ai-insights` SPEC §2.8, so it wants a real reason before anyone starts.
 
 ---
 
@@ -118,6 +121,12 @@ endpoint is unaffected and the narrative endpoint returns 200 with
 Redis means no cache *and* no generation counter, and uncached plus uncapped is
 the one combination with no cost ceiling. The report endpoint still works.
 
+**`REDIS_URL` now reaches trading-engine too, and it is optional there** (Step
+24). With it, a fill deletes the placing user's cached report. Without it,
+orders place exactly as before and that report can lag the trade by up to five
+minutes -- the service says so at boot, and `make REDIS_URL= run-trading-engine`
+is how to reproduce the old behaviour deliberately.
+
 Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff
 after 5 consecutive failed logins). `RATE_LIMIT_ENABLED=false` turns it off.
 `services/auth` requires `REDIS_URL` to boot. **Do not put `PORT=` in `.env`** —
@@ -132,6 +141,22 @@ the Makefile exports that file to every target.
 ---
 
 ## Things that will trip you up
+
+**A position quantity does not change after a fill, and it looks exactly like a
+failed cache invalidation.** Holdings describe `as_of_date`, which is where the
+bar calendar ends, and a trade after that date is projected forward for the
+reconciliation guard only -- never into reported positions. That is §2.12's
+tail truncation working as designed. **`behavior.trade_count` is the figure that
+moves**, so that is the one to watch when checking invalidation by hand. Chasing
+the position quantity instead means debugging correct code.
+
+**Cancelling a context before calling `PlaceOrder` never reaches a fill.** The
+price fetch is refused first, the order is recorded as rejected, and any
+assertion about what happens after a fill is testing nothing while passing.
+Reaching post-fill code with an already-cancelled request context needs the
+cancellation to happen *during* the fill; `mock.TradingStore.OnExecute` exists
+for exactly that, and before it the cancellation test passed against code with
+no `context.WithoutCancel` in it at all.
 
 **`DATABASE_URL` points at the `postgres` database, not `quantsim`.** An empty
 database named `quantsim` also exists, so `psql -d quantsim` connects and shows

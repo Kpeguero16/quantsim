@@ -86,3 +86,22 @@ type PriceClient interface {
 	// tell you right now."
 	LatestPrice(ctx context.Context, symbol string) (float64, error)
 }
+
+// InsightsInvalidator drops a user's cached portfolio report after a fill
+// changed the trades that report was computed from (SPEC.md Step 24 §2.1).
+// Implemented by *cache.RedisInsightsInvalidator.
+//
+// This is the only thing trading-engine knows about ai-insights, and the
+// direction is deliberate: the service that performs the write is the one that
+// knows what it invalidated. The alternative was ai-insights checking
+// freshness before serving its cache, which costs an HTTP round trip on every
+// cached read to detect something that happens once per fill (§2.1).
+//
+// An error here is never an order failure. The trade is already committed and
+// durable by the time this runs, so there is nothing to roll back and nothing
+// to retry -- the caller logs and carries on, and the stale report expires on
+// its own five minutes later. An implementation that expected its error to
+// abort anything would be wrong about what this interface means.
+type InsightsInvalidator interface {
+	InvalidateInsights(ctx context.Context, userID uuid.UUID) error
+}
