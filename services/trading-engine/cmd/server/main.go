@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
+	"github.com/kpeguero/quantsim/services/trading-engine/internal/cache"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/client"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/handler"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/service"
@@ -75,9 +77,33 @@ func main() {
 		log.Fatalf("database unreachable: %v", err)
 	}
 
+	// REDIS_URL is optional here, and it buys one thing only: dropping a
+	// user's cached portfolio report when their fill makes it stale
+	// (SPEC.md Step 24 §2.1). Orders place identically without it -- the
+	// service degrades to the behaviour that existed before that step, where a
+	// report could lag a trade by up to the cache TTL.
+	//
+	// So an unset URL is a supported configuration and NOT a fatal one. It is
+	// still worth a line, because a reader seeing their own trade missing from
+	// their report has no way to tell that from a bug.
+	var insightsInvalidator service.InsightsInvalidator
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		redisOpts, err := redis.ParseURL(redisURL)
+		if err != nil {
+			log.Fatalf("invalid REDIS_URL: %v", err)
+		}
+		redisClient := cache.NewClient(redisOpts)
+		defer redisClient.Close()
+		insightsInvalidator = cache.NewRedisInsightsInvalidator(redisClient)
+	} else {
+		log.Print("REDIS_URL is not set: a fill will not invalidate the placing user's " +
+			"cached portfolio report, so GET /insights/portfolio can lag a trade by up " +
+			"to its cache TTL")
+	}
+
 	tradingStore := store.NewPostgresTradingStore(pool)
 	priceClient := client.NewMarketDataClient(marketDataURL)
-	svc := service.NewService(tradingStore, tradingStore, priceClient)
+	svc := service.NewService(tradingStore, tradingStore, priceClient, insightsInvalidator)
 	tradingHandler := handler.NewTradingHandler(svc)
 	router := handler.NewRouter(tradingHandler, []byte(jwtSecret))
 

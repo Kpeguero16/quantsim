@@ -83,10 +83,20 @@ type TradingStore struct {
 	// can assert the service normalized it rather than passing a caller's 0 or
 	// 99999 straight through to a LIMIT clause.
 	TradeLimits []int
+
+	// OnExecute runs inside ExecuteOrder, before it returns. It exists so a
+	// test can make something happen DURING the fill rather than before it --
+	// specifically, the client hanging up while the transaction commits, which
+	// is the only way to reach the code that runs after a fill with an already
+	// cancelled request context.
+	OnExecute func()
 }
 
 func (s *TradingStore) ExecuteOrder(_ context.Context, p service.ExecuteOrderParams) (service.PlaceOrderResult, error) {
 	s.ExecuteCalls = append(s.ExecuteCalls, p)
+	if s.OnExecute != nil {
+		s.OnExecute()
+	}
 	if s.ExecuteErr != nil {
 		return service.PlaceOrderResult{}, s.ExecuteErr
 	}
@@ -230,4 +240,39 @@ func (c *PriceClient) CallCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.Calls)
+}
+
+// InsightsInvalidator records which users had their cached report dropped.
+//
+// It records the CONTEXT as well as the user id, because the context is half
+// of what this collaborator has to get right: PlaceOrder must strip the
+// request's cancellation before calling it (SPEC.md Step 24 §2.3), and a mock
+// that only recorded the id would pass identically whether or not it did.
+type InsightsInvalidator struct {
+	Err error
+
+	mu    sync.Mutex
+	calls []InvalidateCall
+}
+
+// InvalidateCall is one InvalidateInsights call as it arrived.
+type InvalidateCall struct {
+	UserID uuid.UUID
+	Ctx    context.Context
+}
+
+var _ service.InsightsInvalidator = (*InsightsInvalidator)(nil)
+
+func (i *InsightsInvalidator) InvalidateInsights(ctx context.Context, userID uuid.UUID) error {
+	i.mu.Lock()
+	i.calls = append(i.calls, InvalidateCall{UserID: userID, Ctx: ctx})
+	i.mu.Unlock()
+	return i.Err
+}
+
+// Calls returns every invalidation this received, in order.
+func (i *InsightsInvalidator) Calls() []InvalidateCall {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return append([]InvalidateCall(nil), i.calls...)
 }

@@ -17,15 +17,25 @@ const testSymbol = "AAPL"
 
 // newService wires the three doubles with an account that exists and one
 // priced symbol, which is the setup almost every test starts from.
+//
+// The invalidator is reachable through newServiceWithInvalidator for the tests
+// that assert on it; everything else does not care that it exists.
 func newService(t *testing.T) (*service.Service, *mock.AccountStore, *mock.TradingStore, *mock.PriceClient, uuid.UUID) {
+	t.Helper()
+	svc, accounts, trading, prices, _, userID := newServiceWithInvalidator(t)
+	return svc, accounts, trading, prices, userID
+}
+
+func newServiceWithInvalidator(t *testing.T) (*service.Service, *mock.AccountStore, *mock.TradingStore, *mock.PriceClient, *mock.InsightsInvalidator, uuid.UUID) {
 	t.Helper()
 
 	userID := uuid.New()
 	accounts := &mock.AccountStore{Account: service.Account{ID: uuid.New(), Balance: 100000}}
 	trading := &mock.TradingStore{}
 	prices := &mock.PriceClient{Prices: map[string]float64{testSymbol: 150}}
+	insights := &mock.InsightsInvalidator{}
 
-	return service.NewService(accounts, trading, prices), accounts, trading, prices, userID
+	return service.NewService(accounts, trading, prices, insights), accounts, trading, prices, insights, userID
 }
 
 func buy(symbol string, qty float64) service.PlaceOrderRequest {
@@ -747,5 +757,119 @@ func TestPositions_ConcurrentPricingKeepsHoldingsIndependentAndOrdered(t *testin
 	if positions[0].UnrealizedPL != 500 || positions[2].UnrealizedPL != 40 || positions[4].UnrealizedPL != 40 {
 		t.Errorf("P/L of the priced positions is wrong: %v, %v, %v",
 			positions[0].UnrealizedPL, positions[2].UnrealizedPL, positions[4].UnrealizedPL)
+	}
+}
+
+// A fill makes the placing user's cached report stale, because that report was
+// computed from a trade log this order just added to (SPEC.md Step 24 §2.1).
+func TestPlaceOrder_ASuccessfulFillInvalidatesThePlacingUsersReport(t *testing.T) {
+	svc, _, _, _, insights, userID := newServiceWithInvalidator(t)
+
+	if _, err := svc.PlaceOrder(context.Background(), userID, buy(testSymbol, 10)); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+
+	calls := insights.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("got %d invalidations, want exactly 1", len(calls))
+	}
+	if calls[0].UserID != userID {
+		t.Errorf("invalidated %s, want the placing user %s", calls[0].UserID, userID)
+	}
+}
+
+// A rejected order writes an orders row and nothing else: no trade, no
+// position, no balance change. The report reads none of those, so invalidating
+// would discard a valid cached report to recompute an identical one
+// (SPEC.md Step 24 §2.6).
+//
+// Both rejection paths, because they leave the function at different points:
+// one never reaches the store at all, the other reaches it and is refused.
+func TestPlaceOrder_ARejectedOrderDoesNotInvalidate(t *testing.T) {
+	t.Run("no price available", func(t *testing.T) {
+		svc, _, _, _, insights, userID := newServiceWithInvalidator(t)
+
+		// A symbol the price client has no price for is rejected before any
+		// fill can happen.
+		if _, err := svc.PlaceOrder(context.Background(), userID, buy("NOSUCH", 10)); err == nil {
+			t.Fatal("PlaceOrder succeeded for an unpriced symbol, want a rejection")
+		}
+
+		if n := len(insights.Calls()); n != 0 {
+			t.Errorf("a rejected order invalidated %d times, want 0", n)
+		}
+	})
+
+	t.Run("validation refuses the order", func(t *testing.T) {
+		svc, _, _, _, insights, userID := newServiceWithInvalidator(t)
+
+		if _, err := svc.PlaceOrder(context.Background(), userID, buy(testSymbol, -1)); err == nil {
+			t.Fatal("PlaceOrder succeeded for a negative quantity, want a rejection")
+		}
+
+		if n := len(insights.Calls()); n != 0 {
+			t.Errorf("an invalid order invalidated %d times, want 0", n)
+		}
+	})
+}
+
+// The trade is committed and durable before this runs. There is nothing to
+// roll back and nothing a retry could fix, so a broken cache must not turn a
+// successful fill into an error (SPEC.md Step 24 §2.3).
+//
+// Asserted against the working case rather than just "err == nil", so that a
+// change which swallowed the error but altered the fill would still fail.
+func TestPlaceOrder_AFailingInvalidatorDoesNotFailTheOrder(t *testing.T) {
+	working, _, _, _, _, userID := newServiceWithInvalidator(t)
+	want, wantErr := working.PlaceOrder(context.Background(), userID, buy(testSymbol, 10))
+	if wantErr != nil {
+		t.Fatalf("control PlaceOrder: %v", wantErr)
+	}
+
+	broken, _, _, _, insights, brokenUser := newServiceWithInvalidator(t)
+	insights.Err = errors.New("redis is gone")
+
+	got, err := broken.PlaceOrder(context.Background(), brokenUser, buy(testSymbol, 10))
+	if err != nil {
+		t.Fatalf("a failing invalidator failed the order: %v", err)
+	}
+	if got != want {
+		t.Errorf("the fill differed from the working case:\n got %+v\nwant %+v", got, want)
+	}
+	if n := len(insights.Calls()); n != 1 {
+		t.Errorf("got %d invalidations, want 1 -- the failure must still be attempted", n)
+	}
+}
+
+// The fill has committed, so a client hanging up must not take the
+// invalidation with it (SPEC.md Step 24 §2.3).
+//
+// Without context.WithoutCancel this is the original defect returning through
+// a path nobody would look at: the order lands, the delete never runs, and the
+// stale report survives its full TTL. The mock records the context precisely so
+// this can be asserted, because an invalidator that merely received a call
+// would look identical.
+func TestPlaceOrder_InvalidationSurvivesTheRequestBeingCancelled(t *testing.T) {
+	svc, _, trading, _, insights, userID := newServiceWithInvalidator(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancelled DURING the fill, not before it: cancelling up front would be
+	// refused at the price fetch and never reach a fill at all, which is a
+	// different case and not this one.
+	trading.OnExecute = cancel
+
+	if _, err := svc.PlaceOrder(ctx, userID, buy(testSymbol, 10)); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+
+	calls := insights.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("got %d invalidations, want 1", len(calls))
+	}
+	if err := calls[0].Ctx.Err(); err != nil {
+		t.Errorf("the invalidation was handed a cancelled context (%v), so a real "+
+			"Redis client would have skipped the delete", err)
 	}
 }

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kpeguero/quantsim/pkg/cachekeys"
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/service"
 )
 
@@ -18,11 +20,9 @@ var _ service.InsightsCache = (*RedisInsightsCache)(nil)
 // RedisInsightsCache stores rendered reports at insights:{user_id}
 // (SPEC.md §2.8).
 //
-// The "insights:" prefix continues the namespacing convention .env.example
-// documents and every other user of this Redis follows -- market-data's
-// "price:" and "prices:", auth's "revoked:". Sharing one Redis is only safe
-// because of that convention, and a bare user id as a key would collide with
-// anything else that ever keys on one.
+// The key format lives in pkg/cachekeys because trading-engine deletes this
+// entry when a fill makes it stale (Step 24 §2.4). It is the one key in this
+// service another service names, so it cannot be a literal in either of them.
 type RedisInsightsCache struct {
 	client *redis.Client
 }
@@ -31,8 +31,25 @@ func NewRedisInsightsCache(client *redis.Client) *RedisInsightsCache {
 	return &RedisInsightsCache{client: client}
 }
 
-func insightsKey(userID string) string {
-	return "insights:" + userID
+// key parses the caller's user id and formats the shared cache key.
+//
+// The id arrives as a string because that is what service.InsightsCache
+// passes, and cachekeys.Insights takes a uuid.UUID so that no caller can turn
+// an arbitrary string into an arbitrary Redis key. Parsing here is where those
+// two meet.
+//
+// A parse failure cannot happen through the handlers, which parse the JWT
+// subject to a UUID before it ever reaches this package. If it ever does, an
+// error is the right answer and a harmless one: this interface documents that
+// every method may fail and that no failure is a request failure, so the
+// service logs it and computes. That is strictly better than the alternative
+// this replaces, where an unparseable id quietly became a key.
+func (c *RedisInsightsCache) key(userID string) (string, error) {
+	id, err := uuid.Parse(userID)
+	if err != nil {
+		return "", fmt.Errorf("insights cache: user id %q is not a uuid: %w", userID, err)
+	}
+	return cachekeys.Insights(id), nil
 }
 
 // Get returns the stored report, and whether there was one.
@@ -44,10 +61,15 @@ func (c *RedisInsightsCache) Get(ctx context.Context, userID string) (service.Po
 	// Bounded for the reason redisTimeout documents: this read is where a
 	// hung Redis cost the report endpoint 6.05s while failing open perfectly
 	// correctly. Fail-open is only useful if it is also fast.
+	key, err := c.key(userID)
+	if err != nil {
+		return service.PortfolioInsights{}, false, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, redisTimeout)
 	defer cancel()
 
-	data, err := c.client.Get(ctx, insightsKey(userID)).Result()
+	data, err := c.client.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
 		return service.PortfolioInsights{}, false, nil
 	}
@@ -66,6 +88,11 @@ func (c *RedisInsightsCache) Get(ctx context.Context, userID string) (service.Po
 }
 
 func (c *RedisInsightsCache) Set(ctx context.Context, userID string, insights service.PortfolioInsights, ttl time.Duration) error {
+	key, err := c.key(userID)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, redisTimeout)
 	defer cancel()
 
@@ -73,5 +100,5 @@ func (c *RedisInsightsCache) Set(ctx context.Context, userID string, insights se
 	if err != nil {
 		return fmt.Errorf("marshal insights: %w", err)
 	}
-	return c.client.Set(ctx, insightsKey(userID), data, ttl).Err()
+	return c.client.Set(ctx, key, data, ttl).Err()
 }

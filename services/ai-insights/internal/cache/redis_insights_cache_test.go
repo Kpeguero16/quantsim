@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -11,28 +10,36 @@ import (
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/service"
 )
 
-// An in-package test, because the thing worth pinning here -- the key -- is
-// unexported and is exactly the detail that must not drift.
-//
-// The repo shares ONE Redis across services and keeps them apart by prefix
-// convention alone (.env.example). market-data owns "price:" and "prices:",
-// auth owns "revoked:". A collision would not error; it would silently serve
-// one service's value to another, which is the worst shape a bug can have.
-func TestInsightsKey_IsNamespacedAndCollidesWithNothing(t *testing.T) {
+// The key format itself now lives in pkg/cachekeys and is tested there, because
+// trading-engine deletes this entry and so produces the same string (Step 24
+// §2.4). What is left here is the join between them: this package takes a
+// string from service.InsightsCache and cachekeys.Insights takes a uuid.UUID.
+func TestKey_IsTheSharedKeyForAValidUUID(t *testing.T) {
 	const userID = "6f1e0e5a-1b2c-4d3e-8f90-abcdef012345"
-	got := insightsKey(userID)
+	c := &RedisInsightsCache{}
 
-	if got != "insights:"+userID {
-		t.Fatalf("got %q, want insights:%s", got, userID)
+	got, err := c.key(userID)
+	if err != nil {
+		t.Fatalf("key(%q): %v", userID, err)
 	}
-	// A bare user id as a key is the failure this guards: any other service
-	// that ever keys on a user id would then read and write the same entry.
-	if got == userID {
-		t.Fatal("the key is a bare user id, in a Redis shared with three other services")
+	// Written out rather than built with cachekeys.Insights: this assertion
+	// exists to catch that function changing under this service.
+	if want := "insights:" + userID; got != want {
+		t.Errorf("key = %q, want %q", got, want)
 	}
-	for _, taken := range []string{"price:", "prices:", "revoked:"} {
-		if strings.HasPrefix(got, taken) {
-			t.Errorf("key %q lands in %q, which another service owns", got, taken)
+}
+
+// Unreachable through the handlers, which parse the subject to a UUID first.
+// It is an error rather than a key because this interface documents that any
+// method may fail and that no failure is a request failure -- so the service
+// logs it and computes, which beats writing an attacker-shaped string into a
+// Redis kept safe by prefix convention.
+func TestKey_RefusesAUserIDThatIsNotAUUID(t *testing.T) {
+	c := &RedisInsightsCache{}
+
+	for _, id := range []string{"", "not-a-uuid", "revoked:someone-elses-key"} {
+		if got, err := c.key(id); err == nil {
+			t.Errorf("key(%q) = %q, want an error", id, got)
 		}
 	}
 }
