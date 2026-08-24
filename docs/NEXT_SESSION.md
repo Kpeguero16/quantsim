@@ -1,82 +1,73 @@
 # Next session — state of play
 
-> **Step 24 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
+> **Step 25 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
 > purpose and were not carried onto `main`; the full per-task record is archived at
-> `docs/archive/phase4-step24-report-cache-invalidation/todo.md`.
+> `docs/archive/phase4-step25-dockerization/todo.md`.
 
-Last updated **2026-08-23**, with Step 24 (report cache invalidation on a fill) finished on its
-branch. **Phase 4's feature work and all three of its defects are done. The infra half is what
-remains, and it is now the whole of what remains.**
+Last updated **2026-08-23**, with Step 25 (Dockerization) finished on its branch. **Phase 4's
+feature work, all three of its defects, and the containerization half of its infra work are done.
+Cloud deployment is what remains of the roadmap.**
 
-This file answers three questions on picking the project back up: *is anything
-half-finished?*, *what do I do next?*, and *what will trip me up?* It is meant to
-be rewritten each time, not appended to.
+This file answers three questions on picking the project back up: *is anything half-finished?*,
+*what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not
+appended to.
 
 ---
 
-## Step 24 is merged. Nothing is half-finished.
+## Step 25 is merged. Nothing is half-finished.
 
 | | |
 |---|---|
-| Branch | `step24-report-cache-invalidation` — one commit `feat(step24)` (`5d9d685`) merged `--no-ff` (`4bcc583`), matching Steps 16-23. **Branch deleted; `main` pushed.** |
-| The change | trading-engine deletes `insights:{user_id}` after a successful fill. It gains a Redis client and an optional `REDIS_URL`; `pkg/` gains `cachekeys`, which both services use for that one key. |
-| Backend | `make vet` clean; `make test` green across all seven modules; `make test-integration` **63/0**, unchanged; `GOWORK=off go build ./...` passes for all seven. |
-| Tests | Ten across three packages. The invalidator runs against `miniredis`, not a mock. |
-| Mutations | **6 run, 6 killed.** |
-| Live stack | With Redis: the key is deleted on the fill and the refetched report agrees with the database at 6 trades. Without: the key survives and the report reads 4 while the database holds 5. |
-| Cost | **$0.00.** The narrative endpoint was never called. |
-| Dev database | Restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0`, `historical_prices=3525`. No `insights:*` or `narrative:*` keys in Redis. |
-| Local processes | All services stopped. Postgres and Redis containers up. |
+| The change | `make stack-up` runs the whole stack in containers: six Go services, the frontend behind nginx, and a migration one-shot. **Zero `.go`, `.ts` or `.tsx` files touched** — every knob was already env-driven |
+| Images | one `Dockerfile.service` parameterised by `ARG SERVICE`, repo-root context, distroless nonroot, read-only, `cap_drop: ALL`. 15-22MB each. Frontend on `nginx-unprivileged`, port 5173 |
+| Backend | `make vet` clean; `make test` green; `make test-integration` **63/0**, unchanged since Step 22; `build --no-cache` 7/7 |
+| Controls run | `BIND_ADDR` override removed → 502 and `connection refused`; an image built to contain `.env` → the leak check scores 1 and 1 |
+| Browser | every tab; two orders filled and reconciled to the cent; three backtests ran; every XHR 200 to localhost:8080; no console errors |
+| Cost | **2 narrative generations.** The insights tab fires the narrative from a mount effect, so it cannot be looked at for free |
+| Dev database | restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0 backtests=0`, `historical_prices=3525`. No `insights:*` or `narrative:*` keys |
+| Local processes | none. Two containers, Postgres and Redis |
 
 ---
 
-## What Step 24 did, and what it deliberately did not
+## What Step 25 did, and what it deliberately did not
 
-A fill's report refetch was defeated by the five-minute cache, so the reader saw figures computed
-before their own trade. trading-engine now deletes that key when it fills an order.
+**The step found a defect in itself that would have shipped.** The first compose built its
+connection string from `POSTGRES_DB`, which names the database the postgres image creates at first
+boot — here `quantsim`, an empty decoy. Everything passed anyway: the migrate one-shot created the
+schema in the decoy on demand, so `/healthz` was 200, registration 201, the order filled at the
+right price. Only `GET /insights/portfolio` noticed, with a 404, because it is the only endpoint
+that needs data which was supposed to already exist. Fixed with `POSTGRES_APP_DB`, defaulting to
+`postgres`.
 
-Three details carry the step, and each would have shipped looking correct. It is **synchronous**,
-because the event being fixed is the dashboard refetching immediately after the fill and a
-goroutine racing that has no ordering guarantee. It uses **`context.WithoutCancel`**, because the
-fill has already committed and a client hanging up must not take the invalidation with it. And it
-**can never fail an order**, because the trade is durable before it runs.
+**`make docker-up` still starts exactly Postgres and Redis**, because the app services sit behind
+compose's `app` profile. The `go run` loop is untouched and a check guards it. `make docker-down`
+*did* have to change: compose's `down` ignores inactive profiles, and the containers it strands
+break the next `stack-up` with `network <hash> not found`.
 
-**The key stopped being a literal.** Two services produce `insights:{user_id}` now, so it lives in
-`pkg/cachekeys` and takes a `uuid.UUID` rather than a string — that is what keeps ai-insights'
-guarantee that a token subject cannot become an arbitrary Redis key.
-
-**A fill now costs a narrative generation.** `narrative:{user_id}:{report_hash}` is keyed on
-content, so a fill changes the report, changes the hash, and misses. Nothing needed invalidating,
-and nothing should be added. It is correct, since the prose describes figures that moved, but it
-is a real cost change and it only became possible once Step 23 stabilised the hash.
-
-**Rejected as the read-side design**, and it was a real option: ai-insights checking freshness
-before serving its cache keeps the dependency direction as it runs and needs no Redis in
-trading-engine. It loses because `ListTrades` orders `executed_at ASC`, so `?limit=1` returns the
-oldest trade and there is no cheap probe to call, and because it would pay an HTTP round trip on
-every cached read forever to catch something that happens once per fill.
+**Left for deployment, on purpose.** `allowedOrigin` is still a compile-time constant naming
+`http://localhost:5173`. `VITE_API_BASE_URL` is baked into the bundle at build time, so changing
+the API host means rebuilding the image — image and environment are not separable yet. Secrets
+still come from a `.env` on disk. And nothing restarts a hung service: `restart: unless-stopped`
+covers a crash, and distroless means no in-container healthcheck to notice a process that is up
+and answering nothing.
 
 ---
 
 ## What to do next
 
-**Phase 4 has no defects left. What remains is infrastructure and long-standing small items.**
+**1. Cloud deployment** (AWS free tier: EC2 + docker-compose; Redis stays containerized,
+ElastiCache has no free tier). The images exist and the stack runs; what deployment has to decide
+is the three things above. The CORS constant and the baked API URL are really one question, and
+serving the frontend and the API from a single origin behind one proxy would delete both.
 
-**1. Dockerization**, then **cloud deployment** (AWS free tier: EC2 + docker-compose; Redis stays
-containerized, ElastiCache has no free tier). `GOWORK=off go build ./...` passes for all seven
-modules today, re-checked in Step 24 with `pkg`'s new package in place, not assumed.
+**2. `docs/deferred-tuning.md`** — timeouts and pool sizes deliberately left unset because the
+right values need traffic shape. Still blocked until something is actually deployed.
 
-Worth knowing before starting: **trading-engine now reads `REDIS_URL`**, so it belongs in the
-compose environment alongside auth's and ai-insights'. It is optional — orders place without it —
-but a deployment that omits it silently reintroduces Step 24's defect.
-
-**2. `docs/deferred-tuning.md`** — unblocked by deployment. Step 24 added nothing to it.
-
-**3. Consolidate the four Redis client construction sites.** `ai-insights` and now
-`trading-engine` set `ContextTimeoutEnabled`; **`auth` and `market-data` do not**, so
-`context.WithTimeout` around their Redis calls does nothing and each waits its own `ReadTimeout`.
-That is the defect that cost 6.05s in Step 21, latent in two services. Its own step, because it
-touches auth's token revocation path. Found in Step 24's survey, not fixed by it.
+**3. Consolidate the four Redis client construction sites.** `ai-insights` and `trading-engine`
+set `ContextTimeoutEnabled`; **`auth` and `market-data` do not**, so `context.WithTimeout` around
+their Redis calls does nothing and each waits its own `ReadTimeout`. That is the defect that cost
+6.05s in Step 21, latent in two services. Its own step, because it touches auth's token revocation
+path. Found in Step 24's survey, untouched by Step 25.
 
 **4. The long-standing small items.**
 
@@ -84,7 +75,7 @@ touches auth's token revocation path. Found in Step 24's survey, not fixed by it
   billed call, and it broke in Step 22 without a single test noticing. Needs `renderHook`;
   `@testing-library/react` is installed and still unused.
 - `market-data`'s store still has no tests (`historical_price_store.go`). The integration harness
-  is still in **three** copies; Step 24 added no `integration/` package, so
+  is still in **three** copies; Step 25 added no `integration/` package, so
   `docs/TESTING_STRUCTURE.md` §6a's extraction trigger is **still unfired**.
 
 **5. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is
@@ -92,17 +83,30 @@ the cheap one left and gets more expensive as accounts accumulate. Item **3** (A
 substantive and wants its own step, since it carries a migration strategy.
 
 **6. Worth considering, not scheduled: cache histories by symbol rather than reports by user.**
-The report math is ~25µs; essentially the entire cost the report cache avoids is HTTP, and most of
-that is per-symbol history identical for every user. That design would have deleted Step 24's
-problem rather than needing it patched, and it would get a far better hit rate. It is a rewrite of
-`ai-insights` SPEC §2.8, so it wants a real reason before anyone starts.
+The report math is ~25µs; essentially the entire cost the report cache avoids is HTTP, most of it
+per-symbol history identical for every user. It is a rewrite of `ai-insights` SPEC §2.8, so it
+wants a real reason before anyone starts.
 
 ---
 
 ## Restarting the environment
 
+Two ways, and they publish the same ports, so run one or the other.
+
+**Everything in containers.** Needs only Docker and a `.env`:
+
 ```bash
-make docker-up            # Postgres + Redis
+make stack-up             # builds and starts all 9 containers
+make stack-logs           # follow everything
+make stack-down           # stop it all
+```
+
+Then http://localhost:5173. Only the gateway (8080) and the frontend (5173) are published.
+
+**Services on the host** — the development loop, since a code change is one restart away:
+
+```bash
+make docker-up            # Postgres + Redis only
 make run-auth             # :8081
 make run-market-data      # :8082
 make run-trading-engine   # :8083
@@ -114,34 +118,53 @@ make run-frontend         # :5173
 
 Each `run-*` target runs in the foreground, so they need separate terminals.
 
-`ANTHROPIC_API_KEY` is in `.env` and **optional** — without it the report
-endpoint is unaffected and the narrative endpoint returns 200 with
-`narrative: null`. `ANTHROPIC_MODEL` defaults to `claude-opus-5`.
+`ANTHROPIC_API_KEY` is in `.env` and **optional** — without it the report endpoint is unaffected
+and the narrative endpoint returns 200 with `narrative: null`. `ANTHROPIC_MODEL` defaults to
+`claude-opus-5`.
 
-**Without `REDIS_URL` the narrative endpoint returns nothing, deliberately.** No
-Redis means no cache *and* no generation counter, and uncached plus uncapped is
-the one combination with no cost ceiling. The report endpoint still works.
+**Without `REDIS_URL` the narrative endpoint returns nothing, deliberately.** No Redis means no
+cache *and* no generation counter, and uncached plus uncapped is the one combination with no cost
+ceiling. The report endpoint still works.
 
-**`REDIS_URL` now reaches trading-engine too, and it is optional there** (Step
-24). With it, a fill deletes the placing user's cached report. Without it,
-orders place exactly as before and that report can lag the trade by up to five
-minutes -- the service says so at boot, and `make REDIS_URL= run-trading-engine`
-is how to reproduce the old behaviour deliberately.
+**`REDIS_URL` reaches trading-engine too, and it is optional there** (Step 24). With it, a fill
+deletes the placing user's cached report. Without it, orders place exactly as before and that
+report can lag the trade by up to five minutes. The container stack sets it.
 
-Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff
-after 5 consecutive failed logins). `RATE_LIMIT_ENABLED=false` turns it off.
-`services/auth` requires `REDIS_URL` to boot. **Do not put `PORT=` in `.env`** —
-the Makefile exports that file to every target.
+Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff after 5 consecutive
+failed logins). `RATE_LIMIT_ENABLED=false` turns it off. `services/auth` requires `REDIS_URL` to
+boot. **Do not put `PORT=` in `.env`** — the Makefile exports that file to every target.
 
-**Register a fresh password with something that isn't your username, email, or
-"quantsim."** Registration also requires a `username`.
+**Register a fresh password with something that isn't your username, email, or "quantsim."**
+Registration also requires a `username`.
 
-**The `migrate` CLI is installed to `$(go env GOPATH)/bin`, not on the default
-`PATH`.** Step 21 added no migration; `ai-insights` still owns no tables.
+**The `migrate` CLI is installed to `$(go env GOPATH)/bin`, not on the default `PATH`** — and is
+no longer needed at all for the container stack, which runs migrations as a one-shot. Step 25
+added no migration; the schema is still at version 9.
 
 ---
 
 ## Things that will trip you up
+
+**A stack pointed at the wrong database looks completely healthy.** Step 25's own defect.
+Migrations that run automatically will create the schema wherever they are aimed, so registration
+returns 201 and orders fill against an empty database. `POSTGRES_APP_DB` is what names the right
+one for containers, and `POSTGRES_DB` is *not* it — that names an empty decoy called `quantsim`.
+
+**`docker compose down` does not stop services behind a profile.** The containers it leaves hold a
+reference to the network it just removed, and the next `stack-up` fails with
+`network <hash> not found`, which names nothing that leads back to the cause. `make docker-down`
+now takes down every profile; if you hit this some other way, `docker compose --profile app down`
+is the cure.
+
+**Right after `make stack-up` the first price request can 404.** `price:{symbol}` carries roughly
+a 40-second TTL and market-data repopulates it on a loop; before the first tick lands there is no
+cached price and `POST /trading/orders` is refused with `symbol_unavailable`. Wait a few seconds.
+
+**A user that has run a backtest cannot be deleted by the obvious five deletes.**
+`backtests_user_id_fkey` rolls the whole transaction back — correct, and it reads as "nothing
+happened" if you do not read the output. Delete `backtest_trades` and `backtests` first.
+
+**Opening the insights tab spends money.** The narrative fires from a mount effect, not a button.
 
 **A position quantity does not change after a fill, and it looks exactly like a
 failed cache invalidation.** Holdings describe `as_of_date`, which is where the

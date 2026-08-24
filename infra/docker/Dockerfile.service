@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1
+
+# QuantSim -- one image definition for all six Go services.
+#
+# Parameterised rather than copied six times. The services build identically:
+# same Go version, same static binary, same base. Six near-identical files do
+# not stay identical -- one gets a Go bump, one gets a build flag, and the
+# drift is invisible because nothing ever diffs them. See SPEC.md 2.2.
+#
+# The build context is the REPO ROOT, not a service directory, and that is not
+# a convenience. Every service module except market-data carries
+# `replace github.com/kpeguero/quantsim/pkg => ../../pkg`, so the build needs
+# pkg/ on disk at that relative path. A per-service context cannot work.
+#
+# Build one by hand:
+#   docker build -f infra/docker/Dockerfile.service --build-arg SERVICE=auth -t quantsim-auth .
+
+ARG GO_VERSION=1.25
+
+FROM golang:${GO_VERSION} AS build
+
+# GOWORK=off is the point of this line, not a default being restated.
+# go.work is excluded from the context by .dockerignore, but that file can be
+# loosened by accident; this cannot. With the workspace in play the image would
+# build while a clean clone did not, which is exactly the breakage Step 20
+# found in pkg and gateway.
+ENV GOWORK=off
+ENV CGO_ENABLED=0
+
+ARG SERVICE
+WORKDIR /src
+
+# Manifests first, so the dependency layer survives a source change.
+#
+# pkg's manifests are copied for every service including market-data, which
+# does not depend on pkg. That is harmless: with no `replace` directive naming
+# it, nothing resolves to it.
+COPY pkg/go.mod pkg/go.sum ./pkg/
+COPY services/${SERVICE}/go.mod services/${SERVICE}/go.sum ./services/${SERVICE}/
+RUN cd services/${SERVICE} && go mod download
+
+COPY pkg/ ./pkg/
+COPY services/${SERVICE}/ ./services/${SERVICE}/
+
+# -trimpath keeps build-machine paths out of the binary; -s -w drops the symbol
+# table and DWARF, which is most of the size difference and costs a stack trace
+# nothing (panics still carry file and line).
+RUN cd services/${SERVICE} && \
+    go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+
+# Runtime: no shell, no package manager, no libc, uid 65532.
+#
+# What this costs is `docker exec sh`. Debugging is `docker logs`, or rebuilding
+# with `--target build` and running the builder stage, which has a full
+# toolchain. That is a worse debugging story than alpine and it is the trade
+# taken deliberately: this repo is public and the next step puts it on a public
+# IP. SPEC.md 2.4.
+#
+# ca-certificates is present in this image, which market-data needs for Alpaca
+# and ai-insights for Anthropic. tzdata is NOT relied on: no production code
+# path calls time.LoadLocation (checked, not assumed -- the one call site is a
+# test, which is not in this image).
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/server /server
+
+USER nonroot:nonroot
+ENTRYPOINT ["/server"]

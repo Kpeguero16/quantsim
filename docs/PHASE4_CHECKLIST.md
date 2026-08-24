@@ -744,6 +744,74 @@ It moved to `pkg/cachekeys` and takes a `uuid.UUID` rather than a string. ai-ins
 
 ---
 
+## Step 25 — Dockerization
+
+`docker compose --profile app up -d`, or `make stack-up`, brings up all six Go services, the frontend and a migration one-shot. A browser at localhost:5173 behaves as it does under `make run-*`, which was the whole requirement: this is a packaging change, and any behavioural difference between the two ways of running is a defect in the step rather than a property of containers.
+
+**No Go and no TypeScript changed.** `git diff --stat` shows zero `.go`, `.ts` and `.tsx` files. Every knob this needed — `PORT`, `BIND_ADDR`, `DATABASE_URL`, `REDIS_URL`, the five service URLs, the API keys, the rate-limit settings — was already env-driven. That was written into the spec as a constraint rather than noticed afterwards, because the easy way to fail this step is to quietly turn packaging into behaviour.
+
+### The step found a defect in itself, and it would have shipped
+
+The first compose built its connection string from `POSTGRES_DB`. That is the obvious variable and the wrong one: it names the database the postgres image creates at first boot, which here is `quantsim`, an empty decoy. The application lives in `postgres`, which is what `DATABASE_URL` has always said and what `README.md` and `docs/PHASE2_CHECKLIST.md` both record deliberately.
+
+**Nothing looked broken.** The migrate one-shot created the schema in the decoy on demand, so `/healthz` returned 200, registration returned 201, the order filled at the correct price, positions came back right. One endpoint noticed: `GET /insights/portfolio` returned 404 `symbol_unavailable`, because it is the only one needing data that was supposed to already exist.
+
+The fix is `POSTGRES_APP_DB`, defaulting to `postgres`, documented at length in `.env.example`. The general shape outlives the fix: **a stack pointed at an empty database is indistinguishable from a healthy one as long as something creates the schema on demand.** Automatic migrations are what make that possible, and they are otherwise a good idea.
+
+### Three configuration facts, each of which fails as something else
+
+**`BIND_ADDR` must be `0.0.0.0` in a container, and the default is `127.0.0.1`.** That default is deliberate — auth and market-data have no authentication of their own — but inside a container it is the container's own loopback, so the service is reachable by nothing. The symptom is `connection refused` from the gateway while the service logs that it is listening, which reads as a dead container. Proven load-bearing by a control: with the override removed for auth alone, login returned 502 and the gateway logged `dial tcp 172.18.0.5:8081: connect: connection refused`.
+
+**The container URLs are built in compose, not read from `.env`.** Every URL in that file names `localhost`, correct for `make run-*` and wrong inside a network where the hosts are the compose service names. Only the portable half — credentials, API keys, rate-limit knobs — is read from `.env`, so the two sets cannot drift into each other.
+
+**`go.work` must not enter the build context.** With it present the build silently uses the workspace, and the image builds while `GOWORK=off go build ./...` is the only thing keeping a clean clone honest — the breakage Step 20 found in `pkg` and `gateway`. Two guards, because they fail differently: `.dockerignore` denies by default so the file is not there, and the builder sets `GOWORK=off` so it would not be used if it were. An ignore file can be loosened by accident; an environment variable cannot.
+
+### Shape of the images
+
+One `Dockerfile.service` parameterised by `ARG SERVICE`, not six copies. Six near-identical files do not stay identical, and nothing ever diffs them. The build context is the repo root because every service module except market-data replaces `pkg` with `../../pkg`, so a per-service context cannot work at all.
+
+Runtime is `distroless/static:nonroot`, read-only, `cap_drop: ALL`, `no-new-privileges`, 15-22MB per image. **What that costs is `docker exec sh`**, and the trade was taken deliberately: this repo is public and the next step puts it on a public IP. It also means no in-container `HEALTHCHECK` for the Go services, since there is nothing to run one with; the ordering that matters is migrations, which uses `service_completed_successfully`.
+
+The frontend is a Vite build behind **`nginx-unprivileged`** on 5173. Not stock nginx: it drops privileges itself and needs `CAP_SETUID`, which `cap_drop: ALL` removes. Port 5173 is not aesthetic either — the gateway's allowed CORS origin is a compile-time constant naming it, so serving anywhere else makes every API call fail preflight, which reads as a broken gateway rather than a moved port.
+
+`.dockerignore` **denies by default** (`*`, then name what the builds need). The usual shape fails open: anything new at the repo root is in the context until someone remembers a line. It caught its own first mistake, failing loudly on a missing `nginx.conf` rather than shipping a default config.
+
+### `make docker-down` had to change, and it was not in the plan
+
+Compose's `down` ignores services whose profile is not active. A plain `docker compose down` after `stack-up` therefore leaves seven containers holding a reference to the network it just deleted, and the next `stack-up` fails with `network <hash> not found` — an error naming nothing that leads back to the cause. `docker-down` now takes down every profile. `docker-up` is untouched, which is the promise the profile design actually makes, and a check guards it.
+
+### Verification
+
+| | |
+|---|---|
+| Journey through the containerized gateway | register 201, login 200, `/me` 200, price 200, order **filled** 201, positions 200, insights **200**, backtests 200 |
+| **Control:** `BIND_ADDR=127.0.0.1` for auth | login **502**, `connection refused` in the gateway log. Restored: 401 |
+| `.env` in any image | 0 files, 0 hits for `JWT_SECRET` or `ALPACA_API_SECRET`, all seven. **Control:** an image built to contain it scores 1 and 1 |
+| Published ports | exactly 8080, 5173, 5432, 6379, all on 127.0.0.1. The five internal services publish nothing |
+| `build --no-cache` with `go.work` in the tree | exit 0, **7/7** |
+| Dirty schema | migrate exit 1, **no app service started** |
+| `make docker-up` | 2 containers, unchanged |
+| Step 24 in containers | `insights:{user}` 1 → 0 on the fill; report agrees with Postgres |
+| Hardening on **running** containers | `readonly=true cap_drop=[ALL]` on all seven, six `nonroot`, nginx uid 101 |
+| Backend | `make vet` clean; `make test` green; `make test-integration` **63/0**, unchanged since Step 22 |
+| Browser | every tab; two orders filled and reconciled to the cent; three backtests ran; every XHR 200 to localhost:8080; **no console errors** |
+| Cost | **2 narrative generations.** Not $0.00, and deliberately spent |
+| Dev database | restored and verified: `users=20 accounts=20 trades=0 orders=0 positions=0 backtests=0`, `historical_prices=3525` |
+
+### Things worth knowing
+
+**A stack pointed at the wrong database looks healthy.** Above. `behavior.trade_count` and the insights endpoint are what expose it; everything else passes.
+
+**Right after `make stack-up` the first price request can 404.** `price:{symbol}` carries roughly a 40-second TTL and market-data repopulates it on a loop; before the first tick there is no cached price and an order is refused with `symbol_unavailable`. The loop does run in the container — TTL held at 39 across six samples 15 seconds apart.
+
+**A user that has run a backtest cannot be deleted by the obvious five deletes.** `backtests_user_id_fkey` rolls the whole transaction back, which is the right outcome and reads as "nothing happened" if the output is not read.
+
+**`docker exec` without `-i` silently discards a heredoc.** Recorded in Step 22 and it cost a cycle again here: the cleanup `psql` printed nothing, deleted nothing, and left row counts identical, which looks exactly like "already clean".
+
+**The narrative fires from a mount effect, not a button.** Opening the insights tab spends money. It cannot be eyeballed for free, and two fills meant two generations on two different hashes — Step 23 and Step 24 working together exactly as Step 24 §2.7 predicted, and the first time this project paid for it.
+
+---
+
 ## Still open
 
 - [x] ~~**Insights frontend** — Step 22~~ — done. The percent convention was
@@ -767,7 +835,15 @@ It moved to `pkg/cachekeys` and takes a `uuid.UUID` rather than a string. ai-ins
       double-spend guard protects a billed call and broke in Step 22 without a
       single test noticing. Needs `renderHook`; `@testing-library/react` is
       installed and still unused.
-- [ ] **Dockerization** and **cloud deployment** (AWS free tier).
+- [x] ~~**Dockerization**~~ — Step 25. The whole stack runs under
+      `make stack-up` with no source changes. The `POSTGRES_DB` trap it found
+      is in that entry and is the part worth carrying into deployment.
+- [ ] **Cloud deployment** (AWS free tier). Three things Step 25 left it:
+      `allowedOrigin` is still a compile-time constant, `VITE_API_BASE_URL` is
+      baked into the bundle at build time, and secrets still come from a `.env`
+      on disk. Also nothing restarts a hung service — `restart: unless-stopped`
+      covers a crash, and there is no in-container healthcheck to notice a
+      process that is up and answering nothing.
 - [ ] **Work through `docs/deferred-tuning.md`** — timeouts, connection
       pooling, and other defaults deliberately left unset because the right
       values depend on traffic shape that only exists once deployed.
