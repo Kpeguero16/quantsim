@@ -4,7 +4,7 @@
 > needs an AWS account that does not exist yet. Everything up to it is built and verified.
 > The per-task record is archived at `docs/archive/phase4-step26-cloud-deployment/todo.md`.
 
-Last updated **2026-08-23**, with Step 26 (cloud deployment readiness) merged. **Phase 4's
+Last updated **2026-08-23**, with Step 26 (cloud deployment readiness) merged and pushed. **Phase 4's
 feature work and all its defects are done. What remains of the roadmap is one EC2 instance.**
 
 This file answers three questions on picking the project back up: *is anything half-finished?*,

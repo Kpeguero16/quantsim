@@ -2,7 +2,7 @@
 
 Tracks `tasks/plan.md`'s 6 tasks and 2 checkpoints. **T1-T5 and both checkpoints done. T6 (provision) is BLOCKED on an AWS account that does not exist yet, and is the only thing left.**
 
-Branch `step26-cloud-deployment`, cut from `main` at `17116c9`. Root `SPEC.md` and `tasks/` stay untracked as always.
+Branch `step26-cloud-deployment`, cut from `main` at `17116c9`, one `feat(step26)` (`21f5006`) merged `--no-ff` (`576e97c`). Branch deleted, `main` pushed. Root `SPEC.md` and `tasks/` were never carried onto `main`; this file is their archived copy.
 
 ---
 
