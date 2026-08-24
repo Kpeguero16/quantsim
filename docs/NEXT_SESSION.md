@@ -4,7 +4,7 @@
 > purpose and were not carried onto `main`; the full per-task record is archived at
 > `docs/archive/phase4-step25-dockerization/todo.md`.
 
-Last updated **2026-08-23**, with Step 25 (Dockerization) finished on its branch. **Phase 4's
+Last updated **2026-08-23**, with Step 25 (Dockerization) merged and pushed. **Phase 4's
 feature work, all three of its defects, and the containerization half of its infra work are done.
 Cloud deployment is what remains of the roadmap.**
 

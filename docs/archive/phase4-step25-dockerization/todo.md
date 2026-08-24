@@ -2,7 +2,7 @@
 
 Tracks `tasks/plan.md`'s 5 tasks and 2 checkpoints. **All done. What remains is documentation and the merge.**
 
-Branch `step25-dockerization`, cut from `main` at `f86c74f`. **Nothing committed yet.** Root `SPEC.md` and `tasks/` stay untracked as always.
+Branch `step25-dockerization`, cut from `main` at `f86c74f`, squashed to one `feat(step25)` (`399c228`) and merged `--no-ff` (`0526e6f`). Branch deleted, `main` pushed. Root `SPEC.md` and `tasks/` were never carried onto `main`; this file is their archived copy.
 
 ---
 
