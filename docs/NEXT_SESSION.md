@@ -1,12 +1,11 @@
 # Next session — state of play
 
-> **Step 25 is merged.** Nothing is half-finished. Root `SPEC.md` and `tasks/` are untracked on
-> purpose and were not carried onto `main`; the full per-task record is archived at
-> `docs/archive/phase4-step25-dockerization/todo.md`.
+> **Step 26 is merged.** Nothing is half-finished, but one thing is **blocked**: provisioning
+> needs an AWS account that does not exist yet. Everything up to it is built and verified.
+> The per-task record is archived at `docs/archive/phase4-step26-cloud-deployment/todo.md`.
 
-Last updated **2026-08-23**, with Step 25 (Dockerization) merged and pushed. **Phase 4's
-feature work, all three of its defects, and the containerization half of its infra work are done.
-Cloud deployment is what remains of the roadmap.**
+Last updated **2026-08-23**, with Step 26 (cloud deployment readiness) merged. **Phase 4's
+feature work and all its defects are done. What remains of the roadmap is one EC2 instance.**
 
 This file answers three questions on picking the project back up: *is anything half-finished?*,
 *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not
@@ -14,96 +13,92 @@ appended to.
 
 ---
 
-## Step 25 is merged. Nothing is half-finished.
+## Where Step 26 stopped, and why
 
 | | |
 |---|---|
-| The change | `make stack-up` runs the whole stack in containers: six Go services, the frontend behind nginx, and a migration one-shot. **Zero `.go`, `.ts` or `.tsx` files touched** — every knob was already env-driven |
-| Images | one `Dockerfile.service` parameterised by `ARG SERVICE`, repo-root context, distroless nonroot, read-only, `cap_drop: ALL`. 15-22MB each. Frontend on `nginx-unprivileged`, port 5173 |
-| Backend | `make vet` clean; `make test` green; `make test-integration` **63/0**, unchanged since Step 22; `build --no-cache` 7/7 |
-| Controls run | `BIND_ADDR` override removed → 502 and `connection refused`; an image built to contain `.env` → the leak check scores 1 and 1 |
-| Browser | every tab; two orders filled and reconciled to the cent; three backtests ran; every XHR 200 to localhost:8080; no console errors |
-| Cost | **2 narrative generations.** The insights tab fires the narrative from a mount effect, so it cannot be looked at for free |
-| Dev database | restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0 backtests=0`, `historical_prices=3525`. No `insights:*` or `narrative:*` keys |
+| Built and verified | one origin (Caddy serves the bundle and proxies the API), relative URLs so the bundle names no host, `CORS_ALLOWED_ORIGIN`, a healthcheck binary for the distroless images, `TRUSTED_PROXIES`, the production overlay, `infra/deploy/*`, `docs/DEPLOYMENT.md` |
+| **Blocked** | provisioning. No AWS account. Creating one is not something I can do |
+| Backend | `make vet` clean, `make test` green, `make test-integration` **63/0**, `GOWORK=off` **8/8** (the healthcheck module is the eighth) |
+| Mutations | `clientip.go`: **10 run, 10 killed** |
+| Cost | **$0.00** |
+| Dev database | restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0 backtests=0`, `historical_prices=3525` |
 | Local processes | none. Two containers, Postgres and Redis |
 
 ---
 
-## What Step 25 did, and what it deliberately did not
+## What Step 26 did
 
-**The step found a defect in itself that would have shipped.** The first compose built its
-connection string from `POSTGRES_DB`, which names the database the postgres image creates at first
-boot — here `quantsim`, an empty decoy. Everything passed anyway: the migrate one-shot created the
-schema in the decoy on demand, so `/healthz` was 200, registration 201, the order filled at the
-right price. Only `GET /insights/portfolio` noticed, with a 404, because it is the only endpoint
-that needs data which was supposed to already exist. Fixed with `POSTGRES_APP_DB`, defaulting to
-`postgres`.
+**One origin.** Caddy serves the compiled bundle and proxies `/auth`, `/market-data`, `/trading`,
+`/backtests` and `/insights` to the gateway, in **both** environments. Two of Step 25's three
+blockers were consequences of having two origins and stopped existing rather than being solved:
+the bundle now contains no API host, and nothing crosses origins.
 
-**`make docker-up` still starts exactly Postgres and Redis**, because the app services sit behind
-compose's `app` profile. The `go run` loop is untouched and a check guards it. `make docker-down`
-*did* have to change: compose's `down` ignores inactive profiles, and the containers it strands
-break the next `stack-up` with `network <hash> not found`.
+**And it broke the rate limiter, silently.** `clientIP` reads `r.RemoteAddr` and deliberately
+nothing else. With a proxy in front that is the proxy's address on every request, so the per-IP
+limiter works perfectly on **one key for the entire internet** — 100 requests per 15 minutes
+shared by everybody. `TRUSTED_PROXIES` is empty by default and, when the peer is trusted, the
+client is the **rightmost** `X-Forwarded-For` entry: the only one a client cannot forge. Measured
+with a control that reproduces the shared bucket exactly.
 
-**Left for deployment, on purpose.** `allowedOrigin` is still a compile-time constant naming
-`http://localhost:5173`. `VITE_API_BASE_URL` is baked into the bundle at build time, so changing
-the API host means rebuilding the image — image and environment are not separable yet. Secrets
-still come from a `.env` on disk. And nothing restarts a hung service: `restart: unless-stopped`
-covers a crash, and distroless means no in-container healthcheck to notice a process that is up
-and answering nothing.
+**Healthchecks exist now**, via a tiny binary copied into every distroless image. Visibility, not
+recovery: Docker does not restart an unhealthy container.
 
 ---
 
 ## What to do next
 
-**1. Cloud deployment** (AWS free tier: EC2 + docker-compose; Redis stays containerized,
-ElastiCache has no free tier). The images exist and the stack runs; what deployment has to decide
-is the three things above. The CORS constant and the baked API URL are really one question, and
-serving the frontend and the API from a single origin behind one proxy would delete both.
+**1. Provision the instance.** `docs/DEPLOYMENT.md` is the runbook end to end. The short version:
+create the AWS account and an IAM user, `aws configure` (Khalil types the keys), t3.micro with
+**swap allocated first**, a security group of 22/80/443 and nothing else, an Elastic IP, an A
+record for `quantsim` at `khalilpeguero.me`'s DNS, secrets into SSM, then
+`infra/deploy/deploy.sh`. The domain question is settled: the apex keeps serving GitHub Pages and
+the subdomain is a separate record.
 
-**2. `docs/deferred-tuning.md`** — timeouts and pool sizes deliberately left unset because the
-right values need traffic shape. Still blocked until something is actually deployed.
+**2. Nothing restarts a hung service.** `restart: unless-stopped` covers a crash; the healthchecks
+report a hang and Docker does not act on it. Worth choosing a watchdog after something has
+actually hung rather than before.
 
-**3. Consolidate the four Redis client construction sites.** `ai-insights` and `trading-engine`
+**3. No automated backups.** Losing the instance loses the database. `pg_dump` is in the runbook
+and is manual. Restore from one deliberately, before it matters.
+
+**4. Consolidate the four Redis client construction sites.** `ai-insights` and `trading-engine`
 set `ContextTimeoutEnabled`; **`auth` and `market-data` do not**, so `context.WithTimeout` around
-their Redis calls does nothing and each waits its own `ReadTimeout`. That is the defect that cost
-6.05s in Step 21, latent in two services. Its own step, because it touches auth's token revocation
-path. Found in Step 24's survey, untouched by Step 25.
+their Redis calls does nothing. The defect that cost 6.05s in Step 21, latent in two services.
+Its own step, because it touches auth's token revocation path. Untouched by Steps 25 and 26.
 
-**4. The long-standing small items.**
+**5. `docs/deferred-tuning.md`** — still blocked until something is deployed and has traffic.
+
+**6. The long-standing small items.**
 
 - **The frontend hooks have no tests at all.** `use-narrative`'s double-spend guard protects a
-  billed call, and it broke in Step 22 without a single test noticing. Needs `renderHook`;
+  billed call and broke in Step 22 without a single test noticing. Needs `renderHook`;
   `@testing-library/react` is installed and still unused.
 - `market-data`'s store still has no tests (`historical_price_store.go`). The integration harness
-  is still in **three** copies; Step 25 added no `integration/` package, so
-  `docs/TESTING_STRUCTURE.md` §6a's extraction trigger is **still unfired**.
+  is still in **three** copies; `docs/TESTING_STRUCTURE.md` §6a's extraction trigger is **still
+  unfired**.
 
-**5. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is
-the cheap one left and gets more expensive as accounts accumulate. Item **3** (Argon2id) is next
-substantive and wants its own step, since it carries a migration strategy.
-
-**6. Worth considering, not scheduled: cache histories by symbol rather than reports by user.**
-The report math is ~25µs; essentially the entire cost the report cache avoids is HTTP, most of it
-per-symbol history identical for every user. It is a rewrite of `ai-insights` SPEC §2.8, so it
-wants a real reason before anyone starts.
+**7. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is
+the cheap one left. Item **3** (Argon2id) wants its own step, since it carries a migration.
 
 ---
 
 ## Restarting the environment
 
-Two ways, and they publish the same ports, so run one or the other.
+Two ways, and they publish the same port, so run one or the other.
 
 **Everything in containers.** Needs only Docker and a `.env`:
 
 ```bash
 make stack-up             # builds and starts all 9 containers
-make stack-logs           # follow everything
-make stack-down           # stop it all
+make stack-logs
+make stack-down
 ```
 
-Then http://localhost:5173. Only the gateway (8080) and the frontend (5173) are published.
+Then http://localhost:5173. **Only 5173 is published** (plus Postgres and Redis on loopback):
+Caddy proxies the API, so the gateway is not reachable from the host at all.
 
-**Services on the host** — the development loop, since a code change is one restart away:
+**Services on the host** — the development loop:
 
 ```bash
 make docker-up            # Postgres + Redis only
@@ -113,7 +108,7 @@ make run-trading-engine   # :8083
 make run-backtesting      # :8084
 make run-ai-insights      # :8085
 make run-gateway          # :8080
-make run-frontend         # :5173
+make run-frontend         # :5173, and it proxies the API to :8080
 ```
 
 Each `run-*` target runs in the foreground, so they need separate terminals.
@@ -124,26 +119,60 @@ and the narrative endpoint returns 200 with `narrative: null`. `ANTHROPIC_MODEL`
 
 **Without `REDIS_URL` the narrative endpoint returns nothing, deliberately.** No Redis means no
 cache *and* no generation counter, and uncached plus uncapped is the one combination with no cost
-ceiling. The report endpoint still works.
-
-**`REDIS_URL` reaches trading-engine too, and it is optional there** (Step 24). With it, a fill
-deletes the placing user's cached report. Without it, orders place exactly as before and that
-report can lag the trade by up to five minutes. The container stack sets it.
+ceiling. The report endpoint still works. `REDIS_URL` also reaches trading-engine, where it is
+optional and buys Step 24's report invalidation on a fill.
 
 Auth rate limiting is **on by default** (100 requests / 15 min per IP; backoff after 5 consecutive
-failed logins). `RATE_LIMIT_ENABLED=false` turns it off. `services/auth` requires `REDIS_URL` to
-boot. **Do not put `PORT=` in `.env`** — the Makefile exports that file to every target.
+failed logins). `RATE_LIMIT_ENABLED=false` turns it off. **Do not put `PORT=` in `.env`** — the
+Makefile exports that file to every target.
 
 **Register a fresh password with something that isn't your username, email, or "quantsim."**
 Registration also requires a `username`.
 
-**The `migrate` CLI is installed to `$(go env GOPATH)/bin`, not on the default `PATH`** — and is
-no longer needed at all for the container stack, which runs migrations as a one-shot. Step 25
-added no migration; the schema is still at version 9.
+**The `migrate` CLI** is not needed for the container stack, which runs migrations as a one-shot.
+The schema is still at version 9.
 
 ---
 
 ## Things that will trip you up
+
+**Do not put a second proxy in front of Caddy** — an ALB, Cloudflare, anything — without
+revisiting `services/gateway/internal/middleware/clientip.go`. The rightmost `X-Forwarded-For`
+entry stops being the client and becomes the inner proxy, and the per-IP limiter goes back to one
+shared bucket for everybody. Nothing fails; it just stops protecting anyone.
+
+**`no-new-privileges` and file capabilities are mutually exclusive.** Any image whose binary
+carries `setcap` capabilities crash-loops under it with `exec ...: operation not permitted`, which
+names neither the cause nor the fix. Strip the capability, do not drop the sandbox.
+
+**`!reset` on a list in a compose overlay removes the key AND the entries under it.** It looks
+like the way to replace an appended list and silently produces nothing. `!override` is the tag
+that replaces.
+
+**A healthcheck pinned to a port that moves between environments is worse than none.** It reports
+unhealthy forever and buries every real failure in the noise. The frontend's lives on an internal
+`:5199` for exactly that reason.
+
+**`/backtests` has to be listed twice** in both the Caddyfile and the Vite proxy, bare and
+prefixed. The collection is requested at exactly that path and a prefix pattern does not match it.
+
+**A stack pointed at the wrong database looks completely healthy.** Migrations that run
+automatically create the schema wherever they are aimed, so registration returns 201 and orders
+fill against an empty database. `POSTGRES_APP_DB` names the right one; `POSTGRES_DB` is an empty
+decoy called `quantsim`.
+
+**`docker compose down` does not stop services behind a profile.** The containers it leaves hold a
+reference to the network it removed, and the next `stack-up` fails with `network <hash> not
+found`. `make docker-down` now takes down every profile.
+
+**Right after `make stack-up` the first price request can 404.** `price:{symbol}` carries roughly
+a 40-second TTL and market-data repopulates it on a loop.
+
+**A user that has run a backtest cannot be deleted by the obvious five deletes.**
+`backtests_user_id_fkey` rolls the whole transaction back, and it reads as "nothing happened".
+
+**Opening the insights tab spends money.** The narrative fires from a mount effect, not a button.
+
 
 **A stack pointed at the wrong database looks completely healthy.** Step 25's own defect.
 Migrations that run automatically will create the schema wherever they are aimed, so registration

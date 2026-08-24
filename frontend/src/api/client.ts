@@ -44,9 +44,28 @@ import type {
   TokenPair,
 } from './types'
 
-const BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
-).replace(/\/+$/, '')
+/**
+ * Empty by default, which makes every request relative and therefore
+ * same-origin. That is not a placeholder: Step 26 puts Caddy in front, serving
+ * this bundle and proxying the API under one origin, so there is no host to
+ * name and nothing to configure per environment.
+ *
+ * WHY it is not a build-time variable any more. Vite substitutes
+ * import.meta.env.* at build time, so a value here is compiled into the
+ * bundle and the image and its environment become welded together -- every
+ * host change is a rebuild, and setting the variable on a running container
+ * does nothing while looking exactly like it should work.
+ *
+ * The variable survives as an escape hatch for pointing a local frontend at a
+ * remote API. It is not how anything is deployed. Note that `??` falls back
+ * only on null/undefined, so setting it to the empty string is the same as
+ * leaving it unset here -- which is the behaviour we want, unlike before,
+ * when empty silently produced a same-origin base nobody asked for.
+ *
+ * The dev server proxies the same prefixes (see vite.config.ts), so
+ * `npm run dev` is same-origin too.
+ */
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
 
 /**
  * Upper bound on any single request. Without this a hung gateway leaves a

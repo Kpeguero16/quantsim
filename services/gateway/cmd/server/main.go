@@ -16,10 +16,19 @@ import (
 	"github.com/kpeguero/quantsim/services/gateway/internal/proxy"
 )
 
-// allowedOrigin is the Vite dev server. Hardcoded rather than env-driven:
-// Phase 1 has exactly one frontend origin, and a CORS origin is not a knob
-// worth exposing before something needs to turn it.
-const allowedOrigin = "http://localhost:5173"
+// defaultAllowedOrigin is the Vite dev server, and it is now only the default.
+//
+// It was a constant, with a comment saying a CORS origin is not a knob worth
+// exposing "before something needs to turn it". Step 26 is that something: the
+// deployed frontend is served from a real domain, and a service whose code
+// names http://localhost:5173 in production is wrong in a way that will cost
+// somebody an afternoon.
+//
+// Note that after Step 26 nothing crosses origins in normal operation --
+// Caddy serves the bundle and the API from one origin, so the browser never
+// makes a cross-origin request. This still has to be right, because the
+// middleware is what would REFUSE a real one.
+const defaultAllowedOrigin = "http://localhost:5173"
 
 // readHeaderTimeout bounds how long a client may take to send its request
 // headers. The gateway is the only service meant to accept outside
@@ -94,6 +103,7 @@ func main() {
 		go rateLimit.Backoff.Run(ctx, evictInterval)
 	}
 
+	allowedOrigin := envOrDefault("CORS_ALLOWED_ORIGIN", defaultAllowedOrigin)
 	router := handler.NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy, insightsProxy, []byte(jwtSecret), allowedOrigin, rateLimit)
 
 	addr := bindAddr + ":" + port
@@ -130,6 +140,15 @@ func rateLimitConfig() handler.RateLimitConfig {
 		return handler.RateLimitConfig{Enabled: false}
 	}
 
+	trusted := mustParseTrustedProxies("TRUSTED_PROXIES", os.Getenv("TRUSTED_PROXIES"))
+	if trusted.Empty() {
+		log.Print("gateway: TRUSTED_PROXIES is unset -- the per-IP limiter keys on the connection address, " +
+			"which is correct with nothing in front of this service and WRONG behind a proxy, where every " +
+			"client would share one budget")
+	} else {
+		log.Printf("gateway: trusting X-Forwarded-For from %s (one hop)", os.Getenv("TRUSTED_PROXIES"))
+	}
+
 	ipLimit := mustParsePositiveInt("RATE_LIMIT_IP_REQUESTS", envOrDefault("RATE_LIMIT_IP_REQUESTS", "100"))
 	ipWindow := mustParsePositiveDuration("RATE_LIMIT_IP_WINDOW", envOrDefault("RATE_LIMIT_IP_WINDOW", "15m"))
 	loginFailures := mustParsePositiveInt("RATE_LIMIT_LOGIN_FAILURES", envOrDefault("RATE_LIMIT_LOGIN_FAILURES", "5"))
@@ -139,10 +158,11 @@ func rateLimitConfig() handler.RateLimitConfig {
 		ipLimit, ipWindow, loginFailures, maxBackoff)
 
 	return handler.RateLimitConfig{
-		Enabled:  true,
-		Store:    limiter.NewMemoryStore(time.Now),
-		IPLimit:  ipLimit,
-		IPWindow: ipWindow,
+		Enabled:        true,
+		Store:          limiter.NewMemoryStore(time.Now),
+		IPLimit:        ipLimit,
+		IPWindow:       ipWindow,
+		TrustedProxies: trusted,
 		Backoff: limiter.NewBackoff(time.Now, limiter.BackoffConfig{
 			// FreeFailures is one less than the configured threshold: the
 			// knob names the failure that opens the first window, and the
@@ -159,6 +179,21 @@ func rateLimitConfig() handler.RateLimitConfig {
 // A limit of 0 would refuse every authentication request -- an outage caused
 // by a typo in an env var, which is worth failing loudly at boot instead of
 // discovering when nobody can log in.
+// mustParseTrustedProxies refuses a malformed list at boot rather than
+// treating it as "trust nothing".
+//
+// Those two are indistinguishable from the outside: both leave the limiter
+// keying on the connection address, and behind a proxy that means one shared
+// budget for the internet. A typo in this variable would be a rate limiter
+// that looks enabled, logs that it is enabled, and protects nobody.
+func mustParseTrustedProxies(name, raw string) middleware.TrustedProxies {
+	trusted, err := middleware.ParseTrustedProxies(raw)
+	if err != nil {
+		log.Fatalf("invalid %s: %v", name, err)
+	}
+	return trusted
+}
+
 func mustParsePositiveInt(name, raw string) int {
 	v, err := strconv.Atoi(raw)
 	if err != nil {

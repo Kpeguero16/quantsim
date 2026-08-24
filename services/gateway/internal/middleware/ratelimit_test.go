@@ -23,7 +23,7 @@ func newIPLimiter(t *testing.T) http.Handler {
 	t.Helper()
 	store := limiter.NewMemoryStore(time.Now)
 	var called bool
-	return middleware.RateLimitByIP(store, ipLimit, ipWindow)(recorder(&called))
+	return middleware.RateLimitByIP(store, ipLimit, ipWindow, middleware.TrustedProxies{})(recorder(&called))
 }
 
 // loginRequest builds a POST /auth/login arriving from remoteAddr.

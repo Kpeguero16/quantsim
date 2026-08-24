@@ -5,7 +5,7 @@ export
 
 # GO_MODULES is every module in the workspace. Kept in one place so a new
 # service is added to test and vet by editing a single line.
-GO_MODULES := pkg services/auth services/gateway services/market-data services/trading-engine services/backtesting services/ai-insights
+GO_MODULES := pkg infra/docker/healthcheck services/auth services/gateway services/market-data services/trading-engine services/backtesting services/ai-insights
 
 help:
 	@echo "QuantSim targets:"
