@@ -1,5 +1,18 @@
-# QuantSim — Postgres and Redis for local development.
-# Run from repo root: docker compose up -d (or make docker-up)
+# QuantSim — Postgres and Redis for local development, and the whole stack
+# behind the "app" profile.
+#
+# Two ways to run, and they must not collide:
+#
+#   docker compose up -d                    datastores only. The daily loop:
+#                                           Postgres and Redis in Docker, the
+#                                           services with `go run` so a code
+#                                           change is one restart away.
+#   docker compose --profile app up -d      everything, containerised.
+#
+# The app services sit behind a profile precisely so the first command keeps
+# meaning what it has always meant. Without that, `make docker-up` would start
+# seven containers and then host processes would race them for 8080-8085.
+# pgAdmin already uses the same mechanism (the "tools" profile) below.
 #
 # Every published port is bound to 127.0.0.1 on purpose. Docker publishes
 # ports by writing NAT rules that bypass the host firewall, so "0.0.0.0:6379"
@@ -7,6 +20,72 @@
 # and Redis here has no password at all. The Go services bind to loopback for
 # the same reason (see BIND_ADDR in .env.example); leaving the datastores
 # behind them exposed would defeat that entirely.
+#
+# Under the app profile only the gateway (8080) and the frontend (5173) are
+# published. auth, market-data, trading-engine, backtesting and ai-insights
+# are reachable only from the compose network, which is a stronger boundary
+# than they have under `make run-*`, where they sit on the host's loopback.
+
+# The connection strings the containers use. These deliberately do NOT come
+# from .env: the URLs in that file name `localhost`, which is correct for
+# `make run-*` and wrong inside a container, where the hosts are the compose
+# service names. Only the portable half -- the credentials -- is read from
+# .env, so neither set of values can drift into the other.
+#
+# The database name is POSTGRES_APP_DB and NOT POSTGRES_DB, and that is the
+# single most important line in this file.
+#
+# POSTGRES_DB names the database the postgres image creates at first boot.
+# In this project it is `quantsim`, which is an EMPTY DECOY -- the application
+# lives in the database named `postgres`, which is what DATABASE_URL has always
+# said. README.md and docs/PHASE2_CHECKLIST.md both record this on purpose.
+#
+# Deriving the container URL from POSTGRES_DB therefore points the whole stack
+# at the wrong database, and it does not look like a failure: the migrate
+# one-shot obligingly creates the schema there, registration returns 201,
+# orders fill, and only a report that needs pre-existing bars gives it away.
+# Measured, not imagined -- it is what the first run of this file did.
+#
+# The default is `postgres` because that is what both .env and .env.example
+# name in DATABASE_URL. Set POSTGRES_APP_DB only if you move the application
+# to a differently-named database, and change DATABASE_URL to match.
+#
+# POSTGRES_PASSWORD is interpolated into a URL here. A password containing
+# @ : / or # will produce a connection string that parses wrong or not at all.
+# See the note in .env.example where the password is set.
+x-database-url: &database-url "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_APP_DB:-postgres}?sslmode=disable"
+x-redis-url: &redis-url "redis://redis:6379/0"
+
+# What every Go service shares.
+#
+# BIND_ADDR is the one that matters. Every service defaults it to 127.0.0.1,
+# and .env sets it there too, both on purpose: auth and market-data have no
+# authentication of their own and expect the gateway in front of them. Inside
+# a container 127.0.0.1 is the container's OWN loopback, so a service bound
+# there is reachable by nothing, including the gateway on this network. The
+# symptom is `connection refused` from the gateway while the service happily
+# logs that it is listening. This is the case .env.example's comment carves
+# out: 0.0.0.0 only behind a real network boundary. The boundary is the ports
+# section above -- these services publish nothing.
+#
+# read_only holds because the services write no files. It is a constraint
+# rather than decoration, and it is verified rather than assumed.
+#
+# depends_on names migrations and nothing else. Redis needs no ordering: every
+# client connects lazily and the first request is a human away, long after a
+# container that reports healthy in under a second.
+x-go-service: &go-service
+  profiles:
+    - app
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
 
 services:
   postgres:
@@ -54,6 +133,209 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # --- the app profile -----------------------------------------------------
+
+  # Migrations, as a one-shot every service waits on.
+  #
+  # This removes the golang-migrate CLI from the prerequisites for running the
+  # stack, and it makes "code newer than schema" impossible to start with,
+  # rather than something discovered as a 500 from a missing column.
+  #
+  # `up` on an already-migrated database is a no-op, so restarts are free. A
+  # DIRTY migration state fails this container and therefore stops every
+  # service that waits on it, which is the right outcome: the alternative is
+  # six services starting against a half-applied schema.
+  #
+  # `make migrate-up` on the host is unchanged and still serves the `go run`
+  # loop. Two paths to the same migrations is a small cost; the alternative is
+  # worse in both directions.
+  migrate:
+    image: migrate/migrate:v4.19.0
+    container_name: quantsim-migrate
+    profiles:
+      - app
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./infra/migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_APP_DB:-postgres}?sslmode=disable
+      - up
+
+  auth:
+    <<: *go-service
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: auth
+    image: quantsim-auth
+    container_name: quantsim-auth
+    environment:
+      DATABASE_URL: *database-url
+      REDIS_URL: *redis-url
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: "8081"
+      BIND_ADDR: 0.0.0.0
+
+  # The only service that gets the Alpaca credentials. Under `make run-*` the
+  # Makefile exports all of .env to every process, so the gateway holds
+  # ALPACA_API_SECRET it will never use. Splitting it here costs nothing.
+  market-data:
+    <<: *go-service
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: market-data
+    image: quantsim-market-data
+    container_name: quantsim-market-data
+    environment:
+      DATABASE_URL: *database-url
+      REDIS_URL: *redis-url
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
+      PORT: "8082"
+      BIND_ADDR: 0.0.0.0
+
+  # REDIS_URL here is Step 24: a fill deletes the placing user's cached report
+  # so GET /insights/portfolio reflects the trade they just made. It is
+  # optional and orders place without it -- which is exactly why it is set
+  # explicitly, because a deployment that omits it reintroduces that defect
+  # silently.
+  trading-engine:
+    <<: *go-service
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: trading-engine
+    image: quantsim-trading-engine
+    container_name: quantsim-trading-engine
+    environment:
+      DATABASE_URL: *database-url
+      REDIS_URL: *redis-url
+      JWT_SECRET: ${JWT_SECRET}
+      MARKET_DATA_SERVICE_URL: http://market-data:8082
+      PORT: "8083"
+      BIND_ADDR: 0.0.0.0
+
+  backtesting:
+    <<: *go-service
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: backtesting
+    image: quantsim-backtesting
+    container_name: quantsim-backtesting
+    environment:
+      DATABASE_URL: *database-url
+      JWT_SECRET: ${JWT_SECRET}
+      MARKET_DATA_SERVICE_URL: http://market-data:8082
+      PORT: "8084"
+      BIND_ADDR: 0.0.0.0
+
+  # No DATABASE_URL: this service owns no tables. The only container holding
+  # the Anthropic key, and both of its variables are optional -- without them
+  # the report endpoint is unaffected and the narrative endpoint returns 200
+  # with narrative: null.
+  ai-insights:
+    <<: *go-service
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: ai-insights
+    image: quantsim-ai-insights
+    container_name: quantsim-ai-insights
+    environment:
+      REDIS_URL: *redis-url
+      JWT_SECRET: ${JWT_SECRET}
+      TRADING_ENGINE_SERVICE_URL: http://trading-engine:8083
+      MARKET_DATA_SERVICE_URL: http://market-data:8082
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      PORT: "8085"
+      BIND_ADDR: 0.0.0.0
+
+  # The only API port published. Every RATE_LIMIT_* knob has a working default
+  # in the gateway itself and treats empty as unset, so passing them through
+  # unset leaves the Go defaults in charge rather than duplicating them here.
+  gateway:
+    <<: *go-service
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: gateway
+    image: quantsim-gateway
+    container_name: quantsim-gateway
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_SERVICE_URL: http://auth:8081
+      MARKET_DATA_SERVICE_URL: http://market-data:8082
+      TRADING_ENGINE_SERVICE_URL: http://trading-engine:8083
+      BACKTESTING_SERVICE_URL: http://backtesting:8084
+      INSIGHTS_SERVICE_URL: http://ai-insights:8085
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-}
+      RATE_LIMIT_IP_REQUESTS: ${RATE_LIMIT_IP_REQUESTS:-}
+      RATE_LIMIT_IP_WINDOW: ${RATE_LIMIT_IP_WINDOW:-}
+      RATE_LIMIT_LOGIN_FAILURES: ${RATE_LIMIT_LOGIN_FAILURES:-}
+      RATE_LIMIT_LOGIN_MAX_BACKOFF: ${RATE_LIMIT_LOGIN_MAX_BACKOFF:-}
+      PORT: "8080"
+      BIND_ADDR: 0.0.0.0
+
+  # Static bundle behind nginx, on 5173 rather than 80.
+  #
+  # That port is not aesthetic. The gateway's allowed CORS origin is the
+  # compile-time constant "http://localhost:5173", so serving this anywhere
+  # else makes every API call fail preflight -- which reads as a broken
+  # gateway rather than a moved port. Keeping the port keeps the constant true
+  # and keeps this a packaging change.
+  #
+  # VITE_API_BASE_URL is a BUILD argument, not a runtime one: Vite substitutes
+  # it into the bundle at `npm run build`, so setting it on a running container
+  # does nothing at all while looking like it should. Left unset here because
+  # the compiled default, http://localhost:8080, is already right for a
+  # gateway published on the host's loopback.
+  frontend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    image: quantsim-frontend
+    container_name: quantsim-frontend
+    profiles:
+      - app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5173:5173"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # nginx writes its pid and its proxy/fastcgi caches. tmpfs keeps the root
+    # filesystem read-only without giving it a writable layer.
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    depends_on:
+      - gateway
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5173/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
 volumes:
   quantsim_pgdata:

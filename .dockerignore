@@ -1,0 +1,32 @@
+# QuantSim -- Docker build context.
+#
+# Deny-by-default, then name what the builds actually need. The usual shape is
+# the other way round (list what to exclude), and it fails open: anything new
+# at the repo root is in the context until somebody remembers to add a line.
+# This repo is public and the thing most worth keeping out of an image layer is
+# .env, so the default is "not included" and additions are deliberate.
+#
+# Two entries below are load-bearing rather than tidy:
+#
+#   .env       -- credentials. A `COPY . .` in any future Dockerfile would bake
+#                 them into a layer that survives deleting the file.
+#   go.work    -- with it present, the build silently uses the workspace, and
+#                 the image builds fine while `GOWORK=off go build ./...` is the
+#                 only thing keeping a clean clone honest. The builder also sets
+#                 GOWORK=off, because this file can be loosened by accident and
+#                 that environment variable cannot.
+#
+# Neither is re-included below. Do not add them.
+
+*
+
+!pkg/
+!services/
+!frontend/
+!infra/docker/
+
+# Inside what we did include.
+frontend/node_modules/
+frontend/dist/
+**/*_test.go
+**/testdata/

@@ -31,6 +31,32 @@ For a detailed, checkpointed history of what's shipped, see `docs/PHASE1_CHECKLI
 
 # Local Development
 
+There are two ways to run QuantSim, and they publish the same ports, so pick one:
+
+| | |
+|---|---|
+| **The whole stack in Docker** — one command, nothing to install but Docker | [jump](#run-the-whole-stack-in-docker) |
+| **Services on the host** — Postgres and Redis in Docker, the Go services under `go run`. A code change is one restart away, which is why this is the development loop | [jump](#run-the-services-on-the-host) |
+
+## Run the whole stack in Docker
+
+Needs only Docker and a `.env`. No Go toolchain, no Node, no `migrate` CLI: migrations run as a one-shot container that every service waits on.
+
+```bash
+cp .env.example .env        # fill in real values (DB password, JWT secret, Alpaca keys)
+make stack-up               # build the images and start everything
+```
+
+Then open **http://localhost:5173**. `make stack-logs` follows every service, `make stack-down` stops it all.
+
+Only the gateway (8080) and the frontend (5173) are published, both on 127.0.0.1. auth, market-data, trading-engine, backtesting and ai-insights are reachable only from the compose network.
+
+**`make docker-up` still starts Postgres and Redis and nothing else.** The application services sit behind compose's `app` profile precisely so that stays true.
+
+**If a report says no historical data is available, check `POSTGRES_APP_DB`.** The container stack builds its own connection string and takes the database name from that variable, defaulting to `postgres`. Pointed at the wrong database it does not look broken — migrations create the schema wherever they land, so registration and orders both succeed and only a report that needs pre-existing bars gives it away. See the note in `.env.example`.
+
+## Run the services on the host
+
 ### Prerequisites
 - Go 1.25+
 - Node 18+
@@ -81,6 +107,8 @@ npm run test    # vitest run
 ```bash
 make docker-down      # stop Postgres + Redis
 make docker-ps        # list running containers
+make stack-build      # rebuild the container images without starting anything
+make stack-ps         # list the containerized stack
 make migrate-down     # roll back one migration
 make test-db-drop     # drop the quantsim_test database
 ```

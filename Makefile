@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help docker-up docker-down docker-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway run-trading-engine run-backtesting run-ai-insights run-frontend test test-integration test-all test-db-drop vet
+.PHONY: help docker-up docker-down docker-ps stack-up stack-down stack-build stack-logs stack-ps migrate-up migrate-down migrate-force run-auth run-market-data run-gateway run-trading-engine run-backtesting run-ai-insights run-frontend test test-integration test-all test-db-drop vet
 
 # GO_MODULES is every module in the workspace. Kept in one place so a new
 # service is added to test and vet by editing a single line.
@@ -10,8 +10,14 @@ GO_MODULES := pkg services/auth services/gateway services/market-data services/t
 help:
 	@echo "QuantSim targets:"
 	@echo "  make docker-up       - Start Postgres and Redis (docker compose up -d)"
-	@echo "  make docker-down     - Stop Postgres and Redis"
+	@echo "  make docker-down     - Stop every QuantSim container"
 	@echo "  make docker-ps       - List running containers"
+	@echo ""
+	@echo "  make stack-up        - Run the WHOLE stack in Docker (services + frontend)"
+	@echo "  make stack-down      - Stop it, datastores included"
+	@echo "  make stack-build     - Rebuild the images without starting anything"
+	@echo "  make stack-logs      - Follow every service's logs"
+	@echo "  make stack-ps        - List the stack's containers"
 	@echo "  make migrate-up      - Apply database migrations"
 	@echo "  make migrate-down    - Roll back one migration"
 	@echo "  make migrate-force VERSION=N - Clear dirty state (e.g. VERSION=1 then make migrate-up)"
@@ -32,11 +38,47 @@ help:
 docker-up:
 	docker compose up -d
 
+# Deliberately asymmetric with docker-up, which starts only the datastores.
+#
+# Compose's `down` ignores services whose profile is not active, so a plain
+# `docker compose down` after `make stack-up` leaves seven containers behind
+# holding a reference to the network it just deleted -- and the next stack-up
+# fails with "network <hash> not found", which names nothing that would lead
+# you back here. Measured, not imagined.
+#
+# "Stop what is running" has one obvious meaning and this is it. Nothing is
+# lost by taking down containers that were not up.
 docker-down:
-	docker compose down
+	docker compose --profile app --profile tools down
 
 docker-ps:
 	docker compose ps
+
+# The whole stack in containers, as opposed to docker-up's datastores-only.
+#
+# These are separate targets rather than a flag on docker-up because the two
+# are mutually exclusive in practice: stack-up publishes 8080 and 5173, which
+# is where `make run-gateway` and `make run-frontend` want to listen. Run one
+# or the other, not both.
+#
+# The app services live behind compose's "app" profile precisely so that
+# docker-up above keeps starting exactly two containers. See docker-compose.yml.
+stack-up:
+	docker compose --profile app up -d --build
+
+# Same thing docker-down does, kept because "stack-up / stack-down" is the pair
+# a reader looks for.
+stack-down:
+	docker compose --profile app --profile tools down
+
+stack-build:
+	docker compose --profile app build
+
+stack-logs:
+	docker compose --profile app logs -f
+
+stack-ps:
+	docker compose --profile app ps
 
 migrate-up:
 	migrate -path infra/migrations -database "$$DATABASE_URL" up
