@@ -10,6 +10,47 @@ half-building past it.
 
 ---
 
+## What only you can do, and what I can do for you
+
+Split out because it is the question that actually blocks this, and because
+some of it is blocked on **me** rather than on effort.
+
+### Only you — I cannot do these at all
+
+| | Why |
+|---|---|
+| **Create the AWS account** | Account creation is off-limits to me, whoever asks and however the details are supplied. |
+| **Create the IAM user and its access keys** | Same rule. Do it in the console. |
+| **Run `aws configure`** | You type the keys. They never pass through me, and I will not read them back. |
+| **Type the real secret values** into the `aws ssm put-parameter` commands in §6 | Credentials in plaintext are something I do not handle. Run those lines yourself with the values filled in. |
+| **Add the DNS record** at whatever hosts `khalilpeguero.me` | Not an AWS resource; it lives with your registrar or DNS provider. |
+
+### I can do these once `aws configure` has run, with you confirming each
+
+Launching the instance, the security group, the Elastic IP, allocating swap,
+installing Docker, and running `deploy.sh`. All of it is CLI work.
+
+**I will ask before each step that creates a billable resource or exposes
+something publicly**, and I will tell you what it costs before it exists.
+Approving one is not approving the next.
+
+### What no one has to do by hand
+
+Migrations (a one-shot container every service waits on), certificates (Caddy
+issues and renews them), and building or shipping images (`deploy.sh`).
+
+### The order that matters
+
+1. You: account, IAM user, `aws configure`.
+2. Either of us: instance, swap, Docker, security group, Elastic IP.
+3. You: the DNS record — **before** the first deploy, or Caddy fails to issue
+   a certificate against a name that does not resolve and burns attempts
+   against a rate limit.
+4. You: secrets into SSM.
+5. Either of us: `deploy.sh`, then verify.
+
+---
+
 ## What runs where
 
 ```

@@ -21,11 +21,13 @@ QuantSim is in active development (Phase 4). This section reflects what's actual
 | `services/market-data` | Built — Alpaca ingestion, Redis caching |
 | `services/trading-engine` | Built — market buy/sell orders, positions, portfolio, trade history; frontend dashboard (order ticket, positions, trade/order history) |
 | `services/backtesting` | Built — moving-average-crossover, RSI, and MACD strategies, next-bar-open fills, the five `agents.md` §3 metrics; multi-symbol portfolio runs drawing on one shared pool of capital (1–10 symbols); frontend dashboard tab (strategy form, results, run history) |
-| `services/ai-insights` | Built — `GET /insights/portfolio`: risk (position weights, cash weight, concentration HHI, annualized volatility, max drawdown), benchmarking against buy-and-hold SPY and QQQ, and behavioral findings with the trade IDs that caused them. Every figure is derived from an equity curve reconstructed on demand from the trade log and stored bars, and reconciled against the live account. Deterministic and rule-based — the LLM layer that *phrases* these numbers is a later step |
+| `services/ai-insights` | Built — `GET /insights/portfolio`: risk (position weights, cash weight, concentration HHI, annualized volatility, max drawdown), benchmarking against buy-and-hold SPY and QQQ, and behavioral findings with the trade IDs that caused them. Every figure is derived from an equity curve reconstructed on demand from the trade log and stored bars, and reconciled against the live account. Deterministic and rule-based. `GET /insights/portfolio/narrative` adds a written summary in which **every figure is rendered by Go from the report struct and none is produced by the model** |
+| Containers | Built — the whole stack runs under `make stack-up`: six Go services, the frontend behind Caddy, and a migration one-shot. Distroless, non-root, read-only root filesystems |
+| Deployment | **Ready, not deployed.** One origin over real certificates on a single EC2 instance, with a production compose overlay and a deploy script. Nothing has been provisioned — see `docs/DEPLOYMENT.md` |
 
-Schema is at migration version 9. Auth, trading-engine, and backtesting each have a store-layer integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. The frontend has its own `vitest` suite (61 tests) for validation and error-mapping logic. No CI is wired up yet.
+Schema is at migration version 9. Auth, trading-engine, and backtesting each have a store-layer integration test suite that runs against a real Postgres (`make test-integration`); everything else is unit-tested against in-memory fakes. The frontend has its own `vitest` suite for validation and error-mapping logic. No CI is wired up yet.
 
-For a detailed, checkpointed history of what's shipped, see `docs/PHASE1_CHECKLIST.md`, `docs/PHASE2_CHECKLIST.md`, and `docs/PHASE3_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
+For a detailed, checkpointed history of what's shipped, see `docs/PHASE1_CHECKLIST.md` through `docs/PHASE4_CHECKLIST.md`. For what's next, see `docs/NEXT_SESSION.md`.
 
 ---
 
@@ -51,7 +53,7 @@ Then open **http://localhost:5173**. `make stack-logs` follows every service, `m
 
 **One origin.** Caddy serves the compiled frontend and proxies `/auth`, `/market-data`, `/trading`, `/backtests` and `/insights` to the gateway, so the browser only ever talks to 5173. The bundle contains no API host, and nothing crosses origins. Only 5173 is published (plus Postgres and Redis on loopback for `make test-integration`); the gateway and the five services publish nothing at all.
 
-To deploy this to AWS, see **`docs/DEPLOYMENT.md`**. auth, market-data, trading-engine, backtesting and ai-insights are reachable only from the compose network.
+To deploy this to AWS, see **`docs/DEPLOYMENT.md`** — it opens with what has to be done by hand (AWS account, credentials, DNS, secret values) and what is scripted. auth, market-data, trading-engine, backtesting and ai-insights are reachable only from the compose network.
 
 **`make docker-up` still starts Postgres and Redis and nothing else.** The application services sit behind compose's `app` profile precisely so that stays true.
 

@@ -23,7 +23,7 @@ appended to.
 | Mutations | `clientip.go`: **10 run, 10 killed** |
 | Cost | **$0.00** |
 | Dev database | restored and **verified by query**: `users=20 accounts=20 trades=0 orders=0 positions=0 backtests=0`, `historical_prices=3525` |
-| Local processes | none. Two containers, Postgres and Redis |
+| Local processes | **none, and no containers either.** `make docker-down` was run at the end of the session; the named volumes (`quantsim_pgdata`, `quantsim_redis`) hold the data. `make docker-up` brings the datastores back |
 
 ---
 
@@ -48,12 +48,25 @@ recovery: Docker does not restart an unhealthy container.
 
 ## What to do next
 
-**1. Provision the instance.** `docs/DEPLOYMENT.md` is the runbook end to end. The short version:
-create the AWS account and an IAM user, `aws configure` (Khalil types the keys), t3.micro with
-**swap allocated first**, a security group of 22/80/443 and nothing else, an Elastic IP, an A
-record for `quantsim` at `khalilpeguero.me`'s DNS, secrets into SSM, then
-`infra/deploy/deploy.sh`. The domain question is settled: the apex keeps serving GitHub Pages and
-the subdomain is a separate record.
+**1. Provision the instance.** `docs/DEPLOYMENT.md` is the runbook end to end, and its first
+section — *What only you can do, and what I can do for you* — is the one to read first, because
+part of this is blocked on Claude rather than on effort.
+
+**Khalil has to do, personally:** create the AWS account, create the IAM user and its access keys,
+run `aws configure`, type the real secret values into the `ssm put-parameter` commands, and add
+the DNS A record. Account creation and handling credentials in plaintext are both off-limits to
+Claude regardless of how the request is framed.
+
+**Claude can do, with confirmation at each billable or public step:** launch the instance, the
+security group, the Elastic IP, swap, Docker, and `infra/deploy/deploy.sh`.
+
+**Nobody does by hand:** migrations (a one-shot container every service waits on), certificates
+(Caddy issues and renews), and building or shipping images.
+
+**Order matters in one place:** the DNS record must exist *before* the first deploy, or Caddy
+fails to issue a certificate against a name that does not resolve and burns attempts against
+Let's Encrypt's failure limit. The domain question is settled — the apex keeps serving GitHub
+Pages and `quantsim.khalilpeguero.me` is a separate record.
 
 **2. Nothing restarts a hung service.** `restart: unless-stopped` covers a crash; the healthchecks
 report a hang and Docker does not act on it. Worth choosing a watchdog after something has
