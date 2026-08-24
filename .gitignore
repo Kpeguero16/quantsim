@@ -21,6 +21,12 @@ docs/intent/
 # Go
 # -----------------------------------------------------------------------------
 # Binaries
+#
+# infra/docker/healthcheck builds to a file named after its directory, with no
+# extension, so none of the patterns below catch it. `go build ./...` in that
+# module drops it in the working tree and it was staged once before this line
+# existed.
+/infra/docker/healthcheck/healthcheck
 *.exe
 *.exe~
 *.dll

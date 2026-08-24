@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# QuantSim -- the React bundle, built once and served by nginx.
+# QuantSim -- the React bundle, and the server that fronts the whole stack.
 #
 # Build from the REPO ROOT, like Dockerfile.service, so one .dockerignore
 # governs both:
@@ -17,33 +17,37 @@ RUN npm ci
 
 COPY frontend/ ./
 
-# VITE_API_BASE_URL is baked into the bundle here and cannot be changed later.
-# Vite substitutes import.meta.env.* at build time, so setting this variable on
-# a running container does nothing at all -- while looking exactly like it
-# should work. SPEC.md 2.9.
+# No VITE_API_BASE_URL, and its absence is the point.
 #
-# The `env -u` branch is not defensive noise. The app reads
-#
-#     import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
-#
-# and ?? falls back on null/undefined only. An empty string is neither, so
-# exporting VITE_API_BASE_URL="" would compile the base URL to "" and turn
-# every API call into a same-origin request to the nginx serving this bundle.
-# Unset and empty have to stay different things.
-ARG VITE_API_BASE_URL
-RUN if [ -n "$VITE_API_BASE_URL" ]; then \
-        VITE_API_BASE_URL="$VITE_API_BASE_URL" npm run build; \
-    else \
-        env -u VITE_API_BASE_URL npm run build; \
-    fi
+# Step 25 passed it as a build argument and needed an `env -u` branch, because
+# Vite bakes import.meta.env.* into the bundle and `??` does not fall back on
+# an empty string. Step 26 made the base URL relative, so there is no host to
+# bake and nothing to get wrong. Anything that reintroduces this argument is
+# welding the image to one environment again.
+RUN npm run build
 
-# nginx-unprivileged rather than nginx: it runs as uid 101 with no setuid step,
-# which is what lets the container keep cap_drop: ALL and a read-only root
-# filesystem. Stock nginx drops privileges itself and needs CAP_SETUID to do
-# it.
-FROM nginxinc/nginx-unprivileged:1.29-alpine
+# Caddy, not nginx, and it does both jobs: serves this bundle and proxies the
+# API to the gateway. See infra/docker/Caddyfile for why one server and one hop
+# rather than nginx with Caddy in front of it.
+FROM caddy:2-alpine
 
-COPY infra/docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /src/dist /usr/share/nginx/html
+# Strip the file capability from the binary.
+#
+# caddy ships with cap_net_bind_service=+ep so it can bind 80 and 443 as a
+# non-root user. Combined with no-new-privileges, that makes the binary
+# UNEXECUTABLE: the kernel refuses to exec a file carrying capabilities when
+# NoNewPrivs is set, because granting them would be exactly the escalation the
+# flag exists to prevent. The container crash-loops on
+# `exec /usr/bin/caddy: operation not permitted`, which names neither cause.
+#
+# It is not needed. The Caddyfile puts HTTP and HTTPS on high ports and the
+# host publishes 80 and 443 onto them, so nothing inside this container ever
+# binds a privileged port. Keeping the sandbox and dropping the capability is
+# the right way round; the alternative is dropping no-new-privileges to make an
+# unused privilege work.
+RUN apk add --no-cache libcap     && setcap -r /usr/bin/caddy     && apk del libcap
+
+COPY infra/docker/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /src/dist /usr/share/caddy
 
 EXPOSE 5173

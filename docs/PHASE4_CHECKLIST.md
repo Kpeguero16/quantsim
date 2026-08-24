@@ -812,6 +812,81 @@ Compose's `down` ignores services whose profile is not active. A plain `docker c
 
 ---
 
+## Step 26 — Cloud deployment (readiness; provisioning blocked)
+
+Closes the three things Step 25 named as standing between the stack and a public IP, plus a fourth that turned up on the way. **Provisioning is blocked on an AWS account that does not exist yet**, and the step stops at that line rather than half-building past it. `docs/DEPLOYMENT.md` is the runbook for the session that has one.
+
+### One origin, which deletes two blockers rather than solving them
+
+Caddy serves the compiled bundle and reverse-proxies `/auth`, `/market-data`, `/trading`, `/backtests` and `/insights` to the gateway. Both remaining blockers were consequences of having two origins: with one there is no cross-origin request to allow, and the frontend has no host to name. Fixing them separately would have meant an env-driven CORS origin **and** a runtime config file the app fetches at startup — two mechanisms in place of one that is simply not needed.
+
+The frontend's `BASE_URL` is now `''`, so every request is relative and the bundle contains no host at all. Vite's dev server proxies the same prefixes, so `npm run dev` is same-origin too and the two ways of running the frontend stay interchangeable.
+
+Caddy runs in **both** environments, and the site address is the only difference: `:5173` locally, the domain in production. Caddy issues certificates when the address is a hostname and does not when it is a bare port, which needs no flag. If a route works locally it works deployed, because it is the same server with the same prefixes.
+
+### A proxy in front of the gateway silently breaks its rate limiter
+
+This is the part that would have shipped.
+
+`clientIP` reads `r.RemoteAddr` and deliberately nothing else — `X-Forwarded-For` is client-authored at that hop, and `docs/security-backlog.md` records an earlier claim to the contrary as wrong. Put Caddy in front and `RemoteAddr` is Caddy's address on **every** request. The limiter does not break. It works perfectly, on one key, for everybody: **100 requests per 15 minutes shared by the entire internet**, arriving as "login is broken for everyone" rather than as anything resembling a rate limit.
+
+`TRUSTED_PROXIES` is **empty by default**, so every existing test passes unmodified and a deployment has to opt in. When the peer is trusted the client is the **rightmost** `X-Forwarded-For` entry — the only one a client cannot forge, because the proxy appends the real address to whatever was sent. Leftmost is the reflex, and it reintroduces precisely the bypass the original comment describes.
+
+It is correct for **one** hop and no more, which is why the first draft's nginx-behind-Caddy topology collapsed into Caddy alone before any of it was built.
+
+Measured, with a control:
+
+| | trusted | control: `TRUSTED_PROXIES` empty |
+|---|---|---|
+| client A, after spending its budget | 429 | 429 |
+| client B, having made **no** requests | **401** (its own budget) | **429** |
+
+**10 mutants run, 10 killed.** Two survived the first pass and both were real gaps. One test was passing for the wrong reason entirely: it built `RemoteAddr` by string concatenation, so an unbracketed IPv6 address failed `SplitHostPort`, the port stayed in the limiter key, and every request got its own budget — green, and asserting nothing. An eleventh mutant was equivalent (`netip.Prefix.Contains` already refuses cross-family matches) and the guard it covered was deleted.
+
+### `no-new-privileges` makes a capability-bearing binary unexecutable
+
+`caddy` ships with `cap_net_bind_service=+ep`. The kernel refuses to exec a file carrying capabilities under `NoNewPrivs`, because granting them is exactly the escalation the flag prevents. The container crash-looped on `exec /usr/bin/caddy: operation not permitted`, which names neither cause nor fix.
+
+Resolved by removing the privilege rather than the sandbox: `setcap -r` at build time, and HTTP/HTTPS on high ports inside the container with the host publishing 80 and 443 onto them. Nothing there binds a privileged port now.
+
+### A healthcheck binary, not a flag in six mains
+
+Distroless has no shell, so Step 25 left the images with no `HEALTHCHECK` and `docker compose ps` reporting "Up" for a hung process. The obvious fix is a `-healthcheck` flag in each service's `main.go`: six edits to six files that must stay identical. Instead `infra/docker/healthcheck` is a ~30-line stdlib-only module, built once in the builder stage and copied into every image.
+
+**Visibility, not recovery.** Docker does not restart an unhealthy container — only Swarm and Kubernetes do. What changed is that `docker compose ps` stops saying everything is fine.
+
+### Two overlay traps, both of which produced plausible-looking output
+
+**`!reset` on a list removes the key and discards the entries under it.** Compose appends list entries when merging overlays, so the base file's loopback 5173 binding survives into production pointing at a port Caddy no longer listens on. `!reset` looked like the fix and produced a merged config with **zero** published ports. `!override` is the tag that replaces a list.
+
+**The frontend healthcheck pointed at a port that does not exist in production.** It targeted the site port, which moves to `http_port`/`https_port` the moment `SITE_ADDRESS` is a hostname. The container would have reported unhealthy forever — worse than no healthcheck, since it also hides every real failure. There is now an internal `:5199` listener that never moves.
+
+### Verification
+
+| | |
+|---|---|
+| Journey through one origin | register 201 → login 200 → price 200 → order **filled** 201 → positions 200 → insights **200** → backtests 200, all via 5173 with nothing published on 8080 |
+| Bundle names no host | 0 hits. **Control:** Step 25's bundle scores 1 |
+| Rate limiting behind the proxy | separate budgets; **control** with the proxy untrusted reproduces the shared bucket |
+| Mutations on `clientip.go` | **10 run, 10 killed** |
+| Dev loop | `npm run dev` serves the page and proxies the API to the gateway |
+| CORS | configured origin echoed, a foreign one not; the variable changes what matches |
+| Healthchecks | six healthy; exits 1 on a dead port, 1 on empty `PORT`, 0 in situ |
+| Prod overlay | publishes exactly 80 and 443; datastores loopback; gateway nothing; `/data` a volume |
+| Step 25's checks | all still hold, including `test-integration` **63/0** and `GOWORK=off` **8/8** |
+| Cost | **$0.00.** The narrative endpoint was never called |
+| Dev database | restored and verified: `users=20 accounts=20 trades=0 orders=0 positions=0 backtests=0`, `historical_prices=3525` |
+
+### Things worth knowing
+
+**Do not put a second proxy in front of Caddy** — an ALB, Cloudflare, anything — without revisiting `clientip.go`. The rightmost `X-Forwarded-For` entry stops being the client and becomes the inner proxy. Nothing fails; the limiter just stops protecting anyone.
+
+**`/backtests` needs listing twice** in both the Caddyfile and the Vite proxy, bare and prefixed: the collection is requested at exactly that path and a prefix pattern does not match it.
+
+**The domain question is settled.** `khalilpeguero.me` resolves to GitHub Pages via its apex; `quantsim.khalilpeguero.me` is a separate A record and leaves Pages untouched.
+
+---
+
 ## Still open
 
 - [x] ~~**Insights frontend** — Step 22~~ — done. The percent convention was
@@ -838,12 +913,18 @@ Compose's `down` ignores services whose profile is not active. A plain `docker c
 - [x] ~~**Dockerization**~~ — Step 25. The whole stack runs under
       `make stack-up` with no source changes. The `POSTGRES_DB` trap it found
       is in that entry and is the part worth carrying into deployment.
-- [ ] **Cloud deployment** (AWS free tier). Three things Step 25 left it:
-      `allowedOrigin` is still a compile-time constant, `VITE_API_BASE_URL` is
-      baked into the bundle at build time, and secrets still come from a `.env`
-      on disk. Also nothing restarts a hung service — `restart: unless-stopped`
-      covers a crash, and there is no in-container healthcheck to notice a
-      process that is up and answering nothing.
+- [x] ~~**Deployment readiness**~~ — Step 26. All three of Step 25's blockers
+      are closed, and the rate-limiter defect a proxy would have introduced is
+      closed with them.
+- [ ] **Provision the instance** — BLOCKED on an AWS account. Everything else
+      is built and verified locally; `docs/DEPLOYMENT.md` is the runbook.
+- [ ] **Nothing restarts a hung service.** Step 26's healthchecks report a
+      hang and Docker does not act on one. A watchdog container or a systemd
+      timer is the fix, and it wants choosing after something has actually
+      hung.
+- [ ] **No automated backups.** Losing the instance loses the database.
+      `pg_dump` is in the runbook and is manual; the first restore should be a
+      deliberate exercise rather than an emergency.
 - [ ] **Work through `docs/deferred-tuning.md`** — timeouts, connection
       pooling, and other defaults deliberately left unset because the right
       values depend on traffic shape that only exists once deployed.

@@ -1,0 +1,53 @@
+# QuantSim -- production overlay. Used with the base file, never alone:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app up -d
+#
+# infra/deploy/deploy.sh does that for you.
+#
+# What this changes, and nothing else: the site address becomes a real domain
+# so Caddy issues certificates, 80 and 443 are published on all interfaces,
+# and the certificate store becomes a volume instead of a tmpfs. Routing is
+# identical to local, which is the whole reason the proxy runs locally too --
+# if /insights/portfolio works on a laptop it works here.
+
+services:
+  frontend:
+    environment:
+      # A hostname rather than a bare port, which is what makes Caddy issue a
+      # certificate. DOMAIN comes from .env on the instance.
+      SITE_ADDRESS: ${DOMAIN}
+    # !override, not a plain list. Compose APPENDS list entries when merging
+    # overlays, so without it the loopback 5173 binding from the base file
+    # survives -- pointing at a port Caddy no longer listens on once
+    # SITE_ADDRESS is a hostname. A published port that answers nothing.
+    #
+    # !reset was the first attempt and it silently produced NO ports at all:
+    # it removes the key, and the entries written under it are discarded.
+    ports: !override
+      - "80:5080"
+      - "443:5443"
+    # Inside the container these are still high ports; the privileged ones are
+    # published onto them. That is what lets this image keep cap_drop: ALL and
+    # no-new-privileges, since caddy's cap_net_bind_service is stripped at
+    # build time and nothing here needs it.
+    expose:
+      - "5080"
+      - "5443"
+    volumes:
+      # NOT a tmpfs. Caddy stores issued certificates and account keys here,
+      # and throwing them away on every restart is how you meet Let's Encrypt's
+      # rate limits -- five failures per account per hostname per hour.
+      - quantsim_caddy_data:/data
+    tmpfs: !override
+      - /config
+      - /tmp
+
+  gateway:
+    environment:
+      # Inert while everything is same-origin, and still has to name the real
+      # site: this middleware is what would refuse a genuine cross-origin
+      # request, and one naming localhost in production is just wrong.
+      CORS_ALLOWED_ORIGIN: https://${DOMAIN}
+
+volumes:
+  quantsim_caddy_data:

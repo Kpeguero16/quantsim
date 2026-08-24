@@ -266,6 +266,10 @@ services:
   # The only API port published. Every RATE_LIMIT_* knob has a working default
   # in the gateway itself and treats empty as unset, so passing them through
   # unset leaves the Go defaults in charge rather than duplicating them here.
+  # Publishes NOTHING as of Step 26. The browser reaches the API through the
+  # frontend container, which serves the bundle and proxies these prefixes
+  # under one origin, so the gateway is reachable only from this network --
+  # locally and deployed alike.
   gateway:
     <<: *go-service
     build:
@@ -275,10 +279,22 @@ services:
         SERVICE: gateway
     image: quantsim-gateway
     container_name: quantsim-gateway
-    ports:
-      - "127.0.0.1:8080:8080"
     environment:
       JWT_SECRET: ${JWT_SECRET}
+      # The single most important line here.
+      #
+      # With a proxy in front, r.RemoteAddr is the proxy on every request, so
+      # the per-IP limiter works perfectly on ONE key for everybody -- 100
+      # requests per 15 minutes shared by the entire internet, arriving as
+      # "login is broken" rather than as a rate limit. This names the one hop
+      # whose X-Forwarded-For may be believed.
+      #
+      # It is the frontend's fixed address and not the whole subnet: every
+      # container here is ours, but only one of them is a proxy.
+      TRUSTED_PROXIES: 172.28.0.10/32
+      # Inert while everything is same-origin, and it still has to be right:
+      # this middleware is what would refuse a genuine cross-origin request.
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-http://localhost:5173}
       AUTH_SERVICE_URL: http://auth:8081
       MARKET_DATA_SERVICE_URL: http://market-data:8082
       TRADING_ENGINE_SERVICE_URL: http://trading-engine:8083
@@ -292,25 +308,21 @@ services:
       PORT: "8080"
       BIND_ADDR: 0.0.0.0
 
-  # Static bundle behind nginx, on 5173 rather than 80.
+  # Caddy: the bundle AND the API, under one origin.
   #
-  # That port is not aesthetic. The gateway's allowed CORS origin is the
-  # compile-time constant "http://localhost:5173", so serving this anywhere
-  # else makes every API call fail preflight -- which reads as a broken
-  # gateway rather than a moved port. Keeping the port keeps the constant true
-  # and keeps this a packaging change.
+  # Port 5173 locally because that is where the Vite dev server lives, so the
+  # two ways of running the frontend are interchangeable. The production
+  # overlay changes SITE_ADDRESS to the real domain and Caddy starts issuing
+  # certificates on its own; nothing else about routing changes, which is the
+  # point of proxying locally too rather than only in production.
   #
-  # VITE_API_BASE_URL is a BUILD argument, not a runtime one: Vite substitutes
-  # it into the bundle at `npm run build`, so setting it on a running container
-  # does nothing at all while looking like it should. Left unset here because
-  # the compiled default, http://localhost:8080, is already right for a
-  # gateway published on the host's loopback.
+  # There is no VITE_API_BASE_URL. Step 26 made the app's URLs relative, so
+  # there is no host compiled into the bundle and nothing to set per
+  # environment.
   frontend:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.frontend
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
     image: quantsim-frontend
     container_name: quantsim-frontend
     profiles:
@@ -318,24 +330,46 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:5173:5173"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:5173}
+      GATEWAY_UPSTREAM: gateway:8080
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    # nginx writes its pid and its proxy/fastcgi caches. tmpfs keeps the root
-    # filesystem read-only without giving it a writable layer.
+    # Caddy writes its certificate store and its runtime config. tmpfs keeps
+    # the root filesystem read-only; the production overlay swaps /data for a
+    # real volume, because throwing certificates away on every restart is how
+    # you meet Let's Encrypt's rate limits.
     tmpfs:
-      - /var/cache/nginx
-      - /var/run
+      - /data
+      - /config
       - /tmp
+    networks:
+      default:
+        # Fixed, because the gateway's TRUSTED_PROXIES names this address.
+        # A DHCP-assigned one would change under the feet of a security
+        # control and turn the rate limiter into a single shared bucket
+        # without anything failing.
+        ipv4_address: 172.28.0.10
     depends_on:
       - gateway
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5173/"]
+      # 5199, not the site port: the site port moves when SITE_ADDRESS
+      # becomes a hostname in production. See infra/docker/Caddyfile.
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5199/healthz"]
       interval: 10s
       timeout: 3s
       retries: 3
+
+# A fixed subnet, so the frontend can have a fixed address for TRUSTED_PROXIES
+# above. Docker's default pool is stable in practice and guaranteed nowhere.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
   quantsim_pgdata:

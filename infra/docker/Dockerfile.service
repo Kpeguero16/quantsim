@@ -42,6 +42,13 @@ RUN cd services/${SERVICE} && go mod download
 COPY pkg/ ./pkg/
 COPY services/${SERVICE}/ ./services/${SERVICE}/
 
+# The healthcheck binary, built once here and copied into every service image.
+# Distroless has no shell, so without this there is nothing a HEALTHCHECK can
+# run and `docker compose ps` reports "Up" for a hung process. Stdlib only, so
+# it needs no module download.
+COPY infra/docker/healthcheck/ ./healthcheck/
+RUN cd healthcheck && go build -trimpath -ldflags="-s -w" -o /out/healthcheck .
+
 # -trimpath keeps build-machine paths out of the binary; -s -w drops the symbol
 # table and DWARF, which is most of the size difference and costs a stack trace
 # nothing (panics still carry file and line).
@@ -63,6 +70,13 @@ RUN cd services/${SERVICE} && \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/server /server
+COPY --from=build /out/healthcheck /healthcheck
+
+# Visibility, not recovery: Docker does not restart an unhealthy container.
+# What this changes is that `docker compose ps` stops reporting a hung service
+# as healthy. start-period covers the database connection every service makes
+# before it listens.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3     CMD ["/healthcheck"]
 
 USER nonroot:nonroot
 ENTRYPOINT ["/server"]

@@ -14,5 +14,22 @@ export default defineConfig({
     // failure instead. See SPEC.md 2.4.
     port: 5173,
     strictPort: true,
+    // The API, proxied so `npm run dev` is same-origin exactly like the
+    // deployed stack is. Step 26 moved the app to relative URLs; without this
+    // the dev server would serve the bundle and then 404 every API call
+    // against itself.
+    //
+    // This list is the gateway's routing table and has to match the one in
+    // infra/docker/Caddyfile. A route added to the gateway needs a line in
+    // both, and the failure when it is missing here is a 404 from Vite that
+    // reads like a broken backend.
+    //
+    // /backtests appears twice on purpose: the collection is requested at
+    // exactly that path, and a prefix pattern alone would not match it.
+    proxy: Object.fromEntries(
+      ['/auth', '/market-data', '/trading', '/backtests', '/insights'].map(
+        (prefix) => [prefix, { target: 'http://localhost:8080', changeOrigin: false }],
+      ),
+    ),
   },
 })

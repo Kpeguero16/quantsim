@@ -1,0 +1,84 @@
+# QuantSim -- the only web server, in both environments.
+#
+# It serves the compiled bundle and reverse-proxies the API, so the browser
+# talks to ONE origin. That is what lets the frontend use relative URLs (no
+# host compiled into the bundle) and what makes CORS a non-event rather than a
+# thing to configure per environment.
+#
+# The site address is the only difference between local and deployed:
+#
+#   SITE_ADDRESS=:5173                          local, plain HTTP, no certs
+#   SITE_ADDRESS=quantsim.khalilpeguero.me      deployed, automatic Let's Encrypt
+#
+# Caddy issues certificates when the address is a hostname and does not when it
+# is a bare port, which is exactly the behaviour wanted and needs no flag.
+#
+# There is exactly ONE proxy hop between the browser and the gateway, and that
+# is load-bearing rather than incidental. The gateway's per-IP rate limiter
+# reads the rightmost X-Forwarded-For entry when the peer is trusted, which is
+# the only entry a client cannot forge -- see services/gateway/internal/
+# middleware/clientip.go. Insert a second proxy and the limiter starts keying
+# on the inner one.
+
+{
+	# High ports, so nothing in this container binds a privileged one and the
+	# image can keep cap_drop: ALL and no-new-privileges. The host publishes
+	# 80 and 443 onto these in production. Caddy's ACME HTTP-01 challenge uses
+	# http_port, and a published 80 -> 5080 satisfies it.
+	http_port 5080
+	https_port 5443
+}
+
+# A health listener on a port that never moves.
+#
+# The obvious thing is to healthcheck the site itself, and it breaks the moment
+# SITE_ADDRESS becomes a hostname: Caddy then listens on http_port and
+# https_port, nothing answers on 5173, and the container reports unhealthy
+# forever. A healthcheck that always fails is worse than no healthcheck,
+# because it also makes every real failure invisible.
+#
+# Internal only -- never published, in either environment.
+:5199 {
+	respond /healthz 200
+	respond 404
+}
+
+{$SITE_ADDRESS} {
+	encode gzip
+
+	# The gateway's routing table. This list must match the dev server's in
+	# frontend/vite.config.ts; a route added to the gateway needs a line in
+	# both.
+	#
+	# /backtests is listed twice because the collection is requested at
+	# exactly that path and `/backtests/*` does not match it. Without the bare
+	# entry the backtest tab 404s against the static file server, which reads
+	# as a broken backtesting service.
+	@api path /auth/* /market-data/* /trading/* /backtests /backtests/* /insights/*
+	handle @api {
+		reverse_proxy {$GATEWAY_UPSTREAM:gateway:8080}
+	}
+
+	handle {
+		root * /usr/share/caddy
+		file_server
+
+		# No SPA fallback, on purpose. App.tsx records that react-router-dom
+		# was deliberately not added, so there are no client-side routes and
+		# nothing to fall back for. Rewriting misses to index.html would turn
+		# every typo and every stale bookmark into a silent index page.
+	}
+
+	# Vite fingerprints these filenames, so a changed file is a changed URL.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	# The one file that is not fingerprinted, and therefore the one that must
+	# never be cached: it is what points at the current bundle.
+	header /index.html Cache-Control "no-cache"
+
+	# Ignored by browsers over plain HTTP, so this is inert locally and real
+	# once the site address is a hostname. Without it the first request of a
+	# session is still plaintext even though everything after it is not.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}

@@ -49,7 +49,9 @@ make stack-up               # build the images and start everything
 
 Then open **http://localhost:5173**. `make stack-logs` follows every service, `make stack-down` stops it all.
 
-Only the gateway (8080) and the frontend (5173) are published, both on 127.0.0.1. auth, market-data, trading-engine, backtesting and ai-insights are reachable only from the compose network.
+**One origin.** Caddy serves the compiled frontend and proxies `/auth`, `/market-data`, `/trading`, `/backtests` and `/insights` to the gateway, so the browser only ever talks to 5173. The bundle contains no API host, and nothing crosses origins. Only 5173 is published (plus Postgres and Redis on loopback for `make test-integration`); the gateway and the five services publish nothing at all.
+
+To deploy this to AWS, see **`docs/DEPLOYMENT.md`**. auth, market-data, trading-engine, backtesting and ai-insights are reachable only from the compose network.
 
 **`make docker-up` still starts Postgres and Redis and nothing else.** The application services sit behind compose's `app` profile precisely so that stays true.
 

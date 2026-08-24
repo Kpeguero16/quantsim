@@ -27,6 +27,13 @@ type RateLimitConfig struct {
 	IPLimit  int
 	IPWindow time.Duration
 
+	// TrustedProxies names the hops whose X-Forwarded-For may be believed.
+	// The zero value trusts nothing, which is what every caller that does not
+	// set it gets and what the gateway did before Step 26. It is only ever
+	// non-empty when something is genuinely in front of the gateway, because
+	// otherwise the per-IP limiter counts the proxy instead of the client.
+	TrustedProxies middleware.TrustedProxies
+
 	// Backoff throttles repeated failed logins per account. Nil disables the
 	// per-account dimension while leaving per-IP in place, which is what the
 	// routing and auth tests use.
@@ -83,7 +90,7 @@ func NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy, insig
 	// checks credentials is the one an attacker can hammer for free.
 	r.Group(func(r chi.Router) {
 		if rateLimit.Enabled {
-			r.Use(middleware.RateLimitByIP(rateLimit.Store, rateLimit.IPLimit, rateLimit.IPWindow))
+			r.Use(middleware.RateLimitByIP(rateLimit.Store, rateLimit.IPLimit, rateLimit.IPWindow, rateLimit.TrustedProxies))
 		}
 
 		// /auth/login carries the per-account backoff as well. It is mounted
