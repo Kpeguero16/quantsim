@@ -35,6 +35,13 @@ const defaultAllowedOrigin = "http://localhost:5173"
 // connections, which makes it the one that needs Slowloris protection.
 const readHeaderTimeout = 10 * time.Second
 
+// writeTimeout bounds how long a client may take to receive its response. A
+// response too large for the socket buffers holds its backend connection until
+// the client has read it, and the proxy allows only so many per backend, so
+// without this a client that stops reading holds one forever. It sits at twice
+// the proxy's 30s ResponseHeaderTimeout, so it never decides a slow backend's fate.
+const writeTimeout = 60 * time.Second
+
 // loginBackoffBase is the first window opened once the failure threshold is
 // reached; each further failure doubles it up to RATE_LIMIT_LOGIN_MAX_BACKOFF.
 // Not an env knob -- the threshold and the ceiling are the two values worth
@@ -111,6 +118,7 @@ func main() {
 		Addr:              addr,
 		Handler:           router,
 		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
 	}
 
 	log.Printf("gateway listening on %s (auth=%s, market-data=%s, trading-engine=%s, backtesting=%s, ai-insights=%s)",
