@@ -49,8 +49,8 @@ type RateLimitConfig struct {
 //
 // Middleware order is load-bearing, not stylistic:
 //
-//	StripUserID -> CORS -> LimitBody -> [/auth/*: RateLimitByIP] -> proxy
-//	StripUserID -> CORS -> LimitBody -> [group: RequireAuth -> InjectUserID] -> proxy
+//	StripUserID -> CORS -> LimitBody -> [/auth/*: RateLimitByIP] -> BufferBody -> proxy
+//	StripUserID -> CORS -> LimitBody -> [group: RequireAuth -> InjectUserID] -> BufferBody -> proxy
 //
 // StripUserID is outermost so no route -- public ones included -- can receive
 // a client-set identity header. CORS sits outside RequireAuth so that a 401
@@ -92,6 +92,7 @@ func NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy, insig
 		if rateLimit.Enabled {
 			r.Use(middleware.RateLimitByIP(rateLimit.Store, rateLimit.IPLimit, rateLimit.IPWindow, rateLimit.TrustedProxies))
 		}
+		r.Use(middleware.BufferBody)
 
 		// /auth/login carries the per-account backoff as well. It is mounted
 		// as its own route rather than applied to the whole prefix because
@@ -111,6 +112,7 @@ func NewRouter(authProxy, marketDataProxy, tradingProxy, backtestingProxy, insig
 	r.Group(func(r chi.Router) {
 		r.Use(pkgauth.RequireAuth(jwtSecret))
 		r.Use(middleware.InjectUserID())
+		r.Use(middleware.BufferBody)
 
 		r.Handle("/market-data/*", marketDataProxy)
 

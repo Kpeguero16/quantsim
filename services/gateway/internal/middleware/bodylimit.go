@@ -1,6 +1,9 @@
 package middleware
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/kpeguero/quantsim/services/gateway/internal/httperr"
@@ -52,4 +55,47 @@ func LimitBody(limit int64) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// BufferBody reads the whole request body before the request reaches the proxy.
+//
+// The proxy's transport takes a backend connection first and copies the body
+// second, and it caps connections per backend (proxy.maxConnsPerHost). Streaming
+// would let a client hold one of those slots for as long as it cared to withhold
+// its body, because ResponseHeaderTimeout only starts once the body has been
+// sent. Measured: 128 connections that each sent one byte of a declared 100 froze
+// that backend for every other caller, past the 30s header timeout and until the
+// attacker hung up. Waiting here costs the client's own goroutine and nothing that
+// anyone else needs.
+//
+// It must sit inside LimitBody, whose cap is what bounds this read, and as close
+// to the proxy as possible, so that a request about to be refused is refused
+// without waiting for a body it does not need.
+func BufferBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body == nil || r.Body == http.NoBody {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		buf, err := io.ReadAll(r.Body)
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				httperr.Write(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+					"request body is too large")
+				return
+			}
+			httperr.Write(w, http.StatusBadRequest, "invalid_request", "request body could not be read")
+			return
+		}
+
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+		// A chunked body now has a known length. Forwarding it as chunked would
+		// work too, but this way the backend sees one framing for every request.
+		r.ContentLength = int64(len(buf))
+		r.TransferEncoding = nil
+
+		next.ServeHTTP(w, r)
+	})
 }

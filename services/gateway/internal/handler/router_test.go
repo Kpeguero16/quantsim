@@ -2,6 +2,8 @@ package handler_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -911,5 +913,65 @@ func TestInsightsWithoutATokenNeverReachesTheService(t *testing.T) {
 	}
 	if insightsCall.hit {
 		t.Error("an unauthenticated request reached the insights service")
+	}
+}
+
+// The proxy's transport caps connections per backend, so a client that could hold
+// one of them by withholding its request body could take the whole backend away
+// from everybody else. Runs over real sockets because the stall only exists on a
+// real connection, and through the full router because the property depends on
+// where BufferBody sits in the chain. One route per group: /auth/* is the one an
+// attacker can reach without an account.
+func TestStalledUploadsDoNotHoldBackendConnections(t *testing.T) {
+	const stalled = 140 // above proxy.maxConnsPerHost
+
+	token := accessToken(t)
+	tests := []struct {
+		name, stalledPath, method, path string
+		headers                         map[string]string
+	}{
+		{"public", "/auth/register", http.MethodPost, "/auth/login", nil},
+		{"authenticated", "/trading/orders", http.MethodGet, "/trading/portfolio",
+			map[string]string{"Authorization": "Bearer " + token}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw, _, _, _, _, _ := newGatewayBackends(t, noRateLimit)
+			srv := httptest.NewServer(gw)
+			t.Cleanup(srv.Close)
+
+			for range stalled {
+				conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+				if err != nil {
+					t.Fatalf("dialing the gateway: %v", err)
+				}
+				// Closed before srv.Close, which would otherwise wait on it.
+				t.Cleanup(func() { conn.Close() })
+				if _, err := fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: gateway\r\nAuthorization: Bearer %s\r\n"+
+					"Content-Length: 100\r\n\r\n{", tt.stalledPath, token); err != nil {
+					t.Fatalf("writing the stalled request: %v", err)
+				}
+			}
+			// Without BufferBody the connections are all taken within this.
+			time.Sleep(200 * time.Millisecond)
+
+			req, err := http.NewRequest(tt.method, srv.URL+tt.path, strings.NewReader(`{}`))
+			if err != nil {
+				t.Fatalf("building the request: %v", err)
+			}
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("another caller's request failed while uploads were stalled: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("got status %d, want 200", resp.StatusCode)
+			}
+		})
 	}
 }

@@ -23,12 +23,29 @@ const (
 	responseHeaderTimeout = 30 * time.Second
 )
 
+// maxConnsPerHost caps the connections the shared transport opens to each
+// backend, and the pool keeps every one of them. A connection the pool has no
+// room for is closed, holds an ephemeral port in TIME_WAIT for about 30s, and is
+// replaced by a new dial -- so this limit decides how fast the gateway consumes
+// ports, not just how often it handshakes. Go's default of 2 idle per host ran
+// the gateway out of ports at 100 concurrent clients, and 128 idle with no cap
+// did the same at 500 (see docs/deferred-tuning.md, item 2).
+//
+// With the two equal, a finished request always has a place to put its
+// connection and a request above the cap waits for one instead of dialing. That
+// wait is bounded by the client rather than by responseHeaderTimeout, and it
+// only ever affects requests to the same backend.
+const maxConnsPerHost = 128
+
 // NewTransport returns the http.Transport every proxy should share, so that
 // connections to the backends are pooled rather than reopened per request.
 func NewTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DialContext = (&net.Dialer{Timeout: dialTimeout}).DialContext
 	t.ResponseHeaderTimeout = responseHeaderTimeout
+	t.MaxConnsPerHost = maxConnsPerHost
+	t.MaxIdleConnsPerHost = maxConnsPerHost
+	t.MaxIdleConns = 0 // no total limit: bounded by backends * maxConnsPerHost
 	return t
 }
 

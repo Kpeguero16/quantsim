@@ -11,11 +11,17 @@ than from taste.
 
 ---
 
-## 1. Gateway HTTP server has only `ReadHeaderTimeout`
+## 1. Gateway HTTP server has no `IdleTimeout`
 
 **Where:** `services/gateway/cmd/server/main.go` — the `http.Server` literal.
 
-**Now:** `ReadHeaderTimeout: 10s`, everything else at Go's defaults.
+**Now:** `ReadHeaderTimeout: 10s` and, since Step 27, `WriteTimeout: 60s`.
+Everything else is at Go's defaults.
+
+**Why `WriteTimeout` could not wait:** the per-backend connection cap in item 2
+made a client that stops reading able to hold a slot, so it stopped being tuning.
+60s is twice the proxy's 30s `ResponseHeaderTimeout` rather than a measured number,
+so revisit it against the p99 below.
 
 **Why it matters later:** `IdleTimeout` is unset, and when it is zero Go falls
 back to `ReadTimeout`, which is also zero — so idle keep-alive connections are
@@ -23,34 +29,82 @@ never reaped. A client can hold connections open indefinitely. On a laptop
 that is nothing; on a public instance it is a cheap way to exhaust file
 descriptors.
 
-**Likely fix:** add `IdleTimeout` (~120s) and a `WriteTimeout` chosen to sit
-above the slowest legitimate backend response. Deliberately **do not** set
+**Likely fix:** add `IdleTimeout` (~120s). Deliberately **do not** set
 `ReadTimeout` — it caps the whole request including the body, which would break
 large uploads and any future streaming endpoint.
 
-**What to measure first:** p99 backend response time (sets the `WriteTimeout`
-floor) and steady-state idle connection count.
+**What to measure first:** p99 backend response time (the `WriteTimeout` floor)
+and steady-state idle connection count.
 
 ---
 
-## 2. Proxy transport `MaxIdleConnsPerHost` is 2
+## 2. Proxy transport connection limits: resolved in Step 27
 
-**Where:** `services/gateway/internal/proxy/proxy.go` — `NewTransport`.
+**Where:** `services/gateway/internal/proxy/proxy.go`, `NewTransport`.
 
-**Now:** clones `http.DefaultTransport`, inheriting `MaxIdleConnsPerHost: 2`.
+**Now:** `MaxConnsPerHost` and `MaxIdleConnsPerHost` are both 128, and
+`MaxIdleConns` is 0 (no total limit, so the real bound is backends x 128).
 
-**Why it matters later:** with only two backends, more than two concurrent
-in-flight requests per backend forces a fresh TCP handshake per request. The
-transport is shared across proxies specifically so connections pool; a limit of
-2 means it barely does. Irrelevant at one-developer volume, visible as added
-per-request latency under concurrency.
+**This was a bug, not just tuning, and this file underrated it.** It predicted
+"added per-request latency under concurrency." A load test measured something
+worse: at 100 concurrent clients, 60.5% of price reads returned 502
+(`connect: can't assign requested address`). A connection the pool cannot keep
+is closed and holds an ephemeral port in TIME_WAIT for 30s, and macOS has 16,384
+of those ports, so sustained churn above about 546 connections/s runs out. Linux
+defaults (28,232 ports, 60s) give a similar ceiling of about 470/s, so this was
+not a laptop artifact.
 
-**Likely fix:** `MaxIdleConnsPerHost: 32` or so, tuned against measured
-concurrency. Raising it costs idle sockets, so it is worth a number rather than
-a guess.
+**Raising the idle limit alone only moves the failure.** The `MaxIdleConnsPerHost: 32`
+this entry used to suggest would not have survived 100 clients. 128 idle with no
+cap held at 200 clients and failed again at 500, with 7-82% of requests returning
+502. The cap is what fixes it. With the two limits equal, a finished request
+always has a place in the pool, and a request above the cap waits for a
+connection instead of dialing.
 
-**What to measure first:** concurrent in-flight requests per backend at peak,
-and the ratio of new connections to reused ones.
+| Price reads through the gateway | 100 clients | 500 clients | 1,000 clients |
+|---|---|---|---|
+| Default (2 idle per host) | 1,343 ok/s, 60.5% errors | not run | not run |
+| 128 idle, no cap | 23,895 ok/s, 0 errors | 7-82% errors | 16-92% errors |
+| 128 idle, 128 cap (shipped) | 25,715/s, 0 errors | 30,605/s, 0 errors | 31,145/s, 0 errors, 44 ms p99 |
+
+Measured on one 10-core laptop over localhost, closed-loop clients, median of 3
+runs. 5.3M requests against the shipped config produced no proxy errors. Bursts
+of 500 simultaneous orders went from 214 of 10,000 returning 502 to none.
+
+**What the cap costs:** a request above the cap waits for a connection, and that
+wait is bounded by the client rather than by `responseHeaderTimeout`. If a backend
+hangs, each batch of 128 takes 30s to fail, so a long queue can wait for minutes
+unless the client gives up first. It stays within that backend:
+`TestSaturatedBackendQueuesOnlyItsOwnRequests` proves the other backends are
+unaffected and that a client giving up gets out.
+
+**The cap made a slot worth stealing.** Anything that holds a backend connection
+now denies it to everyone else on that backend. Measured against the real gateway
+binary with 128 hostile connections and a 5s victim request:
+
+| Attack | `main` | Cap alone | Shipped |
+|---|---|---|---|
+| Stalled upload to `/trading/orders` | 200, at most 2 ms | timed out, past 42s | 200, at most 3 ms |
+| Stalled upload to `/auth/register`, victim logging in | 200, at most 13 ms | timed out, past 42s | 200, at most 2 ms |
+| Client stops reading an 8 MB response | 200, at most 105 ms | timed out | timed out until `WriteTimeout`, recovered by 73s |
+
+`/auth/*` needs no account, and its 100-per-IP budget means two addresses are
+enough, so the cap alone let anyone lock every user out of login. Two controls
+answer it. `BufferBody` reads the capped body before a request can take a
+connection, which removes the upload case outright. `WriteTimeout` (item 1) bounds
+the read case.
+
+**Still open:** the read case is bounded, not removed. An authenticated client can
+reopen its connections every 60s and keep a backend starved, provided it can get
+a response too large for the socket buffers. A 500 KB response did not hold a slot
+on macOS, and market-data caps history at 2,000 bars, so this needs measuring on
+Linux, whose buffers start smaller. Client-held slots end only with a per-user
+limit on in-flight requests, which is the fix if this is ever seen in practice.
+
+**Revisit if WebSockets go through this transport.** Nothing long-lived does today,
+but `agents.md` plans them, and each one would hold a slot for its whole life. 128
+of them would block every other request to that backend. Give them their own
+transport rather than raising this cap.
 
 ---
 
@@ -355,6 +409,27 @@ natural moment to extract instead of editing three files in lockstep.
 `market-data`'s own store still has no integration tests at all, and adding
 those later would otherwise create a fourth copy — extract before that happens
 rather than after.
+
+---
+
+## 12. trading-engine's market-data client is on Go's default connection pool
+
+**Where:** `services/trading-engine/internal/client/market_data_client.go`,
+which builds `&http.Client{Timeout: requestTimeout}` and so inherits 2 idle
+connections per host. Every order fetches a price through it.
+
+**Now:** no failures measured, but it is the same mechanism as item 2. At about
+2,200 orders/s with 100 clients, roughly 11,000 of the 16,384 ephemeral ports sit
+in TIME_WAIT toward market-data, about 370 new connections per second. A faster
+order path or a lower port budget turns that into 502s.
+
+`backtesting` builds its client the same way. It showed no churn at 10 concurrent
+clients and has not been measured higher.
+
+**Likely fix:** the same shape as item 2, a transport with `MaxConnsPerHost` and
+`MaxIdleConnsPerHost` equal.
+
+**What to measure first:** nothing further. The measurement above is enough to act on.
 
 ---
 

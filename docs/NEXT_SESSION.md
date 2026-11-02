@@ -1,11 +1,10 @@
 # Next session — state of play
 
-> **Step 26 is merged.** Nothing is half-finished, but one thing is **blocked**: provisioning
-> needs an AWS account that does not exist yet. Everything up to it is built and verified.
-> The per-task record is archived at `docs/archive/phase4-step26-cloud-deployment/todo.md`.
+> **Step 27 is merged.** Nothing is half-finished, but one thing is still **blocked**: provisioning
+> needs an AWS account that does not exist yet.
 
-Last updated **2026-08-23**, with Step 26 (cloud deployment readiness) merged and pushed. **Phase 4's
-feature work and all its defects are done. What remains of the roadmap is one EC2 instance.**
+Last updated **2026-11-02**, with Step 27 (gateway connection pool) merged as PR #1. What remains of
+the roadmap is one EC2 instance.
 
 This file answers three questions on picking the project back up: *is anything half-finished?*,
 *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not
@@ -46,6 +45,22 @@ recovery: Docker does not restart an unhealthy container.
 
 ---
 
+## What Step 27 did
+
+**A load test found the gateway running out of ports.** At 100 concurrent clients, 60.5% of price
+reads returned 502. The proxy kept 2 idle connections per backend, so nearly every request dialed
+a new connection and left the old one in TIME_WAIT. Raising the idle limit only moved the failure
+from 100 clients to 500. A cap on connections per backend, equal to the idle limit, removed it: 0
+errors in 5.3M requests, up to 1,000 clients. `docs/deferred-tuning.md` item 2 has the numbers.
+
+**Its review found that the cap let clients steal the slots.** 128 stalled uploads froze a backend
+for everyone, and `/auth/*` needs no account, so that included login. The gateway now buffers request
+bodies before taking a connection (`middleware.BufferBody`) and sets a 60s `WriteTimeout`. A client
+that stops reading a large response can still hold a slot for 60s at a time. Nothing has measured
+that on Linux yet, and it is worth doing on the deployed instance.
+
+---
+
 ## What to do next
 
 **1. Provision the instance.** `docs/DEPLOYMENT.md` is the runbook end to end, and its first
@@ -80,7 +95,9 @@ set `ContextTimeoutEnabled`; **`auth` and `market-data` do not**, so `context.Wi
 their Redis calls does nothing. The defect that cost 6.05s in Step 21, latent in two services.
 Its own step, because it touches auth's token revocation path. Untouched by Steps 25 and 26.
 
-**5. `docs/deferred-tuning.md`** — still blocked until something is deployed and has traffic.
+**5. `docs/deferred-tuning.md`** — still blocked until something is deployed and has traffic, except
+item 12. trading-engine's market-data client is on Go's default pool and holds about 11,000 of
+16,384 ports in TIME_WAIT under order load. No failures yet, and the fix has the same shape as Step 27.
 
 **6. The long-standing small items.**
 
@@ -148,6 +165,16 @@ The schema is still at version 9.
 ---
 
 ## Things that will trip you up
+
+**A tight loop of connection-heavy tests can exhaust ports by itself.** One run of the gateway's
+proxy tests closes about 750 connections. Looping it at full speed reached 29,326 TIME_WAIT sockets
+and produced `can't assign requested address`, which reads exactly like the bug those tests guard
+against. Pace a stress loop, and check `netstat -an | grep -c TIME_WAIT` before believing a failure.
+
+**A test that expects exactly one backend arrival per request is wrong under load.** Go's transport
+retries idempotent requests on a lost connection, and `-race` loses a few. Step 27's first test held
+requests at a barrier of exactly N arrivals, and a duplicate tripped it early and stranded the rest
+until the 30s header timeout, about once in 78 runs. Measure with a margin instead.
 
 **Do not put a second proxy in front of Caddy** — an ALB, Cloudflare, anything — without
 revisiting `services/gateway/internal/middleware/clientip.go`. The rightmost `X-Forwarded-For`

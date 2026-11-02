@@ -925,6 +925,20 @@ Distroless has no shell, so Step 25 left the images with no `HEALTHCHECK` and `d
 - [ ] **No automated backups.** Losing the instance loses the database.
       `pg_dump` is in the runbook and is manual; the first restore should be a
       deliberate exercise rather than an emergency.
+- [x] ~~**Gateway port exhaustion**~~ - Step 27. A load test found 60.5% of price
+      reads returning 502 at 100 concurrent clients. The proxy transport now caps
+      connections per backend and keeps all of them idle: 0 errors at 1,000 clients.
+      `docs/deferred-tuning.md` item 2.
+- [x] ~~**Clients holding the capped connections**~~ - Step 27's review. 128 stalled
+      uploads froze a backend for everyone, `/auth/*` without an account. The gateway
+      now buffers request bodies before taking a connection and sets a 60s
+      `WriteTimeout`.
+- [ ] **A client that stops reading can still hold slots, one 60s at a time.**
+      Needs a large response and an account. Measure on Linux, and add a per-user
+      in-flight limit if it is real. `docs/deferred-tuning.md` item 2.
+- [ ] **trading-engine's market-data client has the same default pool.** No
+      failures yet, but about 11,000 of 16,384 ports in TIME_WAIT under order load.
+      `docs/deferred-tuning.md` item 12.
 - [ ] **Work through `docs/deferred-tuning.md`** — timeouts, connection
       pooling, and other defaults deliberately left unset because the right
       values depend on traffic shape that only exists once deployed.

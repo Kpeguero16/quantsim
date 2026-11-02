@@ -125,3 +125,77 @@ func TestMaxBodyBytesMatchesTheServiceCap(t *testing.T) {
 		t.Errorf("MaxBodyBytes = %d, want 65536 (what auth applies per request)", middleware.MaxBodyBytes)
 	}
 }
+
+// bufferedBody runs a request through LimitBody and BufferBody, returning what
+// the next handler saw. The next handler stands in for the proxy.
+func bufferedBody(t *testing.T, req *http.Request) (rec *httptest.ResponseRecorder, got *http.Request, body string) {
+	t.Helper()
+	rec = httptest.NewRecorder()
+	h := middleware.LimitBody(testLimit)(middleware.BufferBody(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = r
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the buffered body: %v", err)
+		}
+		body = string(b)
+	})))
+	h.ServeHTTP(rec, req)
+	return rec, got, body
+}
+
+func TestBufferBody_ReplaysTheBodyWithItsLength(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/trading/orders", strings.NewReader(`{"symbol":"AAPL"}`))
+	// Chunked, the one framing where the length has to be filled in.
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+
+	_, got, body := bufferedBody(t, req)
+
+	if got == nil {
+		t.Fatal("the request did not reach the next handler")
+	}
+	if body != `{"symbol":"AAPL"}` {
+		t.Errorf("got body %q", body)
+	}
+	if got.ContentLength != int64(len(body)) {
+		t.Errorf("got ContentLength %d, want %d", got.ContentLength, len(body))
+	}
+	if len(got.TransferEncoding) != 0 {
+		t.Errorf("got TransferEncoding %v, want none", got.TransferEncoding)
+	}
+}
+
+// A chunked body has no length for LimitBody to refuse up front. Buffering is
+// what finds out it is too large, and it can still answer with the 413 a declared
+// oversized body gets, instead of the mid-copy 502 streaming produced.
+func TestBufferBody_ChunkedOversizedBodyIs413(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/trading/orders", strings.NewReader(strings.Repeat("x", testLimit+1)))
+	req.ContentLength = -1
+
+	rec, got, _ := bufferedBody(t, req)
+
+	if got != nil {
+		t.Error("an oversized body reached the next handler")
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got %d, want 413", rec.Code)
+	}
+	var errBody httperr.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("413 body is not the JSON error shape: %v", err)
+	}
+	if errBody.Code != "payload_too_large" {
+		t.Errorf("got code %q, want payload_too_large", errBody.Code)
+	}
+}
+
+func TestBufferBody_BodylessRequestPassesThrough(t *testing.T) {
+	rec, got, body := bufferedBody(t, httptest.NewRequest(http.MethodGet, "/market-data/symbols", nil))
+
+	if got == nil {
+		t.Fatal("the request did not reach the next handler")
+	}
+	if rec.Code != http.StatusOK || body != "" {
+		t.Errorf("got status %d and body %q, want 200 and empty", rec.Code, body)
+	}
+}
