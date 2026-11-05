@@ -900,12 +900,12 @@ Distroless has no shell, so Step 25 left the images with no `HEALTHCHECK` and `d
       Step 24. trading-engine deletes `insights:{user_id}` after a fill, with
       the key format shared through `pkg/cachekeys` so the two services cannot
       drift apart silently.
-- [ ] **`auth` and `market-data` build Redis clients without
-      `ContextTimeoutEnabled`** — so `context.WithTimeout` around their Redis
-      calls does nothing and each waits the client's own `ReadTimeout`. The
-      defect that cost 6.05s in Step 21, latent in two services. Consolidating
-      all four construction sites is its own step; it touches auth's token
-      revocation path.
+- [x] ~~**`auth` and `market-data` build Redis clients without
+      `ContextTimeoutEnabled`**~~ — Step 28. All four services build their
+      client through `pkg/redisclient.New`, and the two per-service copies are
+      gone. Against a paused Redis, `/auth/refresh` and a price read went from
+      3.0s (6.0s on the first call) to 0.52s (1.05s on the first call), and
+      refresh still fails open with a 200.
 - [ ] **The frontend hooks have no tests at all** — `use-narrative`'s
       double-spend guard protects a billed call and broke in Step 22 without a
       single test noticing. Needs `renderHook`; `@testing-library/react` is

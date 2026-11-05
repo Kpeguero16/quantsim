@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
+	"github.com/kpeguero/quantsim/pkg/redisclient"
 	"github.com/kpeguero/quantsim/services/auth/internal/handler"
 	"github.com/kpeguero/quantsim/services/auth/internal/service"
 	"github.com/kpeguero/quantsim/services/auth/internal/store"
@@ -61,7 +62,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid REDIS_URL: %v", err)
 	}
-	redisClient := redis.NewClient(redisOpts)
+	redisClient := redisclient.New(redisOpts)
 	defer redisClient.Close()
 
 	userStore := store.NewPostgresUserStore(pool)

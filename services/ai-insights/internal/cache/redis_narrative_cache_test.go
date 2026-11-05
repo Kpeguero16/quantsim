@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kpeguero/quantsim/pkg/redisclient"
 )
 
 // In-package, like the report cache's key test, because the key is the detail
@@ -94,10 +96,10 @@ func hungListener(t *testing.T) string {
 func TestRedisCaches_BoundTheirOwnRoundTripAgainstAHungServer(t *testing.T) {
 	addr := hungListener(t)
 	newClient := func() *redis.Client {
-		// Built through the package's own constructor, which is where the
+		// Built through pkg/redisclient.New, which is where the
 		// ContextTimeoutEnabled default is corrected -- a client made the
 		// ordinary way would ignore the deadline and wait ReadTimeout.
-		c := NewClient(&redis.Options{Addr: addr, MaxRetries: -1})
+		c := redisclient.New(&redis.Options{Addr: addr, MaxRetries: -1})
 		t.Cleanup(func() { _ = c.Close() })
 		return c
 	}

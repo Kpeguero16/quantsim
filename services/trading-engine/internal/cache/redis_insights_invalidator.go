@@ -1,7 +1,10 @@
+// Package cache holds the one entry trading-engine invalidates: another
+// service's report cache.
 package cache
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -9,6 +12,13 @@ import (
 	"github.com/kpeguero/quantsim/pkg/cachekeys"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/service"
 )
+
+// redisTimeout bounds the one Redis round trip this service makes. It sits on
+// the order path, so it is the extra latency a fill can cost when Redis is
+// slow, and the ceiling on how long a placed order waits for a cache delete it
+// does not need. It only works because the client comes from
+// pkg/redisclient.New, which makes go-redis honour context deadlines.
+const redisTimeout = 500 * time.Millisecond
 
 var _ service.InsightsInvalidator = (*RedisInsightsInvalidator)(nil)
 

@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
+	"github.com/kpeguero/quantsim/pkg/redisclient"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/cache"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/client"
 	"github.com/kpeguero/quantsim/services/trading-engine/internal/handler"
@@ -92,7 +93,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid REDIS_URL: %v", err)
 		}
-		redisClient := cache.NewClient(redisOpts)
+		redisClient := redisclient.New(redisOpts)
 		defer redisClient.Close()
 		insightsInvalidator = cache.NewRedisInsightsInvalidator(redisClient)
 	} else {

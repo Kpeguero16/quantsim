@@ -1,10 +1,10 @@
 # Next session — state of play
 
-> **Step 27 is merged.** Nothing is half-finished, but one thing is still **blocked**: provisioning
+> **Step 28 is merged.** Nothing is half-finished, but one thing is still **blocked**: provisioning
 > needs an AWS account that does not exist yet.
 
-Last updated **2026-11-02**, with Step 27 (gateway connection pool) merged as PR #1. What remains of
-the roadmap is one EC2 instance.
+Last updated **2026-11-05**, with Step 28 (one Redis client constructor) merged. What remains of the
+roadmap is one EC2 instance.
 
 This file answers three questions on picking the project back up: *is anything half-finished?*,
 *what do I do next?*, and *what will trip me up?* It is meant to be rewritten each time, not
@@ -61,6 +61,18 @@ that on Linux yet, and it is worth doing on the deployed instance.
 
 ---
 
+## What Step 28 did
+
+**Every service builds its Redis client through `pkg/redisclient.New`.** go-redis ignores context
+deadlines unless `ContextTimeoutEnabled` is set, and auth and market-data never set it, so a paused
+Redis made `/auth/refresh` and a price read wait the client's 3s `ReadTimeout` (6s on the first
+call). Both now take about 0.5s (about 1s on the first call). The constructor also sets 500ms
+read, write and dial timeouts when they are unset, which is what bounds those two services: neither
+puts a deadline on its Redis calls. The ai-insights and trading-engine copies are deleted, and
+`pkg` now depends on go-redis.
+
+---
+
 ## What to do next
 
 **1. Provision the instance.** `docs/DEPLOYMENT.md` is the runbook end to end, and its first
@@ -90,16 +102,11 @@ actually hung rather than before.
 **3. No automated backups.** Losing the instance loses the database. `pg_dump` is in the runbook
 and is manual. Restore from one deliberately, before it matters.
 
-**4. Consolidate the four Redis client construction sites.** `ai-insights` and `trading-engine`
-set `ContextTimeoutEnabled`; **`auth` and `market-data` do not**, so `context.WithTimeout` around
-their Redis calls does nothing. The defect that cost 6.05s in Step 21, latent in two services.
-Its own step, because it touches auth's token revocation path. Untouched by Steps 25 and 26.
-
-**5. `docs/deferred-tuning.md`** — still blocked until something is deployed and has traffic, except
+**4. `docs/deferred-tuning.md`** — still blocked until something is deployed and has traffic, except
 item 12. trading-engine's market-data client is on Go's default pool and holds about 11,000 of
 16,384 ports in TIME_WAIT under order load. No failures yet, and the fix has the same shape as Step 27.
 
-**6. The long-standing small items.**
+**5. The long-standing small items.**
 
 - **The frontend hooks have no tests at all.** `use-narrative`'s double-spend guard protects a
   billed call and broke in Step 22 without a single test noticing. Needs `renderHook`;
@@ -108,7 +115,7 @@ item 12. trading-engine's market-data client is on Go's default pool and holds a
   is still in **three** copies; `docs/TESTING_STRUCTURE.md` §6a's extraction trigger is **still
   unfired**.
 
-**7. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is
+**6. Security backlog:** items 1, 2 and 4 are closed. Item **8** (Unicode-normalise passwords) is
 the cheap one left. Item **3** (Argon2id) wants its own step, since it carries a migration.
 
 ---
@@ -272,7 +279,7 @@ hurts. This cost real time in Step 21 and will again.
 ignores context deadlines and waits its own `ReadTimeout`. The code reads as
 bounded, compiles, passes review, and waits the full default anyway — that is
 where `GET /insights/portfolio`'s 6.05s came from. Build Redis clients through
-`internal/cache.NewClient`, which sets it.
+`pkg/redisclient.New`, which sets it. All four services do since Step 28.
 
 **A mock that reimplements the logic it stands in for cannot test it.** The
 cap-boundary tests drove the mock counter, which had its own copy of the

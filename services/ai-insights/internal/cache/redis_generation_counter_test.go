@@ -8,6 +8,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kpeguero/quantsim/pkg/redisclient"
 )
 
 func TestCounterKey_IsNamespacedAndDateScoped(t *testing.T) {
@@ -62,7 +64,7 @@ func TestRedisGenerationCounter_AnUnreachableServerRefuses(t *testing.T) {
 func miniCounter(t *testing.T, now time.Time) (*RedisGenerationCounter, *miniredis.Miniredis) {
 	t.Helper()
 	srv := miniredis.RunT(t)
-	client := NewClient(&redis.Options{Addr: srv.Addr()})
+	client := redisclient.New(&redis.Options{Addr: srv.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
 	c := NewRedisGenerationCounter(client)
