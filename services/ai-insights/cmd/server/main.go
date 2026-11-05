@@ -8,6 +8,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	pkgauth "github.com/kpeguero/quantsim/pkg/auth"
+	"github.com/kpeguero/quantsim/pkg/redisclient"
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/cache"
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/client"
 	"github.com/kpeguero/quantsim/services/ai-insights/internal/handler"
@@ -60,7 +61,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid REDIS_URL: %v", err)
 		}
-		redisClient := cache.NewClient(redisOpts)
+		redisClient := redisclient.New(redisOpts)
 		defer redisClient.Close()
 		insightsCache = cache.NewRedisInsightsCache(redisClient)
 		narrativeCache = cache.NewRedisNarrativeCache(redisClient)

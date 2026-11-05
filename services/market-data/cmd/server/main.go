@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kpeguero/quantsim/pkg/redisclient"
 	"github.com/kpeguero/quantsim/services/market-data/internal/alpaca"
 	"github.com/kpeguero/quantsim/services/market-data/internal/cache"
 	"github.com/kpeguero/quantsim/services/market-data/internal/handler"
@@ -56,7 +57,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid REDIS_URL: %v", err)
 	}
-	redisClient := redis.NewClient(redisOpts)
+	redisClient := redisclient.New(redisOpts)
 	defer redisClient.Close()
 
 	alpacaClient := alpaca.NewClient(alpacaKey, alpacaSecret)

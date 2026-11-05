@@ -8,7 +8,7 @@
 # drift is invisible because nothing ever diffs them. See SPEC.md 2.2.
 #
 # The build context is the REPO ROOT, not a service directory, and that is not
-# a convenience. Every service module except market-data carries
+# a convenience. Every service module carries
 # `replace github.com/kpeguero/quantsim/pkg => ../../pkg`, so the build needs
 # pkg/ on disk at that relative path. A per-service context cannot work.
 #
@@ -30,11 +30,8 @@ ENV CGO_ENABLED=0
 ARG SERVICE
 WORKDIR /src
 
-# Manifests first, so the dependency layer survives a source change.
-#
-# pkg's manifests are copied for every service including market-data, which
-# does not depend on pkg. That is harmless: with no `replace` directive naming
-# it, nothing resolves to it.
+# Manifests first, so the dependency layer survives a source change. pkg's
+# manifests come too, because `go mod download` follows the `replace` into it.
 COPY pkg/go.mod pkg/go.sum ./pkg/
 COPY services/${SERVICE}/go.mod services/${SERVICE}/go.sum ./services/${SERVICE}/
 RUN cd services/${SERVICE} && go mod download

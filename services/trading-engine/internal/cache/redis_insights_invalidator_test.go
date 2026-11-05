@@ -7,6 +7,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kpeguero/quantsim/pkg/redisclient"
 )
 
 // Driven against a real Redis rather than a mock, because a mock that
@@ -16,7 +18,7 @@ import (
 func miniInvalidator(t *testing.T) (*RedisInsightsInvalidator, *miniredis.Miniredis) {
 	t.Helper()
 	srv := miniredis.RunT(t)
-	client := NewClient(&redis.Options{Addr: srv.Addr()})
+	client := redisclient.New(&redis.Options{Addr: srv.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 	return NewRedisInsightsInvalidator(client), srv
 }
